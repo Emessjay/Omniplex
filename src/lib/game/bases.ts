@@ -56,11 +56,16 @@ export function canAffordBase(
 // (consumed from the cargo hold). `canAffordBase` checks any of them uniformly.
 // ---------------------------------------------------------------------------
 
-/** The in-base structures buildable today (beyond the base itself). P8b grows this. */
-export const STRUCTURE_KINDS = ["silo", "excavator"] as const;
+/**
+ * The in-base structures buildable today (beyond the base itself): P8a's silo
+ * (storage) and excavator (passive ore drain), plus P8b's production_line (turns
+ * siloed raw minerals into advanced ship parts via `produce`). Grows further in
+ * later phases.
+ */
+export const STRUCTURE_KINDS = ["silo", "excavator", "production_line"] as const;
 export type StructureKind = (typeof STRUCTURE_KINDS)[number];
 
-/** True iff `kind` is a buildable in-base structure (`silo` / `excavator`). */
+/** True iff `kind` is a buildable in-base structure (silo/excavator/production_line). */
 export function isStructureKind(kind: string): kind is StructureKind {
   return (STRUCTURE_KINDS as readonly string[]).includes(kind);
 }
@@ -68,11 +73,13 @@ export function isStructureKind(kind: string): kind is StructureKind {
 /**
  * What each in-base structure costs to `build` — tunable. Keys are the literal
  * `credits` (charged against the balance) or a mineral id (consumed from cargo).
- * Silos are cheaper (raw storage); excavators cost more (active machinery).
+ * Silos are cheaper (raw storage); excavators cost more (active machinery); a
+ * production line is the priciest (it manufactures advanced parts).
  */
 export const BUILDING_BUILD_COST: Readonly<Record<StructureKind, Readonly<Record<string, number>>>> = {
   silo: { credits: 300, iron: 5 },
   excavator: { credits: 400, titanium: 3, iron: 5 },
+  production_line: { credits: 600, titanium: 5, copper: 5 },
 };
 
 /** The cost map for one structure kind. */

@@ -46,6 +46,7 @@ export const VERBS: string[] = [
   "deposit",
   "withdraw",
   "collect",
+  "produce",
   "sell",
   "buy",
   "who",
@@ -188,6 +189,13 @@ export const USAGE: Record<string, UsageDescriptor> = {
   collect: {
     desc: "funnel ore your excavators have drained into storage",
     slots: [],
+  },
+  produce: {
+    desc: "manufacture a ship part from siloed minerals (needs a production line)",
+    slots: [
+      { name: "part" },
+      { name: "qty", optional: true, hint: "a number (default 1)" },
+    ],
   },
   sell: {
     desc: "sell cargo (or an upgrade) at the global market",

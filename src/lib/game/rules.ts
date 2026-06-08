@@ -178,6 +178,25 @@ export function canCraft(
 }
 
 /**
+ * Whether the SILOED quantities `siloed` cover every input of a production
+ * `recipe` (resourceId -> qty per unit) scaled to make `qty` parts. Pure; the
+ * production-line analogue of `canCraft` (which checks a single recipe against
+ * cargo). A missing input reads as 0 stored. `qty <= 0` is vacuously true (the
+ * handler rejects non-positive quantities before producing).
+ */
+export function canProduce(
+  siloed: Record<string, number>,
+  recipe: Record<string, number>,
+  qty: number = 1,
+): boolean {
+  if (qty <= 0) return true;
+  for (const [resourceId, perUnit] of Object.entries(recipe)) {
+    if ((siloed[resourceId] ?? 0) < perUnit * qty) return false;
+  }
+  return true;
+}
+
+/**
  * The upgrade id required to land at `temperature`, or `null` if a bare ship
  * survives. `temp < FREEZING_C` → `"antifreeze_tanks"`; `temp > BOILING_C` →
  * `"ablative_shields"`; otherwise null. The boundary temps themselves

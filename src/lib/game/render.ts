@@ -712,11 +712,18 @@ export interface StorageView {
   /** Number of silos (storage) and excavators (passive ore drain) in the base. */
   silos: number;
   excavators: number;
+  /** Number of production lines (turn siloed minerals into ship parts via `produce`). */
+  productionLines: number;
   /** Stored units used + total capacity (= SILO_CAPACITY × silos). */
   used: number;
   capacity: number;
-  /** Stored items: resource id, quantity, and display name. */
+  /** Stored items: item id (resource OR part), quantity, and display name. */
   items: { itemId: string; qty: number; name: string }[];
+  /**
+   * Parts a production line here can manufacture (each with a recipe summary).
+   * Empty when there's no production line — only surfaced once one exists.
+   */
+  producible: { id: string; name: string; recipe: string }[];
 }
 
 /**
@@ -737,6 +744,8 @@ export function renderStorage(view: StorageView): RenderFrame {
       text(`${view.silos}`, "default"),
       text("   excavators ", "muted"),
       text(`${view.excavators}`, "default"),
+      text("   lines ", "muted"),
+      text(`${view.productionLines}`, "default"),
       text("   storage ", "muted"),
       text(`${view.used}/${view.capacity}`, view.used >= view.capacity ? "warning" : "default"),
     ]),
@@ -760,11 +769,33 @@ export function renderStorage(view: StorageView): RenderFrame {
     }
   }
 
+  // Producible parts (only once a production line exists), each clickable.
+  if (view.producible.length > 0) {
+    lines.push(line(text("Producible:", "heading")));
+    for (const p of view.producible) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          action(`produce ${p.id}`, `produce ${p.id}`, {
+            style: "link",
+            title: `manufacture ${p.name}`,
+          }),
+          text(`  (${p.recipe})`, "muted"),
+        ]),
+      );
+    }
+  }
+
   // Expansion hints (clickable).
   const hints: RenderSpan[] = [
     action("build silo", "build silo", { style: "link", title: "add storage capacity" }),
     text("   ", "muted"),
     action("build excavator", "build excavator", { style: "link", title: "add an ore drain" }),
+    text("   ", "muted"),
+    action("build production_line", "build production_line", {
+      style: "link",
+      title: "add a parts manufacturer",
+    }),
   ];
   if (view.excavators > 0) {
     hints.push(text("   ", "muted"));

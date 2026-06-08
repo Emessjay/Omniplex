@@ -772,3 +772,55 @@ gotchas) accrete here as workers surface things worth persisting. See
   `base_buildings.kind`, the `build` domain, and `base_storage.item_id` beyond
   resource ids — no schema change needed for new kinds/items). P9 routes
   ship-upgrade manufacture through production lines.
+
+### Load-bearing decisions from `production-lines`
+
+- **P8b closes the production track: a production line turns siloed RAW minerals
+  into advanced SHIP PARTS.** NO migration — `production_line` is just a new
+  `base_buildings.kind` value (free-text column) and parts live in `base_storage`
+  (free-text `item_id`), exactly as P8a anticipated. Reuses P8a's
+  `base_buildings`/`base_storage`/`baseCapacity` + the `build`/cost machinery
+  wholesale (no fork).
+- **Ship-parts catalog (code)** is `src/lib/game/parts.ts`, mirroring
+  `upgrades.ts`/`materials.ts`: `Part = { id, name, recipe: Record<resourceId,
+  qty>, value }`; helpers `PARTS`/`PART_IDS`/`isPartId`/`getPart`/`partRecipeOf`/
+  `partValue` (+ `partRawInputValue` = Σ qty × resource baseValue). Four starters
+  (hull_plating, circuit_board, alloy_beam, sensor_array) built from GENERAL
+  minerals so they're broadly producible early. **Invariant (unit-tested):** each
+  `value` is strictly > its raw input value (manufacturing adds value); recipes
+  reference only real `RESOURCES` ids. Parts are NOT in `markets` and (this phase)
+  NOT sellable — they sit in storage as intermediates for P9.
+- **`production_line` is now a `StructureKind`** (`bases.ts`): `STRUCTURE_KINDS =
+  ["silo","excavator","production_line"]` (the P8a `base-buildings-cost.test.ts`
+  exact-match assertion was updated to track this deliberate extension),
+  `BUILDING_BUILD_COST.production_line = { credits:600, titanium:5, copper:5 }`.
+  **`build production_line`** behaves exactly like other P8a structures
+  (DISEMBARKED_ONLY, own a base in-region, atomic validate→consume→create via the
+  shared `consumeCost`/`refundCost`/`affordContext`). `build`'s arg-0 domain is
+  now `["base","silo","excavator","production_line"]`.
+- **Pure rule** `canProduce(siloed, recipe, qty=1)` in `rules.ts` mirrors
+  `canCraft` but scales the requirement by `qty` (the production-line analogue:
+  inputs come from the SILO, not cargo). `qty<=0` is vacuously true (handler
+  rejects non-positive separately). Seeded contract: `production-lines.test.ts`.
+- **`produce <part> [qty]`** (`handleProduce`, **ungated by embark state** — it's
+  your base, like `deposit`/`withdraw`/`collect`): requires a base in the current
+  region with ≥1 production line; validates line-exists + inputs-siloed +
+  capacity-fits BEFORE mutating (clear errors: "No production line here", "need 5
+  Titanium in the silo (have 2)", storage-overflow). Consumes recipe inputs from
+  `base_storage` then banks the part(s) back into `base_storage`, all via the
+  atomic `add_base_storage` RPC. Instant (no timer); a metered-over-time variant
+  (lastProducedAt + per-ms rate, like excavators) is a noted future enhancement.
+  `produce`'s arg-0 domain = `PART_IDS`.
+- **Parts stay in the silo.** `withdraw` is RAW-resources-only: part ids are
+  filtered from its abbrev domain AND the handler rejects a typed part id (no
+  cargo slot / sell path yet — P9 wires parts out). The storage display name
+  helper `storageItemName(itemId)` resolves parts before resources so a part in
+  storage never trips `getResource`'s throw.
+- **`storage`/`base` view** gained a production-line count and, once ≥1 line
+  exists, a clickable **Producible:** list (`StorageView.productionLines` +
+  `producible: {id,name,recipe}[]`, rendered in `renderStorage`); a `build
+  production_line` hint sits alongside the silo/excavator hints.
+- **For P9**: Ablative Shields / Antifreeze Tanks become production-line OUTPUTS
+  (consuming parts), and parts gain a finite, player-grown market supply +
+  on-market selling. Extend `parts.ts` / the upgrade recipes there; no schema
+  change needed.

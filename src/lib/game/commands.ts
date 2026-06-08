@@ -44,6 +44,7 @@ import {
   buyUnitCost,
   sellValue,
   canCraft,
+  canProduce,
   canLand,
   landingRequirement,
   rollHazardDamage,
@@ -64,6 +65,12 @@ import {
   getUpgrade,
   upgradeValue,
 } from "./upgrades";
+import {
+  PARTS,
+  PART_IDS,
+  isPartId,
+  getPart,
+} from "./parts";
 import {
   isMaterialId,
   getMaterial,
@@ -287,10 +294,16 @@ async function loadArgDomainContext(
     return { ...EMPTY_ARG_CONTEXT, depositCandidates: stacks.map((s) => s.resourceId) };
   }
   if (verb === "withdraw") {
-    // You can only withdraw items your base here is storing.
+    // You can only withdraw items your base here is storing — and only raw
+    // resources (ship PARTS stay siloed as production intermediates; P9 wires
+    // them out). Parts are filtered from the domain so abbrev/help never offer
+    // an item the handler would reject.
     const base = await world.getBaseInRegion(player.id, regionKey(regionAt(seed, locOf(player), player.region).coord));
     const stored = base ? await world.getBaseStorage(base.id) : [];
-    return { ...EMPTY_ARG_CONTEXT, withdrawCandidates: stored.map((s) => s.itemId) };
+    return {
+      ...EMPTY_ARG_CONTEXT,
+      withdrawCandidates: stored.map((s) => s.itemId).filter((id) => !isPartId(id)),
+    };
   }
   return EMPTY_ARG_CONTEXT;
 }
@@ -313,8 +326,10 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "deposit" && argIndex === 0) return ctx.depositCandidates;
       if (verb === "withdraw" && argIndex === 0) return ctx.withdrawCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
-      // (P8a silos/excavators). P8b grows it with production lines.
-      if (verb === "build" && argIndex === 0) return ["base", "silo", "excavator"];
+      // (P8a silos/excavators, P8b production lines).
+      if (verb === "build" && argIndex === 0) return ["base", "silo", "excavator", "production_line"];
+      // `produce`'s part domain: the ship parts a production line can make.
+      if (verb === "produce" && argIndex === 0) return [...PART_IDS];
       if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS, ...FOOD_IDS];
       if (verb === "buy" && argIndex === 0) {
         return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
@@ -435,6 +450,8 @@ async function dispatchResolved(
       return handleWithdraw(player, seed, args);
     case "collect":
       return handleCollect(player, seed);
+    case "produce":
+      return handleProduce(player, seed, args);
     case "sell":
       return handleSell(player, args);
     case "buy":
@@ -1488,10 +1505,12 @@ async function handleBuild(
   args: string[],
 ): Promise<RenderFrame> {
   const structure = args[0]?.toLowerCase();
-  if (!structure) return errorFrame("Usage: build <base|silo|excavator> [name]");
+  if (!structure) return errorFrame("Usage: build <base|silo|excavator|production_line> [name]");
   if (structure === "base") return handleBuildBase(player, seed, args);
   if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
-  return errorFrame(`Can't build "${structure}" — try \`base\`, \`silo\` or \`excavator\`.`);
+  return errorFrame(
+    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\` or \`production_line\`.`,
+  );
 }
 
 /**
@@ -1691,10 +1710,13 @@ async function handleBuildStructure(
   const buildings = await world.getBaseBuildings(base.id);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
+  const lines = buildings.filter((b) => b.kind === "production_line").length;
   const detail =
     kind === "silo"
       ? `Storage capacity is now ${baseCapacity(silos)} (${silos} silo${silos === 1 ? "" : "s"}).`
-      : `${excavators} excavator${excavators === 1 ? "" : "s"} now draining this region — \`collect\` to funnel ore in.`;
+      : kind === "excavator"
+        ? `${excavators} excavator${excavators === 1 ? "" : "s"} now draining this region — \`collect\` to funnel ore in.`
+        : `${lines} production line${lines === 1 ? "" : "s"} ready — \`produce <part>\` to manufacture from siloed minerals.`;
   return frame([
     line([
       text(`Built a ${kind} `, "success"),
@@ -1703,6 +1725,16 @@ async function handleBuildStructure(
     ]),
     line(text(detail, "muted")),
   ]);
+}
+
+/**
+ * Display name for an item in base storage. Storage holds both raw resources
+ * (deposited / collected) and manufactured ship parts (`produce`d), so a plain
+ * `getResource` would throw on a part id — resolve parts first, then resources.
+ */
+function storageItemName(itemId: string): string {
+  if (isPartId(itemId)) return getPart(itemId).name;
+  return getResource(itemId).name;
 }
 
 /** Resolve the base the player owns in their current region (or null). */
@@ -1735,6 +1767,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
+  const productionLines = buildings.filter((b) => b.kind === "production_line").length;
   const capacity = baseCapacity(silos);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   return renderStorage({
@@ -1742,9 +1775,21 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     location: describeRegionKey(base.rKey),
     silos,
     excavators,
+    productionLines,
     used,
     capacity,
-    items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: getResource(s.itemId).name })),
+    items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: storageItemName(s.itemId) })),
+    // What a production line here can manufacture (only surfaced when one exists).
+    producible:
+      productionLines > 0
+        ? PARTS.map((p) => ({
+            id: p.id,
+            name: p.name,
+            recipe: Object.entries(p.recipe)
+              .map(([rid, qty]) => `${qty} ${getResource(rid).name}`)
+              .join(" + "),
+          }))
+        : [],
   });
 }
 
@@ -1832,6 +1877,14 @@ async function handleWithdraw(
   if (!base) {
     return errorFrame(
       `No base in region ${player.region} of ${planet.name} to withdraw from. \`build base\` first.`,
+    );
+  }
+
+  // Ship parts are production intermediates — they stay in the silo (no cargo
+  // slot / sell path yet; P9 wires them out). Only raw resources are withdrawable.
+  if (isPartId(itemId)) {
+    return errorFrame(
+      `${getPart(itemId).name} is a ship part — it stays in the silo as a production intermediate.`,
     );
   }
 
@@ -1970,6 +2023,102 @@ async function handleCollect(player: Player, seed: string): Promise<RenderFrame>
     lines.push(line(text("Storage is now full — `build silo` for more, or `withdraw`.", "warning")));
   }
   return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// produce — manufacture ship parts from siloed raw minerals (P8b).
+// ---------------------------------------------------------------------------
+
+/**
+ * `produce <part> [qty]` — manufacture a ship part at the current region's base.
+ * Requires a base here with ≥1 production line; the part's raw-mineral recipe
+ * must be present in THIS base's silo storage. Consumes the inputs from base
+ * storage and banks the produced part(s) into the same storage, bounded by the
+ * remaining `baseCapacity`. Validation (line exists, inputs siloed, capacity)
+ * happens BEFORE any mutation, so a failed produce changes nothing. Either
+ * embark state is fine — it's your base (matches `deposit`/`withdraw`/`collect`).
+ *
+ * Production is INSTANT for now (no timer). A future enhancement could meter it
+ * over time like excavator drain (lastProducedAt + a per-ms rate).
+ */
+async function handleProduce(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const partId = args[0]?.toLowerCase();
+  if (!partId) return errorFrame("Usage: produce <part> [qty]  (see `storage`)");
+  if (!isPartId(partId)) {
+    return errorFrame(`Can't produce "${partId}". Try \`storage\` for the parts list.`);
+  }
+
+  const base = await baseHere(player, seed);
+  const planet = planetAt(seed, locOf(player));
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name}. \`build base\` first.`,
+    );
+  }
+
+  const [buildings, stored] = await Promise.all([
+    world.getBaseBuildings(base.id),
+    world.getBaseStorage(base.id),
+  ]);
+  const productionLines = buildings.filter((b) => b.kind === "production_line").length;
+  if (productionLines === 0) {
+    return errorFrame("No production line here — `build production_line` first.");
+  }
+
+  const part = getPart(partId);
+  const recipe = part.recipe;
+
+  const requested = args[1] === undefined ? 1 : toInt(args[1]);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: produce <part> [qty]  — qty must be a positive whole number.");
+  }
+
+  // Siloed amounts (parts also live here, but recipes only reference resources).
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+
+  // Inputs present? Surfaces every short line ("need 5 Titanium in the silo, have 2").
+  if (!canProduce(siloed, recipe, requested)) {
+    const short = Object.entries(recipe)
+      .filter(([rid, perUnit]) => (siloed[rid] ?? 0) < perUnit * requested)
+      .map(([rid, perUnit]) => `${perUnit * requested} ${getResource(rid).name} in the silo (have ${siloed[rid] ?? 0})`);
+    return errorFrame(`Can't produce ${requested} ${part.name} — need ${short.join(", ")}.`);
+  }
+
+  // Capacity: consuming inputs frees space, banking parts uses it. Validate the
+  // net result fits before mutating (defensive — inputs ≥ outputs in practice).
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+  const capacity = baseCapacity(silos);
+  const used = stored.reduce((sum, s) => sum + s.qty, 0);
+  const inputsConsumed = Object.values(recipe).reduce((sum, q) => sum + q, 0) * requested;
+  const usedAfter = used - inputsConsumed + requested;
+  if (usedAfter > capacity) {
+    return errorFrame(
+      `Storage would overflow (${usedAfter}/${capacity}). \`build silo\` for more room.`,
+    );
+  }
+
+  // Consume inputs, then bank the parts — all via the atomic storage RPC.
+  for (const [rid, perUnit] of Object.entries(recipe)) {
+    await world.addBaseStorage(base.id, rid, -(perUnit * requested));
+  }
+  const nowStored = await world.addBaseStorage(base.id, partId, requested);
+
+  const consumed = Object.entries(recipe)
+    .map(([rid, perUnit]) => `${perUnit * requested} ${getResource(rid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Manufactured ${requested} ${part.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`Storage ${usedAfter}/${capacity}.`, "muted"),
+    ]),
+    line(text(`  ${part.name} in store: ${nowStored} (worth ${part.value} cr each).`, "accent")),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
