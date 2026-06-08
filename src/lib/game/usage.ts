@@ -109,8 +109,8 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "planet", hint: "a planet # in this system; see `scan`" }],
   },
   jump: {
-    desc: "jump to another region of this planet",
-    slots: [{ name: "region", hint: "a region # on this planet; see `regions`" }],
+    desc: "jump to another region of this planet (or `O` for its orbital outpost)",
+    slots: [{ name: "region", hint: "a region # on this planet, or `O` for the orbital outpost; see `regions`" }],
   },
   regions: {
     desc: "list regions of this planet to jump to",

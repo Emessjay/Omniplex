@@ -25,6 +25,8 @@ import {
   parseLocationKey,
   warpDistance,
   getResource,
+  hasSettlement,
+  hasOutpost,
   RESOURCES,
   type SystemCoord,
   type PlanetCoord,
@@ -138,6 +140,27 @@ function toInt(token: string | undefined): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
+/**
+ * Sentinel `player.region` value meaning "docked at the planet's orbital
+ * outpost" rather than standing in a surface region (P11). Surface regions are
+ * `0 .. regionCount-1`; `-1` is the orbital station, which is NOT a `regionAt`
+ * region (it has no biome/deposits). Every place that derives a surface region
+ * from `player.region` must treat this specially — there is no `regionAt(-1)`.
+ */
+const OUTPOST_REGION = -1;
+
+/** True when the player is docked at the orbital outpost (not on a surface region). */
+function atOutpost(player: Player): boolean {
+  return player.region === OUTPOST_REGION;
+}
+
+/** The clear error for a surface-only action attempted at the orbital outpost. */
+function outpostSurfaceError(): RenderFrame {
+  return errorFrame(
+    "You're docked at the orbital outpost — `jump <n>` to a surface region first.",
+  );
+}
+
 function locOf(player: Player): PlanetCoord {
   return {
     galaxy: player.galaxy,
@@ -205,6 +228,7 @@ async function regionScanFrame(
     planet,
     system,
     region,
+    settlement: hasSettlement(seed, region.coord),
     depletionMap,
     justDiscovered,
     requiredUpgrade,
@@ -247,6 +271,8 @@ function encounterView(player: Player): EncounterView | null {
  * the candidate set for `mine`'s argument.
  */
 async function minableHere(player: Player, seed: string): Promise<string[]> {
+  // At the orbital outpost there is no surface region to mine — nothing minable.
+  if (atOutpost(player)) return [];
   const coord = locOf(player);
   const region = regionAt(seed, coord, player.region);
   const depletionMap = await world.getEffectiveDepletionMap(regionKey(region.coord));
@@ -329,7 +355,8 @@ async function loadArgDomainContext(
     // You can only withdraw items your base here is storing — and only raw
     // resources (ship PARTS stay siloed as production intermediates; P9 wires
     // them out). Parts are filtered from the domain so abbrev/help never offer
-    // an item the handler would reject.
+    // an item the handler would reject. No base/storage at the orbital outpost.
+    if (atOutpost(player)) return { ...EMPTY_ARG_CONTEXT, withdrawCandidates: [] };
     const base = await world.getBaseInRegion(player.id, regionKey(regionAt(seed, locOf(player), player.region).coord));
     const stored = base ? await world.getBaseStorage(base.id) : [];
     return {
@@ -720,7 +747,45 @@ function tradeAnnotation(
 // ---------------------------------------------------------------------------
 
 async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostScanFrame(player, seed);
   return regionScanFrame(player, seed, locOf(player), player.region);
+}
+
+/**
+ * Scan frame for the orbital outpost (`player.region === -1`): the station in
+ * orbit of the current planet. It has no biome / deposits / surface — it's a
+ * trade hub (actual trade arrives in P12). Offers `jump <n>` (or `regions`) to
+ * drop down to a surface region.
+ */
+function outpostScanFrame(player: Player, seed: string): RenderFrame {
+  const planet = planetAt(seed, locOf(player));
+  return frame([
+    line([
+      text(`${planet.name} — Orbital Outpost`, "heading"),
+      text("  (in orbit)", "muted"),
+    ]),
+    line([
+      text("HP ", "muted"),
+      text(`${player.health}/${MAX_HEALTH}`, player.health <= MAX_HEALTH * 0.3 ? "danger" : "default"),
+      text("   ", "muted"),
+      text("docked at station", "accent"),
+    ]),
+    line([
+      text("fuel ", "muted"),
+      text(`${player.fuel}`, "default"),
+      text("   warp fuel ", "muted"),
+      text(`${player.warpFuel}`, "default"),
+    ]),
+    line(text("A station hangs in orbit of the planet — a trade hub.", "default")),
+    line(text("No surface here: no biome, no deposits, no mining.", "muted")),
+    line([
+      text("Trade comes online in a later update. ", "muted"),
+      action("regions", "regions", { style: "link", title: "list the planet's surface regions" }),
+      text(" or ", "muted"),
+      text("jump <n>", "default"),
+      text(" to drop to a surface region.", "muted"),
+    ]),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -740,11 +805,24 @@ async function handleJump(
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
-  const n = toInt(args[0]);
-  if (n === null) return errorFrame("Usage: jump <region>  (see `regions`)");
-
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
+
+  // `jump O` (or `o`) docks at the planet's orbital outpost — only when it has
+  // one. The outpost is the `region = -1` sentinel (not a surface region).
+  const raw = args[0]?.trim().toLowerCase();
+  if (raw === "o") {
+    if (!hasOutpost(seed, coord)) {
+      return errorFrame(`${planet.name} has no orbital outpost. \`jump <n>\` to a surface region.`);
+    }
+    if (player.region !== OUTPOST_REGION) await world.setRegion(player.id, OUTPOST_REGION);
+    const scan = outpostScanFrame(player, seed);
+    return frame([line(text(`Docked at the ${planet.name} orbital outpost.`, "success")), ...scan.lines]);
+  }
+
+  const n = toInt(args[0]);
+  if (n === null) return errorFrame("Usage: jump <region|O>  (see `regions`)");
+
   if (n < 0 || n >= planet.regionCount) {
     return errorFrame(
       `No region ${n} on ${planet.name} — it has ${planet.regionCount} (0–${planet.regionCount - 1}). Try \`regions\`.`,
@@ -778,7 +856,12 @@ function handleRegions(player: Player, seed: string, args: string[]): RenderFram
   const entries: RegionListEntry[] = [];
   for (let i = start; i < end; i++) {
     const region = regionAt(seed, coord, i);
-    entries.push({ index: i, biome: region.biome, current: i === player.region });
+    entries.push({
+      index: i,
+      biome: region.biome,
+      current: i === player.region,
+      settlement: hasSettlement(seed, { ...coord, region: i }),
+    });
   }
 
   return renderRegions({
@@ -787,6 +870,10 @@ function handleRegions(player: Player, seed: string, args: string[]): RenderFram
     page,
     pageCount,
     entries,
+    // An orbital outpost is shown as a separate `O` entry (only on page 1, since
+    // it isn't a numbered surface region). Marked current when docked there.
+    hasOutpost: hasOutpost(seed, coord),
+    atOutpost: atOutpost(player),
   });
 }
 
@@ -1075,6 +1162,12 @@ async function handleDisembark(player: Player, seed: string): Promise<RenderFram
   if (!player.embarked) {
     return frame([line(text("You're already on foot on the surface.", "muted"))]);
   }
+  // There is no surface to step onto while docked in orbit.
+  if (atOutpost(player)) {
+    return errorFrame(
+      "You're docked at the orbital outpost — `jump <n>` down to a surface region before you disembark.",
+    );
+  }
   await world.setEmbarked(player.id, false);
 
   const coord = locOf(player);
@@ -1123,6 +1216,13 @@ async function handleMine(
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
+  // No surface to work while docked at the orbital outpost.
+  if (atOutpost(player)) {
+    return errorFrame(
+      "You're docked at the orbital outpost — `jump <n>` to a surface region to mine.",
+    );
+  }
+
   const resourceId = args[0]?.toLowerCase();
   if (!resourceId) return errorFrame("Usage: mine <resource>  (see `scan`)");
 
@@ -1248,6 +1348,7 @@ async function runDeath(player: Player, causeText: string): Promise<RenderLine[]
  * hostile (freezing/boiling) surface needs the matching upgrade.
  */
 async function handleExplore(player: Player, seed: string): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
 
@@ -1370,6 +1471,7 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
  * harvesting the most-recent / a fresh biome plant); gentle — no hazard roll.
  */
 async function handleHarvest(player: Player, seed: string): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
   const coord = locOf(player);
   const region = regionAt(seed, coord, player.region);
   const flora = pickForBiome(FLORA, region.biome, Math.random());
@@ -1751,6 +1853,7 @@ async function handleBuild(
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
   const structure = args[0]?.toLowerCase();
   if (!structure) return errorFrame("Usage: build <base|silo|excavator|production_line> [name]");
   if (structure === "base") return handleBuildBase(player, seed, args);
@@ -1989,6 +2092,8 @@ async function baseHere(
   player: Player,
   seed: string,
 ): Promise<{ id: string; name: string | null; rKey: string } | null> {
+  // No base/region at the orbital outpost — there is no surface here.
+  if (atOutpost(player)) return null;
   const region = regionAt(seed, locOf(player), player.region);
   const rKey = regionKey(region.coord);
   const base = await world.getBaseInRegion(player.id, rKey);
@@ -2001,6 +2106,11 @@ async function baseHere(
  * embark state is fine — it's your base.
  */
 async function handleStorage(player: Player, seed: string): Promise<RenderFrame> {
+  if (atOutpost(player)) {
+    return errorFrame(
+      "You're docked at the orbital outpost — there's no base here. `jump <n>` to a surface region.",
+    );
+  }
   const base = await baseHere(player, seed);
   const planet = planetAt(seed, locOf(player));
   if (!base) {
@@ -2192,6 +2302,7 @@ async function handleWithdraw(
  * Disembarked-only (a surface/base action, gated in `dispatchResolved`).
  */
 async function handleCollect(player: Player, seed: string): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
   const base = await baseHere(player, seed);

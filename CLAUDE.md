@@ -1129,3 +1129,65 @@ gotchas) accrete here as workers surface things worth persisting. See
   extremity, no-ocean-on-extreme, region band + offset ordering). The existing
   universe suites (universe-gen, planet-regions, biome-minerals, addressing)
   needed NO migration — the new distributions preserved their thresholds.
+
+### Load-bearing decisions from `settlements`
+
+- **The universe now has two kinds of inhabited place (P11): SETTLEMENTS on the
+  surface and ORBITAL OUTPOSTS in orbit.** All gen is PURE & deterministic in
+  `src/lib/universe/gen.ts` (exported via `index.ts`) — NO migration, NO schema
+  change. Trade at these places is **P12**; this phase is generation + region-list
+  display + navigation only (no buy/sell changes).
+- **`HABITABLE_BIOMES`** (exported, `["ocean", "jungle", "desert"]`): the liveable
+  biomes a settlement can sit in. Deliberately EXCLUDES the harsh biomes
+  (`volcanic`/`toxic`/`irradiated`/`gas`) and lifeless `barren`.
+- **`hasSettlement(seed, region: RegionCoord): boolean`** — true ONLY when all
+  hold: (a) the PLANET is temperate (`planet.temperature` strictly inside
+  `FREEZING_C`(0)…`BOILING_C`(100) — gen keeps its own local copies of those
+  band lines, mirroring `rules.ts`), (b) the REGION's biome ∈ `HABITABLE_BIOMES`,
+  and (c) a roll `rng() < systemDensity × planetDensity` passes. The two density
+  factors (`systemSettlementDensity` / `planetSettlementDensity`) are independent
+  HIGH-variance uniforms in [0,1] keyed by the system / planet coord, so
+  settlement frequency varies heavily across BOTH tiers (some systems/planets
+  bustling, others empty). The settlement RNG stream (`"settlement"`) is DISTINCT
+  from `regionAt`'s, so reading the flag never perturbs region generation.
+- **`systemOutpostPlanets(seed, system: SystemCoord): number[]`** — the planet
+  indices in a system that host an orbital outpost: **~2 per system** (`randInt(1,3)`
+  capped at the system's planet count), distinct, sorted, picked by a partial
+  Fisher–Yates over the planet indices. Mean ≈ 1.85 across the sampled grid (the
+  cap on tiny systems pulls it just under 2). **`hasOutpost(seed, planet:
+  PlanetCoord): boolean`** = membership. Outposts are ORBITAL — no biome /
+  deposits / `regionAt` row; gen only decides WHICH planet indices have one.
+- **Outpost = the `region = -1` sentinel** on `players.region` (a plain int —
+  NO migration). Surface regions are `0 .. regionCount-1`; `-1` means "docked at
+  the orbital outpost". The game layer (`commands.ts`) centralizes this:
+  `OUTPOST_REGION = -1`, `atOutpost(player)`, and `outpostSurfaceError()`. **Every
+  place that derives a surface region from `player.region` guards `-1`** so there
+  is NEVER a `regionAt(-1)` / phantom region: `minableHere` + the `withdraw`
+  arg-domain return `[]`; `baseHere` returns null; `handleScan` branches to
+  `outpostScanFrame`; `mine`/`explore`/`harvest`/`disembark`/`build`/`collect`/
+  `storage` early-return the outpost error. (The disembarked base actions are
+  also gated by the P10 applicability model, since you stay embarked at the
+  outpost — `disembark` is refused there — but the explicit guards keep gen
+  bulletproof regardless of embark state.)
+- **Navigation**: `jump O` (or `o`) docks at the outpost (sets `region = -1`),
+  allowed ONLY when `hasOutpost` (else a clear error); `jump <n>` (n ≥ 0) is the
+  unchanged surface path (validates `0 ≤ n < regionCount`). `jump`'s numeric arg
+  stays OPAQUE — the handler resolves the `O` literal itself (no new verb; help
+  parity + applicability unchanged, `jump` is still `ANYTIME_OUT_OF_COMBAT`).
+  `warp`/`land`/`hyperwarp` reset `region` to 0 on arrival as before, so you never
+  arrive stranded at `-1`.
+- **Display** (`render.ts`): the `regions` list marks settlement regions with a
+  `⌂` tag + "— settlement" note in the `success` style (`RegionListEntry.settlement`)
+  and shows a separate **`O` → `jump O`** entry at the top of page 1 when the
+  planet `hasOutpost` (`RegionsView.hasOutpost`/`atOutpost`). `scan` at a
+  settlement region adds "⌂ There is a settlement here." (`ScanView.settlement`);
+  `scan` at the outpost (`outpostScanFrame`) describes the orbital station (a
+  trade hub, no biome/deposits) and offers `regions`/`jump <n>` back to the
+  surface.
+- **For P12**: gate buy/sell to being at a settlement region OR the outpost, and
+  make markets per-system. The hooks are `hasSettlement(seed, region.coord)` and
+  `atOutpost(player)` (both already computed in the scan path).
+- **Seeded contract**: `src/lib/universe/settlements.test.ts` (temperate+habitable
+  gating, per-system/per-planet frequency variance, ~2 outposts/system,
+  determinism). Existing suites needed NO change — `region = -1` is a new value
+  on an existing plain-int column.

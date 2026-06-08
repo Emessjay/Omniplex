@@ -795,3 +795,146 @@ export function regionAt(
     deposits,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Settlements & orbital outposts (P11) — the inhabited places of the universe.
+//
+// Two kinds of populated location, both PURE & deterministic (seed + coords ⇒
+// identical output, nothing stored):
+//
+//  1. SETTLEMENTS sit on the SURFACE, in a single region. A region only bears a
+//     settlement when its PLANET is temperate (mean temperature strictly inside
+//     the 0–100°C band), its REGION's biome is one of `HABITABLE_BIOMES` (the
+//     liveable, lusher ones), AND a density-weighted roll passes. The roll's
+//     probability is the PRODUCT of a per-system and a per-planet density factor,
+//     each drawn with HIGH variance — so some systems/planets are bustling and
+//     others empty, and settlement frequency varies heavily across BOTH tiers.
+//
+//  2. ORBITAL OUTPOSTS are stations in orbit, NOT surface regions (no biome /
+//     deposits / `regionAt` row). About two planets per system carry one. They
+//     are reached by docking (the `region = -1` sentinel in the game layer);
+//     gen only decides WHICH planet indices host one.
+//
+// Trade at these places is P12 — this phase is generation + navigation only.
+// ---------------------------------------------------------------------------
+
+/**
+ * The biomes a settlement can occupy: the liveable, lusher ones. Deliberately
+ * excludes the harsh biomes (`volcanic`/`toxic`/`irradiated`/`gas`) and the
+ * lifeless `barren`. Exported so the game layer and tests can gate on it.
+ */
+export const HABITABLE_BIOMES: readonly Biome[] = [
+  "ocean",
+  "jungle",
+  "desert",
+] as const;
+
+const HABITABLE_SET = new Set<Biome>(HABITABLE_BIOMES);
+
+/**
+ * A settlement-density factor in [0, 1] drawn with HIGH variance: the raw
+ * uniform draw is the factor directly, so factors span the full range (near-0
+ * "empty" through near-1 "bustling") with a flat distribution. Used at both the
+ * system and planet tiers; multiplying two such factors gives the per-region
+ * settlement probability, so a region is dense only when BOTH its system and
+ * its planet are settlement-friendly.
+ */
+function settlementDensityRoll(rng: Rng): number {
+  return rng();
+}
+
+/** Per-SYSTEM settlement-density factor in [0, 1] (its own RNG stream). */
+function systemSettlementDensity(seed: string, coord: SystemCoord): number {
+  return settlementDensityRoll(
+    makeRng(seed, "settlement-system", coord.galaxy, coord.arm, coord.cluster, coord.system),
+  );
+}
+
+/** Per-PLANET settlement-density factor in [0, 1] (its own RNG stream). */
+function planetSettlementDensity(seed: string, coord: PlanetCoord): number {
+  return settlementDensityRoll(
+    makeRng(
+      seed,
+      "settlement-planet",
+      coord.galaxy,
+      coord.arm,
+      coord.cluster,
+      coord.system,
+      coord.planet,
+    ),
+  );
+}
+
+/**
+ * Whether the region at `coord` bears a settlement. True only when ALL hold:
+ *  - the PLANET is temperate (mean temperature strictly within `FREEZING_C` …
+ *    `BOILING_C`) — no settlements on boiling or freezing worlds;
+ *  - the REGION's biome ∈ `HABITABLE_BIOMES`;
+ *  - a roll against `systemDensity × planetDensity` passes (the two density
+ *    factors carry the heavy per-system × per-planet frequency variance).
+ * Pure & deterministic. The region's own RNG stream (`"settlement"`) is distinct
+ * from the one `regionAt` uses, so reading the settlement flag never perturbs
+ * region generation.
+ */
+export function hasSettlement(seed: string, coord: RegionCoord): boolean {
+  const planet = planetAt(seed, coord);
+  if (!(planet.temperature > FREEZING_C && planet.temperature < BOILING_C)) {
+    return false;
+  }
+  const region = regionAt(seed, coord, coord.region);
+  if (!HABITABLE_SET.has(region.biome)) return false;
+
+  const probability =
+    systemSettlementDensity(seed, coord) * planetSettlementDensity(seed, coord);
+  const rng = makeRng(
+    seed,
+    "settlement",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+    coord.region,
+  );
+  return rng() < probability;
+}
+
+/**
+ * The planet indices in `coord`'s system that host an orbital outpost — about
+ * two per system (1–3, capped at the system's planet count), each a valid index
+ * in `[0, planetCount)`, returned sorted ascending. Pure & deterministic.
+ */
+export function systemOutpostPlanets(seed: string, coord: SystemCoord): number[] {
+  const planetCount = systemAt(seed, coord).planetCount;
+  const rng = makeRng(
+    seed,
+    "outposts",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+  );
+  // ~2 per system (1–3), never more outposts than the system has planets.
+  const target = Math.min(planetCount, randInt(rng, 1, 3));
+
+  // Partial Fisher–Yates: shuffle the first `target` slots to pick that many
+  // DISTINCT planet indices deterministically.
+  const indices = Array.from({ length: planetCount }, (_, i) => i);
+  for (let i = 0; i < target; i++) {
+    const j = i + Math.floor(rng() * (planetCount - i));
+    const tmp = indices[i]!;
+    indices[i] = indices[j]!;
+    indices[j] = tmp;
+  }
+  return indices.slice(0, target).sort((a, b) => a - b);
+}
+
+/** Whether the planet at `coord` has an orbital outpost in its system. */
+export function hasOutpost(seed: string, coord: PlanetCoord): boolean {
+  return systemOutpostPlanets(seed, {
+    galaxy: coord.galaxy,
+    arm: coord.arm,
+    cluster: coord.cluster,
+    system: coord.system,
+  }).includes(coord.planet);
+}

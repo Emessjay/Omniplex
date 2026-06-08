@@ -196,6 +196,8 @@ export interface ScanView {
   system: StarSystem;
   /** The region the player is currently standing in (its biome + deposits). */
   region: Region;
+  /** True when this region bears a settlement (P11) — surfaced as a note. */
+  settlement?: boolean;
   /** Accumulated depletion per resource id in the CURRENT region. */
   depletionMap: Record<string, number>;
   /** True only on the scan that first recorded the discovery. */
@@ -326,6 +328,10 @@ export function renderScan(view: ScanView): RenderFrame {
       text(region.biome, "accent"),
     ]),
   );
+  // Settlement presence (P11): an inhabited region. Trade wiring is P12.
+  if (view.settlement) {
+    lines.push(line(text("⌂ There is a settlement here.", "success")));
+  }
   // Per-region climate: this region's own temperature + hazard (the biome nudges
   // them off the planet mean shown below, never crossing the 0/100 band). This is
   // the hazard that bites you on foot, so a volcanic region reads hotter + more
@@ -488,6 +494,8 @@ export interface RegionListEntry {
   biome: Biome;
   /** True for the region the player is currently standing in. */
   current: boolean;
+  /** True when this region bears a settlement (P11) — marked distinctly. */
+  settlement?: boolean;
 }
 
 export interface RegionsView {
@@ -500,6 +508,10 @@ export interface RegionsView {
   pageCount: number;
   /** The window of regions on this page. */
   entries: RegionListEntry[];
+  /** True when the planet has an orbital outpost — shown as a separate `O` entry. */
+  hasOutpost?: boolean;
+  /** True when the player is currently docked at the outpost (marks the `O` entry). */
+  atOutpost?: boolean;
 }
 
 /**
@@ -517,21 +529,43 @@ export function renderRegions(view: RegionsView): RenderFrame {
     line(text(`page ${view.page}/${view.pageCount}`, "muted")),
   ];
 
-  for (const e of view.entries) {
-    if (e.current) {
+  // Orbital outpost: a separate `O` entry (not a numbered surface region),
+  // shown once at the top of page 1. `jump O` docks there.
+  if (view.hasOutpost && view.page === 1) {
+    if (view.atOutpost) {
       lines.push(
-        line([text(`  ${e.index}: `, "muted"), text(`${e.biome} (here)`, "accent")]),
+        line([text("  O: ", "muted"), text("orbital outpost (docked)", "accent")]),
       );
     } else {
       lines.push(
         line([
-          text(`  ${e.index}: `, "muted"),
-          action(e.biome, `jump ${e.index}`, {
+          text("  O: ", "muted"),
+          action("orbital outpost", "jump O", {
             style: "link",
-            title: `jump to region ${e.index}`,
+            title: "dock at the orbital outpost",
           }),
         ]),
       );
+    }
+  }
+
+  for (const e of view.entries) {
+    // Settlement-bearing regions are marked with a ⌂ tag + "settlement" note in a
+    // distinct style, so inhabited regions stand out in the list.
+    if (e.current) {
+      const label = e.settlement ? `⌂ ${e.biome} (here) — settlement` : `${e.biome} (here)`;
+      lines.push(line([text(`  ${e.index}: `, "muted"), text(label, "accent")]));
+    } else {
+      const spans: RenderSpan[] = [text(`  ${e.index}: `, "muted")];
+      if (e.settlement) spans.push(text("⌂ ", "success"));
+      spans.push(
+        action(e.biome, `jump ${e.index}`, {
+          style: "link",
+          title: `jump to region ${e.index}`,
+        }),
+      );
+      if (e.settlement) spans.push(text(" — settlement", "success"));
+      lines.push(line(spans));
     }
   }
 
