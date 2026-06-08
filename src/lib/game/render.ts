@@ -200,6 +200,18 @@ export interface ScanView {
   embarked: boolean;
   /** Active combat encounter to surface (with `attack`/`flee` options), or null. */
   encounter?: EncounterView | null;
+  /** Bases present in this region (shared-world presence); yours are marked. */
+  bases?: ScanBase[];
+}
+
+/** A base present in the scanned region, for the shared-world presence readout. */
+export interface ScanBase {
+  /** Owner's display handle (shown for other players' bases). */
+  handle: string;
+  /** The base's name, or null if unnamed. */
+  name: string | null;
+  /** True when this base belongs to the scanning player. */
+  mine: boolean;
 }
 
 /** The creature the player is currently facing, for the scan readout. */
@@ -338,6 +350,23 @@ export function renderScan(view: ScanView): RenderFrame {
         );
       }
       lines.push(line(spans));
+    }
+  }
+
+  // Bases present in this region (shared-world presence): yours are marked,
+  // others are shown by their owner's handle, proving cross-player visibility.
+  const bases = view.bases ?? [];
+  if (bases.length > 0) {
+    lines.push(line(text("Bases here:", "heading")));
+    for (const b of bases) {
+      const label = b.name && b.name.length > 0 ? b.name : "(unnamed base)";
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${label} `, b.mine ? "accent" : "default"),
+          text(b.mine ? "(yours)" : `— ${b.handle}`, "muted"),
+        ]),
+      );
     }
   }
 
@@ -636,6 +665,39 @@ export function renderUpgrades(view: UpgradesView): RenderFrame {
         text("  • ", "muted"),
         text(`${up.name} ×${o.qty}  `, "default"),
         text(`✓ ${capabilityOf(o.upgradeId)}`, "success"),
+      ]),
+    );
+  }
+  return frame(lines);
+}
+
+export interface BasesView {
+  /** The player's own bases: a friendly location label + optional name. */
+  bases: { name: string | null; location: string; regionKey: string }[];
+}
+
+/**
+ * The `bases` listing — every base the player owns, with its location and name.
+ * When they own none, a hint to `build base` while on foot.
+ */
+export function renderBases(view: BasesView): RenderFrame {
+  const lines: RenderLine[] = [line(text("Your bases", "heading"))];
+  if (view.bases.length === 0) {
+    lines.push(
+      line([
+        text("None yet. ", "muted"),
+        text("`disembark` then `build base [name]` to establish one.", "muted"),
+      ]),
+    );
+    return frame(lines);
+  }
+  for (const b of view.bases) {
+    const label = b.name && b.name.length > 0 ? b.name : "(unnamed base)";
+    lines.push(
+      line([
+        text("  • ", "muted"),
+        text(`${label}  `, "accent"),
+        text(b.location, "muted"),
       ]),
     );
   }

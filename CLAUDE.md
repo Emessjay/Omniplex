@@ -651,3 +651,60 @@ gotchas) accrete here as workers surface things worth persisting. See
   + craft-extension + `eat`; `player_materials` already stores it.
 - **For later phases**: cooking stations / buildings are production-era (P7–P9);
   this phase is catalog + `craft` branch + `eat` only.
+
+### Load-bearing decisions from `bases-minerals`
+
+- **Bases open the production track (P7): a base is a player's claim on a
+  region, and OTHER players see it.** New `public.bases` table (migration
+  `20260608100000_bases-minerals.sql`, forward-only/idempotent): `id uuid pk`,
+  `owner_id → players(id) on delete cascade`, `region_key text` (the 6-seg
+  `regionKey`; free-form coord, no FK — universe is procedural), `name text`,
+  `created_at`, **unique (owner_id, region_key)** (one base per player per
+  region; many players may base in the same region), index on `region_key`.
+  RLS: **public read** (shared-world presence, like `world_deltas`/
+  `discoveries`); **no** anon/authenticated write (service-role writes only).
+  Buildings INSIDE bases (excavators/silos/production lines) are **P8**, which
+  extends `build`'s structure domain beyond `base`.
+- **`world.ts` base adapters**: `createBase(ownerId, regionKey, name?)` → `true`
+  if inserted, `false` on the `(owner,region)` unique violation (`23505`; other
+  errors throw); `basesInRegion(regionKey)` → `RegionBase[]` (`{ownerId, handle,
+  name}`, handle resolved from the public `leaderboard` view, public-safe);
+  `basesOwnedBy(playerId)` → `OwnedBase[]` (`{regionKey, name}`).
+- **Base cost is a pure, tunable catalog** in `src/lib/game/bases.ts` (mirrors
+  `upgrades.ts`/`materials.ts`): `BASE_BUILD_COST` is a `Record<string,number>`
+  mixing the literal **`credits`** key with mineral ids (`{credits:500,
+  titanium:2, iron:5}`); `BASE_BUILD_CREDITS`/`BASE_BUILD_MINERALS` split it;
+  `canAffordBase(have, cost=BASE_BUILD_COST)` is true iff every cost line is met.
+  Seeded contract: `base-cost.test.ts`.
+- **`build base [name]`** (`handleBuild`, **DISEMBARKED_ONLY**, gated like
+  `mine`): validates no-duplicate (via `basesOwnedBy`) + affordability (live
+  credits + cargo) BEFORE mutating, consumes the cost atomically (minerals via
+  `removeInventory`, then `addPlayerCredits(-credits)`), then `createBase`. A
+  lost create race **refunds** the cost so nothing is consumed on failure.
+  `build`'s arg-0 domain is just **`["base"]`** today (P8 grows it); the name is
+  an opaque, case-preserved tail (`args.slice(1).join(" ")`). `build`+`bases`
+  registered in `VERBS`+`USAGE` (help parity locked).
+- **`bases`** (`handleBases`) lists your bases via `renderBases`
+  (`describeRegionKey` parses the 6-seg key into a friendly coord label).
+  **`scan`** shows bases in the current region (`ScanView.bases: ScanBase[]` =
+  `{handle, name, mine}`; yours marked `(yours)`, others by `— <handle>`),
+  fetched in `regionScanFrame` via `basesInRegion` — proving cross-player
+  visibility.
+- **More / biome-specific minerals.** `Resource` gained an optional
+  **`biomes?: readonly Biome[]`** (type-only import from `types.ts` to avoid a
+  runtime cycle): omitted/empty → GENERAL (anywhere, as the original 7);
+  non-empty → BIOME-SPECIFIC (only regions of those biomes). New minerals:
+  general `cobalt`; biome-specific `pyrite`(volcanic), `verdite`(jungle),
+  `aquamarine`(ocean), `radium_salt`(irradiated/toxic), `prismatic_gem`
+  (crystalline). Catalog (`resources.ts`) MUST match the DB seed in the
+  migration (`insert ... on conflict do nothing` for both `resources` and the
+  `global` `markets` price = `base_value`).
+- **Biome-aware deposit gen** (still pure & deterministic): `depositsFor(rng,
+  hazard, biome)` draws its candidate pool from **`mineralsForBiome(biome)`**
+  (general + that biome's specifics — exported from `universe/index.ts`), so a
+  region can NEVER yield a mineral specific to a different biome; the
+  hazard→rarity (`rarityWeight`) + rarity→abundance couplings still apply over
+  the filtered pool. `regionAt` rolls the biome BEFORE deposits so the pool is a
+  deterministic function of the region coord. Seeded contract:
+  `biome-minerals.test.ts` (the old fixed-catalog-size assertion in
+  `universe-gen.test.ts` was relaxed to `>= 7`, preserving coverage).

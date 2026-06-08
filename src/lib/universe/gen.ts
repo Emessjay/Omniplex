@@ -37,7 +37,7 @@ import {
   type StarSystem,
   type SystemCoord,
 } from "./types";
-import { RESOURCES } from "./resources";
+import { mineralsForBiome } from "./resources";
 import {
   makeRng,
   pick,
@@ -313,16 +313,21 @@ function rarityWeight(rarity: number, hazard: number): number {
 }
 
 /**
- * Draw the deposits for a planet. Most planets get 1–3 deposits; a minority
- * are barren. Each slot picks a distinct resource weighted by
- * `rarityWeight(rarity, hazard)`, so the resource mix shifts with hazard.
+ * Draw the deposits for a region of the given `biome`. Most regions get 1–3
+ * deposits; a minority are barren. The candidate pool is biome-aware —
+ * `mineralsForBiome(biome)` = every general mineral plus the biome-specific ones
+ * for THIS biome, so a deposit can never be a mineral specific to a different
+ * biome. Each slot picks a distinct resource from that pool weighted by
+ * `rarityWeight(rarity, hazard)`, so the savage→rare coupling still applies over
+ * the filtered pool. Determinism is preserved (the biome is rolled before this,
+ * so the pool is a deterministic function of the region coord).
  */
-function depositsFor(rng: Rng, hazard: number): ResourceDeposit[] {
-  // 0:barren  1  2  3  — most planets carry at least one deposit (>0.5).
+function depositsFor(rng: Rng, hazard: number, biome: Biome): ResourceDeposit[] {
+  // 0:barren  1  2  3  — most regions carry at least one deposit (>0.5).
   const slots = [1, 1, 2, 2, 2, 3, 3, 0][randInt(rng, 0, 7)]!;
   if (slots === 0) return [];
 
-  const available = RESOURCES.slice();
+  const available = mineralsForBiome(biome);
   const deposits: ResourceDeposit[] = [];
   for (let i = 0; i < slots && available.length > 0; i++) {
     const weights = available.map((r) => rarityWeight(r.rarity, hazard));
@@ -518,9 +523,10 @@ export function regionAt(
     regionIndex,
   );
 
-  // Biome is always a member of the planet's palette (AC#2).
+  // Biome is always a member of the planet's palette (AC#2). It's rolled before
+  // deposits so the biome-aware candidate pool stays deterministic.
   const biome = pick(rng, planet.biomePalette);
-  const deposits = depositsFor(rng, planet.hazard).map((d) => ({
+  const deposits = depositsFor(rng, planet.hazard, biome).map((d) => ({
     resourceId: d.resourceId,
     abundance: Number(d.abundance.toFixed(4)),
   }));

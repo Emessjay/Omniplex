@@ -22,6 +22,7 @@ import {
   systemKey,
   planetKey,
   regionKey,
+  parseLocationKey,
   warpDistance,
   getResource,
   RESOURCES,
@@ -78,6 +79,12 @@ import {
   pickForBiome,
 } from "./wildlife";
 import {
+  BASE_BUILD_COST,
+  BASE_BUILD_CREDITS,
+  BASE_BUILD_MINERALS,
+  canAffordBase,
+} from "./bases";
+import {
   renderHelp,
   renderCommandHelp,
   renderScan,
@@ -85,6 +92,7 @@ import {
   renderMap,
   renderInventory,
   renderUpgrades,
+  renderBases,
   renderWho,
   errorFrame,
   type MapNeighbor,
@@ -92,6 +100,7 @@ import {
   type CommandHelpSlotView,
   type CommandHelpGroup,
   type EncounterView,
+  type ScanBase,
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import * as world from "./world";
@@ -140,10 +149,12 @@ async function regionScanFrame(
   const planet = planetAt(seed, coord);
   const system = systemAt(seed, coord);
   const region = regionAt(seed, coord, regionIndex);
-  const [depletionMap, justDiscovered, owned] = await Promise.all([
-    world.getEffectiveDepletionMap(regionKey(region.coord)),
+  const rKey = regionKey(region.coord);
+  const [depletionMap, justDiscovered, owned, regionBases] = await Promise.all([
+    world.getEffectiveDepletionMap(rKey),
     world.recordDiscovery(planetKey(coord), player.id),
     world.getOwnedUpgradeIds(player.id),
+    world.basesInRegion(rKey),
   ]);
   const requiredUpgrade = landingRequirement(planet.temperature);
   return renderScan({
@@ -158,6 +169,12 @@ async function regionScanFrame(
     maxHealth: MAX_HEALTH,
     embarked: player.embarked,
     encounter: encounterView(player),
+    // Shared-world presence: bases here, yours marked, others shown by handle.
+    bases: regionBases.map((b): ScanBase => ({
+      handle: b.handle,
+      name: b.name,
+      mine: b.ownerId === player.id,
+    })),
   });
 }
 
@@ -268,6 +285,9 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "mine" && argIndex === 0) return ctx.mineCandidates;
       if (verb === "sell" && argIndex === 0) return ctx.sellCandidates;
       if (verb === "eat" && argIndex === 0) return ctx.eatCandidates;
+      // `build`'s structure domain is just `["base"]` today; P8 grows it with
+      // in-base structures (excavators / silos / production lines).
+      if (verb === "build" && argIndex === 0) return ["base"];
       if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS, ...FOOD_IDS];
       if (verb === "buy" && argIndex === 0) {
         return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
@@ -319,7 +339,7 @@ const EMBARKED_ONLY = new Set(["buy", "sell", "warp", "land"]);
  * a message naming the fix (`disembark`). `attack`/`flee` additionally require an
  * active encounter — their handlers check that after this gate.
  */
-const DISEMBARKED_ONLY = new Set(["mine", "explore", "harvest", "attack", "flee"]);
+const DISEMBARKED_ONLY = new Set(["mine", "explore", "harvest", "attack", "flee", "build"]);
 
 /** Dispatch an already-resolved (canonical verb, expanded args) command. */
 async function dispatchResolved(
@@ -375,6 +395,10 @@ async function dispatchResolved(
       return handleCraft(player, args);
     case "eat":
       return handleEat(player, args);
+    case "build":
+      return handleBuild(player, seed, args);
+    case "bases":
+      return handleBases(player);
     case "sell":
       return handleSell(player, args);
     case "buy":
@@ -1403,6 +1427,137 @@ async function handleEat(player: Player, args: string[]): Promise<RenderFrame> {
       text(`  (+${after - before}). ${remaining} left.`, "muted"),
     ]),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// build / bases — establish a base in the current region (P7) and list yours.
+// `build` is disembarked-only (surface infrastructure, gated like `mine`); this
+// phase only accepts `build base`. P8 extends the structure domain with the
+// buildings that go INSIDE a base.
+// ---------------------------------------------------------------------------
+
+/**
+ * `build base [name]` — establish a base in the player's current region. Charges
+ * the tunable `BASE_BUILD_COST` (credits + mineral ingredients from the cargo
+ * hold). Validates disembarked (gated in `dispatchResolved`), no existing base
+ * here, and affordability BEFORE mutating; the cost is consumed atomically and
+ * only then is the base created. A lost create race (unique constraint) refunds
+ * the cost, so a failure never leaves you charged without a base. Other players
+ * see the base via `scan` (the table is public-read).
+ */
+async function handleBuild(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const structure = args[0]?.toLowerCase();
+  if (!structure) return errorFrame("Usage: build base [name]");
+  if (structure !== "base") {
+    return errorFrame(`Can't build "${structure}" — only \`base\` for now.`);
+  }
+  // The (optional) name is a free-form, case-preserved opaque tail.
+  const name = args.slice(1).join(" ").trim() || undefined;
+
+  const coord = locOf(player);
+  const region = regionAt(seed, coord, player.region);
+  const rKey = regionKey(region.coord);
+  const planet = planetAt(seed, coord);
+
+  // No-duplicate: one base per region per player.
+  const owned = await world.basesOwnedBy(player.id);
+  if (owned.some((b) => b.regionKey === rKey)) {
+    return errorFrame(
+      `You already have a base in region ${player.region} of ${planet.name}.`,
+    );
+  }
+
+  // Affordability: credits (live balance) + mineral ingredients (cargo hold).
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const stacks = await world.getInventory(player.id);
+  const have: Record<string, number> = { credits: fresh.credits };
+  for (const s of stacks) have[s.resourceId] = s.qty;
+  if (!canAffordBase(have, BASE_BUILD_COST)) {
+    const short = Object.entries(BASE_BUILD_COST)
+      .filter(([k, q]) => (have[k] ?? 0) < q)
+      .map(([k, q]) =>
+        k === "credits"
+          ? `${q} cr (have ${have.credits ?? 0})`
+          : `${q} ${getResource(k).name} (have ${have[k] ?? 0})`,
+      );
+    return errorFrame(`Can't build a base — short on ${short.join(", ")}.`);
+  }
+
+  // Consume the cost atomically (minerals from cargo, then credits), then build.
+  for (const [rid, qty] of Object.entries(BASE_BUILD_MINERALS)) {
+    await world.removeInventory(player.id, rid, qty);
+  }
+  if (BASE_BUILD_CREDITS > 0) {
+    await world.addPlayerCredits(player.id, -BASE_BUILD_CREDITS);
+  }
+
+  const created = await world.createBase(player.id, rKey, name);
+  if (!created) {
+    // Lost a race (a base appeared between our check and the insert): refund the
+    // cost so nothing is consumed on this failure.
+    for (const [rid, qty] of Object.entries(BASE_BUILD_MINERALS)) {
+      await world.addInventory(player.id, rid, qty);
+    }
+    if (BASE_BUILD_CREDITS > 0) {
+      await world.addPlayerCredits(player.id, BASE_BUILD_CREDITS);
+    }
+    return errorFrame(
+      `You already have a base in region ${player.region} of ${planet.name}.`,
+    );
+  }
+
+  const costParts = [
+    ...Object.entries(BASE_BUILD_MINERALS).map(
+      ([rid, qty]) => `${qty} ${getResource(rid).name}`,
+    ),
+    `${BASE_BUILD_CREDITS} cr`,
+  ];
+  return frame([
+    line([
+      text("Base established", "success"),
+      text(name ? ` "${name}"` : "", "accent"),
+      text(` in region ${player.region} of ${planet.name}. `, "default"),
+      text(`Cost: ${costParts.join(" + ")}.`, "muted"),
+    ]),
+    line([
+      text("Other pilots can see it here. ", "muted"),
+      action("bases", "bases", { style: "link", title: "list your bases" }),
+      text(" to review your bases.", "muted"),
+    ]),
+  ]);
+}
+
+/** `bases` — list the bases the player owns (region coords + name). */
+async function handleBases(player: Player): Promise<RenderFrame> {
+  const owned = await world.basesOwnedBy(player.id);
+  return renderBases({
+    bases: owned.map((b) => ({
+      name: b.name,
+      regionKey: b.regionKey,
+      location: describeRegionKey(b.regionKey),
+    })),
+  });
+}
+
+/**
+ * A friendly one-line label for a 6-segment region key, for the `bases` listing
+ * — e.g. `galaxy 0 · arm 1 · cluster 2 · system 7 · planet 0 · region 42`. Falls
+ * back to the raw key if it doesn't parse as a region coord.
+ */
+function describeRegionKey(key: string): string {
+  try {
+    const c = parseLocationKey(key);
+    if ("region" in c) {
+      return `galaxy ${c.galaxy} · arm ${c.arm} · cluster ${c.cluster} · system ${c.system} · planet ${c.planet} · region ${c.region}`;
+    }
+  } catch {
+    /* fall through to the raw key */
+  }
+  return key;
 }
 
 // ---------------------------------------------------------------------------

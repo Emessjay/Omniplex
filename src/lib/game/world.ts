@@ -567,6 +567,97 @@ export async function setHealthAndEmbarked(
 }
 
 // ---------------------------------------------------------------------------
+// Bases (P7) — a player's claim on a region. PUBLIC READ (others see them), so
+// these adapters return public-safe data (owner handle + name, never user_id).
+// The base catalog/cost lives in code (`bases.ts`); the DB stores ownership.
+// ---------------------------------------------------------------------------
+
+/** A base as seen by others in a region: owner handle/id + optional name. */
+export interface RegionBase {
+  ownerId: string;
+  handle: string;
+  name: string | null;
+}
+
+/** A base the current player owns: where it is + its name. */
+export interface OwnedBase {
+  regionKey: string;
+  name: string | null;
+}
+
+/**
+ * Create a base for `ownerId` in `regionKey`. Returns true if it was created,
+ * false if one already exists there for this player (the `(owner_id,
+ * region_key)` unique constraint, surfaced as a 23505). All other errors throw.
+ * Callers validate affordability + consume the cost before calling.
+ */
+export async function createBase(
+  ownerId: string,
+  regionKey: string,
+  name?: string,
+): Promise<boolean> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("bases")
+    .insert({ owner_id: ownerId, region_key: regionKey, name: name ?? null });
+  if (error) {
+    if ((error as { code?: string }).code === "23505") return false; // duplicate
+    throw error;
+  }
+  return true;
+}
+
+/**
+ * The bases present in `regionKey` (any owner), with each owner's handle
+ * resolved from the public leaderboard view. Public-safe — no user_id. Used by
+ * `scan` to show the shared-world presence.
+ */
+export async function basesInRegion(regionKey: string): Promise<RegionBase[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("bases")
+    .select("owner_id, name")
+    .eq("region_key", regionKey)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  const rows = (data ?? []) as { owner_id: string; name: string | null }[];
+  if (rows.length === 0) return [];
+
+  // Resolve handles from the public leaderboard view (handle is public-safe).
+  const ids = [...new Set(rows.map((r) => r.owner_id))];
+  const { data: lb, error: lbErr } = await db
+    .from("leaderboard")
+    .select("id, handle")
+    .in("id", ids);
+  if (lbErr) throw lbErr;
+  const handleById = new Map<string, string>();
+  for (const row of lb ?? []) {
+    const r = row as { id: string; handle: string };
+    handleById.set(r.id, r.handle);
+  }
+  return rows.map((r) => ({
+    ownerId: r.owner_id,
+    handle: handleById.get(r.owner_id) ?? "unknown",
+    name: r.name,
+  }));
+}
+
+/** The bases a player owns (region key + name), oldest first. */
+export async function basesOwnedBy(playerId: string): Promise<OwnedBase[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("bases")
+    .select("region_key, name")
+    .eq("owner_id", playerId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    regionKey: (r as { region_key: string }).region_key,
+    name: (r as { name: string | null }).name,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Leaderboards (`who`). Reads public-safe data only.
 // ---------------------------------------------------------------------------
 

@@ -7,7 +7,7 @@
  * load-bearing decisions established by this module.
  */
 
-export { RESOURCES, getResource } from "./resources";
+export { RESOURCES, getResource, mineralsForBiome, isBiomeSpecific } from "./resources";
 export type { Resource, ResourceId } from "./resources";
 
 export {

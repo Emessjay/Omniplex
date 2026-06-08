@@ -52,7 +52,9 @@ function sampleRegions(seed: string, perPlanet = 8): Region[] {
 const RESOURCE_IDS = new Set(RESOURCES.map((r) => r.id));
 
 describe("resource catalog (AC#6)", () => {
-  it("mirrors the DB-seeded catalog: 7 ids with matching rarity", () => {
+  it("contains the original general minerals with matching rarity", () => {
+    // The catalog grew with biome-specific minerals (P7); the original general
+    // seven keep their ids + rarity, and stay general (no `biomes`).
     const byId = Object.fromEntries(RESOURCES.map((r) => [r.id, r.rarity]));
     expect(byId).toMatchObject({
       iron: 1,
@@ -63,7 +65,19 @@ describe("resource catalog (AC#6)", () => {
       xenon: 4,
       voidstone: 5,
     });
-    expect(RESOURCES).toHaveLength(7);
+    for (const id of ["iron", "silica", "copper", "titanium", "iridium", "xenon", "voidstone"]) {
+      expect(getResource(id).biomes ?? []).toHaveLength(0); // still general
+    }
+    // At least the original seven, plus the new minerals.
+    expect(RESOURCES.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("every catalog entry has a valid rarity (1..5) and non-negative value", () => {
+    for (const r of RESOURCES) {
+      expect(r.rarity).toBeGreaterThanOrEqual(1);
+      expect(r.rarity).toBeLessThanOrEqual(5);
+      expect(r.baseValue).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("getResource returns the catalog entry", () => {
