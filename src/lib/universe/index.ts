@@ -15,6 +15,10 @@ export {
   ATMOSPHERES,
   STAR_CLASSES,
   MAX_PLANETS,
+  REGION_COUNT_MIN,
+  REGION_COUNT_MAX,
+  PALETTE_MIN,
+  PALETTE_MAX,
 } from "./types";
 export type {
   Biome,
@@ -22,16 +26,20 @@ export type {
   StarClass,
   SystemCoord,
   PlanetCoord,
+  RegionCoord,
   ResourceDeposit,
   Planet,
+  Region,
   StarSystem,
 } from "./types";
 
 export {
   systemAt,
   planetAt,
+  regionAt,
   systemKey,
   planetKey,
+  regionKey,
   parseLocationKey,
   warpDistance,
 } from "./gen";

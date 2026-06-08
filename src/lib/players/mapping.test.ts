@@ -13,6 +13,7 @@ describe("rowToPlayer", () => {
     sector: 0,
     system: 0,
     planet: 0,
+    region: 0,
     created_at: "2026-06-07T00:00:00.000Z",
   };
 
@@ -27,12 +28,21 @@ describe("rowToPlayer", () => {
       sector: 0,
       system: 0,
       planet: 0,
+      region: 0,
       createdAt: "2026-06-07T00:00:00.000Z",
     });
   });
 
   it("preserves non-default location coordinates", () => {
-    const moved = rowToPlayer({ ...row, sector: 3, system: 12, planet: 4 });
-    expect([moved.sector, moved.system, moved.planet]).toEqual([3, 12, 4]);
+    const moved = rowToPlayer({
+      ...row,
+      sector: 3,
+      system: 12,
+      planet: 4,
+      region: 4096,
+    });
+    expect([moved.sector, moved.system, moved.planet, moved.region]).toEqual([
+      3, 12, 4, 4096,
+    ]);
   });
 });

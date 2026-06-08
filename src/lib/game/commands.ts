@@ -16,9 +16,11 @@ import "server-only";
 import type { Player } from "@/lib/players/types";
 import {
   planetAt,
+  regionAt,
   systemAt,
   systemKey,
   planetKey,
+  regionKey,
   warpDistance,
   getResource,
   RESOURCES,
@@ -55,12 +57,14 @@ import {
   renderHelp,
   renderCommandHelp,
   renderScan,
+  renderRegions,
   renderMap,
   renderInventory,
   renderUpgrades,
   renderWho,
   errorFrame,
   type MapNeighbor,
+  type RegionListEntry,
   type CommandHelpSlotView,
   type CommandHelpGroup,
 } from "./render";
@@ -79,15 +83,49 @@ function locOf(player: Player): PlanetCoord {
 }
 
 /**
- * The resource ids minable on the current planet right now — present deposits
- * whose effective (post-depletion) abundance is still > 0. These are the
- * candidate set for `mine`'s argument.
+ * Build the scan frame for the player standing in region `regionIndex` of the
+ * planet at `coord`. Shared by `scan`, `warp`, `land`, and `jump` so they
+ * describe the world identically. Depletion is read per-REGION (`regionKey`);
+ * discovery stays PLANET-level (`planetKey`, idempotent — re-recording the
+ * planet you're already on is a no-op). The landing requirement is planet-level
+ * (reads the planet's temperature).
+ */
+async function regionScanFrame(
+  player: Player,
+  seed: string,
+  coord: PlanetCoord,
+  regionIndex: number,
+): Promise<RenderFrame> {
+  const planet = planetAt(seed, coord);
+  const system = systemAt(seed, coord);
+  const region = regionAt(seed, coord, regionIndex);
+  const [depletionMap, justDiscovered, owned] = await Promise.all([
+    world.getEffectiveDepletionMap(regionKey(region.coord)),
+    world.recordDiscovery(planetKey(coord), player.id),
+    world.getOwnedUpgradeIds(player.id),
+  ]);
+  const requiredUpgrade = landingRequirement(planet.temperature);
+  return renderScan({
+    planet,
+    system,
+    region,
+    depletionMap,
+    justDiscovered,
+    requiredUpgrade,
+    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
+  });
+}
+
+/**
+ * The resource ids minable in the player's CURRENT REGION right now — present
+ * deposits whose effective (post-depletion) abundance is still > 0. These are
+ * the candidate set for `mine`'s argument.
  */
 async function minableHere(player: Player, seed: string): Promise<string[]> {
   const coord = locOf(player);
-  const planet = planetAt(seed, coord);
-  const depletionMap = await world.getEffectiveDepletionMap(planetKey(coord));
-  return planet.deposits
+  const region = regionAt(seed, coord, player.region);
+  const depletionMap = await world.getEffectiveDepletionMap(regionKey(region.coord));
+  return region.deposits
     .filter((d) => effectiveAbundance(d.abundance, depletionMap[d.resourceId] ?? 0) > 0)
     .map((d) => d.resourceId);
 }
@@ -208,6 +246,10 @@ async function dispatchResolved(
       return handleWarp(player, seed, args);
     case "land":
       return handleLand(player, seed, args);
+    case "jump":
+      return handleJump(player, seed, args);
+    case "regions":
+      return handleRegions(player, seed, args);
     case "mine":
       return handleMine(player, seed, args);
     case "inventory":
@@ -374,22 +416,73 @@ function tradeAnnotation(
 // ---------------------------------------------------------------------------
 
 async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
+  return regionScanFrame(player, seed, locOf(player), player.region);
+}
+
+// ---------------------------------------------------------------------------
+// jump / regions — move between and browse the current planet's regions.
+// ---------------------------------------------------------------------------
+
+/** How many region rows `regions` shows per page. */
+const REGIONS_PAGE_SIZE = 10;
+
+/**
+ * `jump <n>` — move to region `n` of the CURRENT planet (free; no fuel, same
+ * planet). Validates `0 <= n < regionCount` before mutating; an out-of-range
+ * index leaves state untouched. Returns a scan of the new region.
+ */
+async function handleJump(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const n = toInt(args[0]);
+  if (n === null) return errorFrame("Usage: jump <region>  (see `regions`)");
+
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
-  const system = systemAt(seed, coord);
-  const [depletionMap, justDiscovered, owned] = await Promise.all([
-    world.getEffectiveDepletionMap(planetKey(coord)),
-    world.recordDiscovery(planetKey(coord), player.id),
-    world.getOwnedUpgradeIds(player.id),
-  ]);
-  const requiredUpgrade = landingRequirement(planet.temperature);
-  return renderScan({
-    planet,
-    system,
-    depletionMap,
-    justDiscovered,
-    requiredUpgrade,
-    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
+  if (n < 0 || n >= planet.regionCount) {
+    return errorFrame(
+      `No region ${n} on ${planet.name} — it has ${planet.regionCount} (0–${planet.regionCount - 1}). Try \`regions\`.`,
+    );
+  }
+
+  if (n !== player.region) await world.setRegion(player.id, n);
+
+  const scan = await regionScanFrame(player, seed, coord, n);
+  return frame([line(text(`Jumped to region ${n}.`, "success")), ...scan.lines]);
+}
+
+/**
+ * `regions [page]` — a paged, clickable window of this planet's regions (a
+ * planet can have up to 100,000, so we never list them all). Each row is a
+ * `jump <n>` action labeled by that region's biome.
+ */
+function handleRegions(player: Player, seed: string, args: string[]): RenderFrame {
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  const pageCount = Math.max(1, Math.ceil(planet.regionCount / REGIONS_PAGE_SIZE));
+
+  const requested = toInt(args[0]);
+  if (args[0] !== undefined && (requested === null || requested < 1)) {
+    return errorFrame("Usage: regions [page]  — page must be a positive whole number.");
+  }
+  const page = Math.min(pageCount, Math.max(1, requested ?? 1));
+
+  const start = (page - 1) * REGIONS_PAGE_SIZE;
+  const end = Math.min(planet.regionCount, start + REGIONS_PAGE_SIZE);
+  const entries: RegionListEntry[] = [];
+  for (let i = start; i < end; i++) {
+    const region = regionAt(seed, coord, i);
+    entries.push({ index: i, biome: region.biome, current: i === player.region });
+  }
+
+  return renderRegions({
+    planetName: planet.name,
+    regionCount: planet.regionCount,
+    page,
+    pageCount,
+    entries,
   });
 }
 
@@ -463,27 +556,12 @@ async function handleWarp(
     planet: 0,
   });
 
+  // Warp is NOT gated — you always arrive in-system at planet 0, region 0. If
+  // that world is hostile you simply can't `mine` it until you have the gear
+  // (or `land` a survivable sibling), so this can never softlock you.
   const arrivalCoord: PlanetCoord = { ...dest, planet: 0 };
   const destSystem = systemAt(seed, dest);
-  const arrivalPlanet = planetAt(seed, arrivalCoord);
-  const [depletionMap, justDiscovered, owned] = await Promise.all([
-    world.getEffectiveDepletionMap(planetKey(arrivalCoord)),
-    world.recordDiscovery(planetKey(arrivalCoord), player.id),
-    world.getOwnedUpgradeIds(player.id),
-  ]);
-
-  // Warp is NOT gated — you always arrive in-system at planet 0. If that world
-  // is hostile you simply can't `mine` it until you have the gear (or `land` a
-  // survivable sibling), so this can never softlock you.
-  const requiredUpgrade = landingRequirement(arrivalPlanet.temperature);
-  const scan = renderScan({
-    planet: arrivalPlanet,
-    system: destSystem,
-    depletionMap,
-    justDiscovered,
-    requiredUpgrade,
-    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
-  });
+  const scan = await regionScanFrame(player, seed, arrivalCoord, 0);
   return frame([
     line([
       text(`Warped to ${destSystem.name}. `, "success"),
@@ -531,23 +609,11 @@ async function handleLand(
     );
   }
 
-  if (idx !== player.planet) {
-    await world.setPlanet(player.id, idx);
-  }
+  // Landing always touches you down in region 0 (resets `region`), even when
+  // re-landing the planet you're already on after jumping around it.
+  await world.setPlanet(player.id, idx);
 
-  const requiredUpgrade = landingRequirement(planet.temperature);
-  const [depletionMap, justDiscovered] = await Promise.all([
-    world.getEffectiveDepletionMap(planetKey(coord)),
-    world.recordDiscovery(planetKey(coord), player.id),
-  ]);
-  const scan = renderScan({
-    planet,
-    system,
-    depletionMap,
-    justDiscovered,
-    requiredUpgrade,
-    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
-  });
+  const scan = await regionScanFrame(player, seed, coord, 0);
   return frame([
     line(text(`Landed on ${planet.name}.`, "success")),
     ...scan.lines,
@@ -580,12 +646,15 @@ async function handleMine(
     );
   }
 
-  const deposit = planet.deposits.find((d) => d.resourceId === resourceId);
+  const region = regionAt(seed, coord, player.region);
+  const deposit = region.deposits.find((d) => d.resourceId === resourceId);
   if (!deposit) {
-    return errorFrame(`No ${resourceId} deposit on ${planet.name}. Try \`scan\`.`);
+    return errorFrame(
+      `No ${resourceId} deposit in region ${player.region} of ${planet.name}. Try \`scan\`.`,
+    );
   }
 
-  const key = planetKey(coord);
+  const key = regionKey(region.coord);
   const depletionMap = await world.getEffectiveDepletionMap(key);
   const eff = effectiveAbundance(deposit.abundance, depletionMap[resourceId] ?? 0);
   if (eff <= 0) {

@@ -22,10 +22,12 @@ export interface Player {
   fuel: number;
   /** Cargo capacity. */
   cargoCap: number;
-  /** Current location — galaxy coordinates. `(0,0,0)` is the start system. */
+  /** Current location — galaxy coordinates. `(0,0,0,0)` is the start system. */
   sector: number;
   system: number;
   planet: number;
+  /** Current region index within the planet; in `[0, planet.regionCount)`. */
+  region: number;
   /** ISO timestamp the row was created. */
   createdAt: string;
 }
@@ -44,5 +46,6 @@ export interface PlayerRow {
   sector: number;
   system: number;
   planet: number;
+  region: number;
   created_at: string;
 }

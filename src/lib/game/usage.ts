@@ -26,6 +26,8 @@ export const VERBS: string[] = [
   "map",
   "warp",
   "land",
+  "jump",
+  "regions",
   "mine",
   "inventory",
   "upgrades",
@@ -76,6 +78,14 @@ export const USAGE: Record<string, UsageDescriptor> = {
   land: {
     desc: "move to another planet in this system",
     slots: [{ name: "planet", hint: "a planet # in this system; see `scan`" }],
+  },
+  jump: {
+    desc: "jump to another region of this planet",
+    slots: [{ name: "region", hint: "a region # on this planet; see `regions`" }],
+  },
+  regions: {
+    desc: "list regions of this planet to jump to",
+    slots: [{ name: "page", optional: true, hint: "a page number (default 1)" }],
   },
   mine: {
     desc: "harvest a resource from this planet",

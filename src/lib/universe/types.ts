@@ -43,6 +43,23 @@ export type StarClass = (typeof STAR_CLASSES)[number];
 /** Largest number of planets a system may hold (AC#4). */
 export const MAX_PLANETS = 8;
 
+/**
+ * Region-count bounds. A planet is subdivided into many regions (its
+ * `regionCount`), each with its own biome + deposits. The count is rolled
+ * LOG-uniformly across `[REGION_COUNT_MIN, REGION_COUNT_MAX]` so planet sizes
+ * span ~10²–10⁵ and vary wildly.
+ */
+export const REGION_COUNT_MIN = 100;
+export const REGION_COUNT_MAX = 100_000;
+
+/**
+ * Per-planet biome palette size bounds. Each planet picks a distinct subset of
+ * `BIOMES` of size in `[PALETTE_MIN, PALETTE_MAX]`; its regions only ever draw
+ * their biome from that palette, giving each world a coherent-but-varied look.
+ */
+export const PALETTE_MIN = 2;
+export const PALETTE_MAX = 4;
+
 /** Integer galaxy address of a star system (matches the `players` columns). */
 export interface SystemCoord {
   readonly sector: number;
@@ -54,6 +71,14 @@ export interface PlanetCoord extends SystemCoord {
   readonly planet: number;
 }
 
+/**
+ * Integer galaxy address of a region within a planet; `region` is its 0-based
+ * index in `[0, planet.regionCount)`. The full four-integer location key.
+ */
+export interface RegionCoord extends PlanetCoord {
+  readonly region: number;
+}
+
 /** A resource deposit on a planet: which resource and how rich (0..1). */
 export interface ResourceDeposit {
   readonly resourceId: ResourceId;
@@ -61,12 +86,27 @@ export interface ResourceDeposit {
   readonly abundance: number;
 }
 
-/** A fully-described, recomputable planet. */
+/**
+ * A fully-described, recomputable planet.
+ *
+ * A planet is NOT a single place: it is subdivided into `regionCount` regions,
+ * each with its own biome (drawn from `biomePalette`) and its own deposits (see
+ * `Region` / `regionAt`). The planet itself therefore no longer carries a
+ * single `biome` or `deposits` — those moved down to the region tier. The
+ * planet-level fields (`temperature`, `hazard`, `gravity`, `atmosphere`) still
+ * describe the whole world (e.g. the landing gate reads `temperature`).
+ */
 export interface Planet {
   readonly coord: PlanetCoord;
   /** Deterministic, human-readable name, e.g. "KEPLER-442b". */
   readonly name: string;
-  readonly biome: Biome;
+  /**
+   * The distinct subset of `BIOMES` (size `[PALETTE_MIN, PALETTE_MAX]`) that
+   * this planet's regions may draw their biome from.
+   */
+  readonly biomePalette: readonly Biome[];
+  /** Number of regions on this planet; integer in `[REGION_COUNT_MIN, REGION_COUNT_MAX]`. */
+  readonly regionCount: number;
   readonly atmosphere: Atmosphere;
   /** Surface gravity in g; (0, 10]. */
   readonly gravity: number;
@@ -74,6 +114,16 @@ export interface Planet {
   readonly hazard: number;
   /** Mean surface temperature in °C (finite). */
   readonly temperature: number;
+}
+
+/**
+ * A fully-described, recomputable region of a planet. Its `biome` is always a
+ * member of the planet's `biomePalette`; its `deposits` are rolled with the
+ * planet's hazard (so the savage→rare coupling carries down to the region).
+ */
+export interface Region {
+  readonly coord: RegionCoord;
+  readonly biome: Biome;
   /** Harvestable deposits; may be empty (barren), usually ≥1. */
   readonly deposits: readonly ResourceDeposit[];
 }

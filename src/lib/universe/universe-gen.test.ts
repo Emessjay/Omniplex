@@ -4,14 +4,19 @@ import {
   getResource,
   BIOMES,
   ATMOSPHERES,
+  PALETTE_MIN,
+  PALETTE_MAX,
+  REGION_COUNT_MIN,
+  REGION_COUNT_MAX,
   systemAt,
   planetAt,
+  regionAt,
   systemKey,
   planetKey,
   parseLocationKey,
   warpDistance,
 } from "@/lib/universe";
-import type { SystemCoord, PlanetCoord, Planet } from "@/lib/universe";
+import type { SystemCoord, PlanetCoord, Planet, Region } from "@/lib/universe";
 
 const SEED = "omniplex-test-seed";
 
@@ -28,6 +33,20 @@ function sampleSystems(seed: string): ReturnType<typeof systemAt>[] {
 
 function samplePlanets(seed: string): Planet[] {
   return sampleSystems(seed).flatMap((s) => s.planets);
+}
+
+// Deterministic sample of regions: the first `perPlanet` regions of every
+// sampled planet. Biome + deposit coverage that used to live on the planet now
+// lives here, so the variety / rarity-coupling / abundance assertions sample
+// these regions instead of `planet.deposits` / `planet.biome`.
+function sampleRegions(seed: string, perPlanet = 8): Region[] {
+  const out: Region[] = [];
+  for (const p of samplePlanets(seed)) {
+    for (let i = 0; i < perPlanet; i++) {
+      out.push(regionAt(seed, p.coord, i % p.regionCount));
+    }
+  }
+  return out;
 }
 
 const RESOURCE_IDS = new Set(RESOURCES.map((r) => r.id));
@@ -102,14 +121,30 @@ describe("structural validity (AC#3, AC#4)", () => {
   it("planets have valid fields in range", () => {
     expect(planets.length).toBeGreaterThan(100);
     for (const p of planets) {
-      expect(BIOMES).toContain(p.biome);
+      // Biome moved to the region tier: a planet now carries a distinct, valid
+      // palette of size PALETTE_MIN..MAX (the only biomes its regions can be).
+      expect(p.biomePalette.length).toBeGreaterThanOrEqual(PALETTE_MIN);
+      expect(p.biomePalette.length).toBeLessThanOrEqual(PALETTE_MAX);
+      expect(new Set(p.biomePalette).size).toBe(p.biomePalette.length);
+      for (const b of p.biomePalette) expect(BIOMES).toContain(b);
+      // Region count is an integer in the documented bounds.
+      expect(Number.isInteger(p.regionCount)).toBe(true);
+      expect(p.regionCount).toBeGreaterThanOrEqual(REGION_COUNT_MIN);
+      expect(p.regionCount).toBeLessThanOrEqual(REGION_COUNT_MAX);
       expect(ATMOSPHERES).toContain(p.atmosphere);
       expect(p.gravity).toBeGreaterThan(0);
       expect(p.gravity).toBeLessThanOrEqual(10);
       expect(p.hazard).toBeGreaterThanOrEqual(0);
       expect(p.hazard).toBeLessThanOrEqual(1);
       expect(Number.isFinite(p.temperature)).toBe(true);
-      for (const d of p.deposits) {
+    }
+  });
+
+  it("region deposits and biomes are valid", () => {
+    const regions = sampleRegions(SEED);
+    for (const r of regions) {
+      expect(BIOMES).toContain(r.biome);
+      for (const d of r.deposits) {
         expect(RESOURCE_IDS.has(d.resourceId)).toBe(true);
         expect(d.abundance).toBeGreaterThanOrEqual(0);
         expect(d.abundance).toBeLessThanOrEqual(1);
@@ -118,12 +153,15 @@ describe("structural validity (AC#3, AC#4)", () => {
   });
 
   it("the universe is varied, not uniform", () => {
-    const biomes = new Set(planets.map((p) => p.biome));
+    // Biome variety is now measured over regions (each planet's palette is a
+    // subset, but across the galaxy regions span many biomes).
+    const regions = sampleRegions(SEED);
+    const biomes = new Set(regions.map((r) => r.biome));
     expect(biomes.size).toBeGreaterThan(2);
     const hazards = new Set(planets.map((p) => Math.round(p.hazard * 10)));
     expect(hazards.size).toBeGreaterThan(3);
     const mostHaveDeposits =
-      planets.filter((p) => p.deposits.length > 0).length / planets.length;
+      regions.filter((r) => r.deposits.length > 0).length / regions.length;
     expect(mostHaveDeposits).toBeGreaterThan(0.5);
   });
 });
@@ -133,29 +171,49 @@ describe("rarity coupling — savage planets carry rare resources (AC#5)", () =>
   const savage = planets.filter((p) => p.hazard >= 0.7);
   const calm = planets.filter((p) => p.hazard <= 0.3);
 
-  const maxRarity = (p: Planet) =>
-    p.deposits.reduce((m, d) => Math.max(m, getResource(d.resourceId).rarity), 0);
+  // The coupling now lives on the region tier (`regionAt` rolls deposits with
+  // the planet's hazard), so we sample a fixed window of each planet's regions
+  // and reduce over them. `REGION_SAMPLE` regions per planet is plenty to make
+  // the savage/calm trend statistically clear.
+  const REGION_SAMPLE = 12;
+  const regionsOf = (p: Planet): Region[] => {
+    const out: Region[] = [];
+    for (let i = 0; i < REGION_SAMPLE; i++) {
+      out.push(regionAt(SEED, p.coord, i % p.regionCount));
+    }
+    return out;
+  };
+
   const mean = (xs: number[]) =>
     xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+  // Mean of the per-region top-rarity across a planet's sampled regions.
+  const meanTopRarity = (p: Planet) =>
+    mean(
+      regionsOf(p).map((r) =>
+        r.deposits.reduce((m, d) => Math.max(m, getResource(d.resourceId).rarity), 0),
+      ),
+    );
   const fractionWith = (ps: Planet[], pred: (p: Planet) => boolean) =>
     ps.length ? ps.filter(pred).length / ps.length : 0;
   const hasRare = (p: Planet) =>
-    p.deposits.some((d) => getResource(d.resourceId).rarity >= 4);
+    regionsOf(p).some((r) =>
+      r.deposits.some((d) => getResource(d.resourceId).rarity >= 4),
+    );
   const hasVoidstone = (p: Planet) =>
-    p.deposits.some((d) => d.resourceId === "voidstone");
+    regionsOf(p).some((r) => r.deposits.some((d) => d.resourceId === "voidstone"));
 
   it("the sample contains both savage and calm planets", () => {
     expect(savage.length).toBeGreaterThan(15);
     expect(calm.length).toBeGreaterThan(15);
   });
 
-  it("savage planets have higher mean top-rarity than calm planets", () => {
-    expect(mean(savage.map(maxRarity))).toBeGreaterThan(
-      mean(calm.map(maxRarity)) + 0.5,
+  it("savage planets have higher mean region top-rarity than calm planets", () => {
+    expect(mean(savage.map(meanTopRarity))).toBeGreaterThan(
+      mean(calm.map(meanTopRarity)) + 0.5,
     );
   });
 
-  it("rare resources concentrate on savage planets", () => {
+  it("rare resources concentrate on savage planets' regions", () => {
     expect(fractionWith(savage, hasRare)).toBeGreaterThan(
       fractionWith(calm, hasRare),
     );
@@ -170,10 +228,11 @@ describe("rarity coupling — savage planets carry rare resources (AC#5)", () =>
 });
 
 describe("abundance is biased by rarity — common ore forms richer veins", () => {
-  // Collect every deposit across a large deterministic sample, tagged with the
-  // rarity of its resource, then compare mean abundance of common vs rare ore.
-  const deposits = samplePlanets(SEED).flatMap((p) =>
-    p.deposits.map((d) => ({
+  // Collect every region deposit across a large deterministic sample, tagged
+  // with the rarity of its resource, then compare mean abundance of common vs
+  // rare ore.
+  const deposits = sampleRegions(SEED).flatMap((r) =>
+    r.deposits.map((d) => ({
       abundance: d.abundance,
       rarity: getResource(d.resourceId).rarity,
     })),

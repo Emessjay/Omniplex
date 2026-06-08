@@ -17,6 +17,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     sector: row.sector,
     system: row.system,
     planet: row.planet,
+    region: row.region,
     createdAt: row.created_at,
   };
 }

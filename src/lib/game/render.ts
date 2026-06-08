@@ -7,7 +7,7 @@
  * Every noun a player might act on is an `action` span whose `command` is the
  * exact string the click submits (AC: "use clickable actions generously").
  */
-import type { Planet, StarSystem } from "@/lib/universe";
+import type { Biome, Planet, Region, StarSystem } from "@/lib/universe";
 import { getResource } from "@/lib/universe";
 import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
@@ -181,7 +181,9 @@ function abundanceLabel(value: number): string {
 export interface ScanView {
   planet: Planet;
   system: StarSystem;
-  /** Accumulated depletion per resource id on this planet. */
+  /** The region the player is currently standing in (its biome + deposits). */
+  region: Region;
+  /** Accumulated depletion per resource id in the CURRENT region. */
   depletionMap: Record<string, number>;
   /** True only on the scan that first recorded the discovery. */
   justDiscovered: boolean;
@@ -193,9 +195,14 @@ export interface ScanView {
   hasRequiredUpgrade?: boolean;
 }
 
-/** Scan/look/arrival frame: describe the current planet + its system. */
+/**
+ * Scan/look/arrival frame: describe the CURRENT REGION (biome + deposits) plus
+ * the planet context (palette, region count, the index of the region you're in)
+ * and its system. Deposits and biome are per-region now; the landing
+ * requirement remains planet-level (reads the planet's temperature).
+ */
 export function renderScan(view: ScanView): RenderFrame {
-  const { planet, system, depletionMap, justDiscovered } = view;
+  const { planet, system, region, depletionMap, justDiscovered } = view;
   const lines: RenderLine[] = [];
 
   lines.push(
@@ -210,10 +217,21 @@ export function renderScan(view: ScanView): RenderFrame {
     lines.push(line(text(view.discovererNote, "muted")));
   }
 
+  // Current region: which region of how many, and its biome.
   lines.push(
     line([
-      text("biome ", "muted"),
-      text(planet.biome, "accent"),
+      text("region ", "muted"),
+      text(`${region.coord.region}`, "accent"),
+      text(` / ${planet.regionCount}`, "muted"),
+      text("   biome ", "muted"),
+      text(region.biome, "accent"),
+    ]),
+  );
+  // Planet context: the biome palette its regions draw from + atmosphere.
+  lines.push(
+    line([
+      text("palette ", "muted"),
+      text(planet.biomePalette.join(", "), "default"),
       text("   atmosphere ", "muted"),
       text(planet.atmosphere, "accent"),
     ]),
@@ -246,12 +264,12 @@ export function renderScan(view: ScanView): RenderFrame {
     }
   }
 
-  // Deposits with effective (post-depletion) abundance.
-  if (planet.deposits.length === 0) {
-    lines.push(line(text("No mineable deposits here.", "muted")));
+  // Deposits (this region) with effective (post-depletion) abundance.
+  if (region.deposits.length === 0) {
+    lines.push(line(text("No mineable deposits in this region.", "muted")));
   } else {
-    lines.push(line(text("Deposits:", "heading")));
-    for (const dep of planet.deposits) {
+    lines.push(line(text("Deposits (this region):", "heading")));
+    for (const dep of region.deposits) {
       const res = getResource(dep.resourceId);
       const eff = effectiveAbundance(dep.abundance, depletionMap[dep.resourceId] ?? 0);
       const spans: RenderSpan[] = [
@@ -272,6 +290,16 @@ export function renderScan(view: ScanView): RenderFrame {
     }
   }
 
+  // Explore other regions of this planet.
+  lines.push(
+    line([
+      action("regions", "regions", { style: "link", title: "list this planet's regions" }),
+      text(` to browse all ${planet.regionCount} regions; `, "muted"),
+      text("jump <n>", "default"),
+      text(" to move to another.", "muted"),
+    ]),
+  );
+
   // Sibling planets to land on.
   if (system.planetCount > 1) {
     lines.push(line(text("Other planets in this system:", "heading")));
@@ -291,6 +319,77 @@ export function renderScan(view: ScanView): RenderFrame {
       }
     }
   }
+
+  return frame(lines);
+}
+
+/** One region row in the `regions` listing. */
+export interface RegionListEntry {
+  index: number;
+  biome: Biome;
+  /** True for the region the player is currently standing in. */
+  current: boolean;
+}
+
+export interface RegionsView {
+  planetName: string;
+  /** Total regions on this planet. */
+  regionCount: number;
+  /** 1-based page being shown. */
+  page: number;
+  /** Total number of pages at the current page size. */
+  pageCount: number;
+  /** The window of regions on this page. */
+  entries: RegionListEntry[];
+}
+
+/**
+ * A paged, clickable listing of a planet's regions. A planet can have up to
+ * 100,000 regions, so we show one window (page) at a time; each entry is a
+ * `jump <n>` action labeled by the region's biome, and prev/next page links
+ * advance the window.
+ */
+export function renderRegions(view: RegionsView): RenderFrame {
+  const lines: RenderLine[] = [
+    line([
+      text(`${view.planetName} — regions`, "heading"),
+      text(`  (${view.regionCount} total)`, "muted"),
+    ]),
+    line(text(`page ${view.page}/${view.pageCount}`, "muted")),
+  ];
+
+  for (const e of view.entries) {
+    if (e.current) {
+      lines.push(
+        line([text(`  ${e.index}: `, "muted"), text(`${e.biome} (here)`, "accent")]),
+      );
+    } else {
+      lines.push(
+        line([
+          text(`  ${e.index}: `, "muted"),
+          action(e.biome, `jump ${e.index}`, {
+            style: "link",
+            title: `jump to region ${e.index}`,
+          }),
+        ]),
+      );
+    }
+  }
+
+  // Prev / next page navigation, shown only when there's somewhere to go.
+  const nav: RenderSpan[] = [];
+  if (view.page > 1) {
+    nav.push(
+      action("‹ prev", `regions ${view.page - 1}`, { style: "link", title: "previous page" }),
+    );
+  }
+  if (view.page < view.pageCount) {
+    if (nav.length > 0) nav.push(text("   ", "muted"));
+    nav.push(
+      action("next ›", `regions ${view.page + 1}`, { style: "link", title: "next page" }),
+    );
+  }
+  if (nav.length > 0) lines.push(line(nav));
 
   return frame(lines);
 }

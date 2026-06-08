@@ -413,3 +413,45 @@ gotchas) accrete here as workers surface things worth persisting. See
   (and stamps `updated_at = now()`). Forward-only + tracked in
   `schema_migrations`, so it runs EXACTLY ONCE — it will not clobber
   organically-moved prices on later deploys.
+
+### Load-bearing decisions from `planet-regions`
+
+- **A planet is no longer a single place** — it has MANY regions, each with its
+  own biome + deposits. Addressing gained a 4th integer: `RegionCoord =
+  { sector, system, planet, region }` (in `src/lib/universe/types.ts`). The
+  start location is `(0,0,0,0)`.
+- **`Planet` reshape** (BREAKING — every call site updated in this change):
+  REMOVED `biome` and `deposits`; ADDED `biomePalette: Biome[]` (a DISTINCT
+  subset of `BIOMES`, size `[PALETTE_MIN, PALETTE_MAX]` = `[2, 4]`) and
+  `regionCount: number` (integer in `[REGION_COUNT_MIN, REGION_COUNT_MAX]` =
+  `[100, 100000]`, **log-uniform**: `round(10 ** randFloat(2,5))` clamped). The
+  remaining planet fields (`temperature`, `hazard`, `gravity`, `atmosphere`,
+  `name`, `coord`) still describe the whole world — the hazard/temperature/
+  landing model stays PLANET-level.
+- **`Region` + `regionAt(seed, planetCoord, regionIndex)`** (`gen.ts`): PURE &
+  deterministic, its own RNG stream keyed by the full region coord
+  (`makeRng(seed, "region", sector, system, planet, region)`) so a region
+  reproduces without generating its (up to 100k) siblings. `biome` is `pick`ed
+  from the planet's `biomePalette` (always a member); `deposits` use the
+  existing hazard-coupled `depositsFor`, so savage→rare + rarity→abundance carry
+  down to the region. `regionIndex` is NOT range-checked in gen — callers
+  validate against `planet.regionCount`.
+- **4-segment keys**: `regionKey(coord)` →
+  `"<sector>:<system>:<planet>:<region>"`; `parseLocationKey` handles 2/3/4
+  segments. **These region keys are the `world_deltas` depletion keys now** —
+  depletion is PER-REGION. `world.ts` depletion adapters
+  (`getDepletionMap`/`getEffectiveDepletionMap`/`recordDepletion`) take a
+  generic `locationKey` and are fed `regionKey`. **Discoveries stay
+  PLANET-level** (`planetKey`) — no per-region discovery rows.
+- **`players.region`** (`integer not null default 0`, migration
+  `20260608080000_player-region.sql`, forward-only/idempotent) carried on
+  `Player`/`PlayerRow` + `rowToPlayer`. `warp` and `land` reset `region` to 0
+  on arrival (handled inside `world.setFuelAndLocation`/`setPlanet`);
+  `world.setRegion` is the `jump` mutator.
+- **Commands**: `scan` describes the CURRENT region (biome + deposits) plus
+  planet context (palette, region count, region index); `jump <n>` validates
+  `0 ≤ n < regionCount` then re-scans (free, same planet, opaque numeric arg);
+  `regions [page]` is a paged (~10/page) clickable `jump <n>` listing. `mine`
+  works the current region's deposits and depletes per `regionKey`; its abbrev
+  domain is the current REGION's minable resources. All region-scan output is
+  built by the shared `regionScanFrame` helper in `commands.ts`.

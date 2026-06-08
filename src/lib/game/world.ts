@@ -38,7 +38,9 @@ export async function getPlayerById(id: string): Promise<Player | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Depletion (world_deltas, kind='depletion'). Keyed by planetKey; payload is
+// Depletion (world_deltas, kind='depletion'). Keyed by a location key — now the
+// 4-segment `regionKey` (depletion is per-region since planet-regions), though
+// these adapters are agnostic to the key's shape. Payload is
 // { resourceId, amount } where amount is abundance consumed (see rules.ts).
 // ---------------------------------------------------------------------------
 
@@ -47,15 +49,15 @@ interface DepletionPayload {
   amount: number;
 }
 
-/** Total depletion per resource for a planet, reduced over all delta rows. */
+/** Total depletion per resource for a location, reduced over all delta rows. */
 export async function getDepletionMap(
-  planetKey: string,
+  locationKey: string,
 ): Promise<Record<string, number>> {
   const db = getServerClient();
   const { data, error } = await db
     .from("world_deltas")
     .select("payload")
-    .eq("location_key", planetKey)
+    .eq("location_key", locationKey)
     .eq("kind", "depletion");
   if (error) throw error;
   const map: Record<string, number> = {};
@@ -87,13 +89,13 @@ export async function getDepletionMap(
  * Impure by design: `Date.now()` lives here (not in the pure `rules.ts`).
  */
 export async function getEffectiveDepletionMap(
-  planetKey: string,
+  locationKey: string,
 ): Promise<Record<string, number>> {
   const db = getServerClient();
   const { data, error } = await db
     .from("world_deltas")
     .select("payload, created_at")
-    .eq("location_key", planetKey)
+    .eq("location_key", locationKey)
     .eq("kind", "depletion")
     .order("created_at", { ascending: true });
   if (error) throw error;
@@ -131,14 +133,14 @@ export async function getEffectiveDepletionMap(
 
 /** Append a depletion delta (append-only; safe under concurrency). */
 export async function recordDepletion(
-  planetKey: string,
+  locationKey: string,
   resourceId: string,
   amount: number,
   playerId: string,
 ): Promise<void> {
   const db = getServerClient();
   const { error } = await db.from("world_deltas").insert({
-    location_key: planetKey,
+    location_key: locationKey,
     kind: "depletion",
     payload: { resourceId, amount } satisfies DepletionPayload,
     player_id: playerId,
@@ -396,7 +398,10 @@ export async function addPlayerCredits(
   return typeof data === "number" ? data : 0;
 }
 
-/** Set fuel and full location in one update (warp). */
+/**
+ * Set fuel and full location in one update (warp). Region is always reset to 0
+ * — you touch down in region 0 of the arrival planet.
+ */
 export async function setFuelAndLocation(
   playerId: string,
   fuel: number,
@@ -405,17 +410,37 @@ export async function setFuelAndLocation(
   const db = getServerClient();
   const { error } = await db
     .from("players")
-    .update({ fuel, sector: loc.sector, system: loc.system, planet: loc.planet })
+    .update({
+      fuel,
+      sector: loc.sector,
+      system: loc.system,
+      planet: loc.planet,
+      region: 0,
+    })
     .eq("id", playerId);
   if (error) throw error;
 }
 
-/** Move within the current system to a new planet index (land). */
+/**
+ * Move within the current system to a new planet index (land). Region resets to
+ * 0 — landing always puts you down in region 0, even when re-landing the planet
+ * you're already on.
+ */
 export async function setPlanet(playerId: string, planet: number): Promise<void> {
   const db = getServerClient();
   const { error } = await db
     .from("players")
-    .update({ planet })
+    .update({ planet, region: 0 })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/** Set the player's current region index within the planet (jump). */
+export async function setRegion(playerId: string, region: number): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ region })
     .eq("id", playerId);
   if (error) throw error;
 }

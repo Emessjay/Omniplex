@@ -18,11 +18,17 @@ import {
   ATMOSPHERES,
   BIOMES,
   MAX_PLANETS,
+  PALETTE_MAX,
+  PALETTE_MIN,
+  REGION_COUNT_MAX,
+  REGION_COUNT_MIN,
   STAR_CLASSES,
   type Atmosphere,
   type Biome,
   type Planet,
   type PlanetCoord,
+  type Region,
+  type RegionCoord,
   type ResourceDeposit,
   type StarClass,
   type StarSystem,
@@ -54,11 +60,19 @@ export function planetKey(coord: PlanetCoord): string {
   return `${coord.sector}:${coord.system}:${coord.planet}`;
 }
 
+/** `"<sector>:<system>:<planet>:<region>"` — the per-region depletion key. */
+export function regionKey(coord: RegionCoord): string {
+  return `${coord.sector}:${coord.system}:${coord.planet}:${coord.region}`;
+}
+
 /**
- * Parse a system or planet key back into its coord object. Two segments →
- * `SystemCoord`; three → `PlanetCoord`. Throws on malformed input.
+ * Parse a system / planet / region key back into its coord object. Two
+ * segments → `SystemCoord`; three → `PlanetCoord`; four → `RegionCoord`.
+ * Throws on malformed input.
  */
-export function parseLocationKey(key: string): SystemCoord | PlanetCoord {
+export function parseLocationKey(
+  key: string,
+): SystemCoord | PlanetCoord | RegionCoord {
   const parts = key.split(":");
   const nums = parts.map((p) => {
     const n = Number(p);
@@ -72,6 +86,14 @@ export function parseLocationKey(key: string): SystemCoord | PlanetCoord {
   }
   if (nums.length === 3) {
     return { sector: nums[0]!, system: nums[1]!, planet: nums[2]! };
+  }
+  if (nums.length === 4) {
+    return {
+      sector: nums[0]!,
+      system: nums[1]!,
+      planet: nums[2]!,
+      region: nums[3]!,
+    };
   }
   throw new Error(`invalid location key: ${key}`);
 }
@@ -272,9 +294,38 @@ const BIOME_WEIGHTS: Record<Biome, number> = {
   irradiated: 6,
 };
 
-function biomeFor(rng: Rng): Biome {
-  const weights = BIOMES.map((b) => BIOME_WEIGHTS[b]);
-  return BIOMES[weightedIndex(rng, weights)]!;
+/**
+ * The planet's biome palette: a DISTINCT subset of `BIOMES` of size in
+ * `[PALETTE_MIN, PALETTE_MAX]`. Members are drawn weighted by `BIOME_WEIGHTS`
+ * (without replacement) so common biomes dominate palettes just as they
+ * dominated single-biome planets before the region reshape. A region's biome is
+ * later picked from this palette, so this is the only set of biomes a planet's
+ * regions can ever exhibit.
+ */
+function biomePaletteFor(rng: Rng): Biome[] {
+  const size = randInt(rng, PALETTE_MIN, PALETTE_MAX);
+  const available = BIOMES.slice();
+  const palette: Biome[] = [];
+  for (let i = 0; i < size && available.length > 0; i++) {
+    const weights = available.map((b) => BIOME_WEIGHTS[b]);
+    const idx = weightedIndex(rng, weights);
+    palette.push(available[idx]!);
+    available.splice(idx, 1); // distinct biome per palette slot
+  }
+  return palette;
+}
+
+/**
+ * Roll a planet's region count LOG-uniformly across
+ * `[REGION_COUNT_MIN, REGION_COUNT_MAX]` = `[100, 100000]`:
+ * `round(10 ** randFloat(2, 5))`, then clamped to the bounds. Log-uniform (vs
+ * linear) is what gives the wide spread — small ~10² planets and huge ~10⁵ ones
+ * both occur with comparable frequency rather than nearly every planet maxing
+ * out.
+ */
+function regionCountFor(rng: Rng): number {
+  const raw = Math.round(10 ** randFloat(rng, 2, 5));
+  return Math.min(REGION_COUNT_MAX, Math.max(REGION_COUNT_MIN, raw));
 }
 
 function atmosphereFor(rng: Rng): Atmosphere {
@@ -296,7 +347,7 @@ function generatePlanet(
 ): Planet {
   const rng = makeRng(seed, "planet", coord.sector, coord.system, coord.planet);
 
-  const biome = biomeFor(rng);
+  const biomePalette = biomePaletteFor(rng);
   const atmosphere = atmosphereFor(rng);
   const gravity = Number(randFloat(rng, 0.1, 2.8).toFixed(3)); // g, (0,10]
   // Temperature first — hazard is derived from it (extreme temps ⇒ savage).
@@ -304,20 +355,17 @@ function generatePlanet(
     (STAR_TEMP_BASE[starClass] + randFloat(rng, -120, 120)).toFixed(1),
   );
   const hazard = Number(hazardFor(rng, temperature).toFixed(4));
-  const deposits = depositsFor(rng, hazard).map((d) => ({
-    resourceId: d.resourceId,
-    abundance: Number(d.abundance.toFixed(4)),
-  }));
+  const regionCount = regionCountFor(rng);
 
   return {
     coord,
     name: planetName(sysName, coord.planet),
-    biome,
+    biomePalette,
+    regionCount,
     atmosphere,
     gravity,
     hazard,
     temperature,
-    deposits,
   };
 }
 
@@ -352,4 +400,48 @@ export function planetAt(seed: string, coord: PlanetCoord): Planet {
   const name = systemName(sysRng);
   const starClass = starClassFor(sysRng);
   return generatePlanet(seed, coord, name, starClass);
+}
+
+/**
+ * The region at `regionIndex` of the planet at `planetCoord`. PURE &
+ * deterministic, with its own RNG stream keyed by the full region coord — so a
+ * region reproduces without generating its sibling regions (the planet may have
+ * up to 100,000 of them). Its `biome` is drawn from the planet's
+ * `biomePalette`, and its `deposits` use the existing hazard-coupled
+ * `depositsFor`, so the savage→rare and rarity→abundance couplings carry down to
+ * the region tier. `regionIndex` is NOT range-checked here (gen is total over
+ * the integers); callers validate against `planet.regionCount`.
+ */
+export function regionAt(
+  seed: string,
+  planetCoord: PlanetCoord,
+  regionIndex: number,
+): Region {
+  const planet = planetAt(seed, planetCoord);
+  const rng = makeRng(
+    seed,
+    "region",
+    planetCoord.sector,
+    planetCoord.system,
+    planetCoord.planet,
+    regionIndex,
+  );
+
+  // Biome is always a member of the planet's palette (AC#2).
+  const biome = pick(rng, planet.biomePalette);
+  const deposits = depositsFor(rng, planet.hazard).map((d) => ({
+    resourceId: d.resourceId,
+    abundance: Number(d.abundance.toFixed(4)),
+  }));
+
+  return {
+    coord: {
+      sector: planetCoord.sector,
+      system: planetCoord.system,
+      planet: planetCoord.planet,
+      region: regionIndex,
+    },
+    biome,
+    deposits,
+  };
 }
