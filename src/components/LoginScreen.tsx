@@ -54,6 +54,26 @@ export function LoginScreen({
     }
   }
 
+  async function onGoogle() {
+    setStatus("sending");
+    setMessage("");
+    try {
+      const supabase = getAuthBrowserClient();
+      // PKCE OAuth returns to the SAME callback the magic-link flow uses
+      // (`/auth/callback`), with a `code` that route exchanges for a session.
+      // `window.location.origin` is the real public URL in the browser.
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) throw error;
+      // Success kicks off a full-page redirect to Google; nothing more to do.
+    } catch (err) {
+      setStatus("error");
+      setMessage(err instanceof Error ? err.message : "Failed to start Google sign-in.");
+    }
+  }
+
   return (
     <div className="mx-auto flex h-[calc(100vh-1rem)] w-full max-w-xl flex-col items-center justify-center px-4 sm:h-[calc(100vh-2rem)]">
       <div className="w-full rounded-md border border-term-muted/30 bg-term-bg p-6 text-sm">
@@ -137,6 +157,25 @@ export function LoginScreen({
               )}
             >
               {status === "sending" ? "sending…" : "send magic link"}
+            </button>
+
+            <div className="flex items-center gap-3 pt-1 text-term-muted">
+              <span className="h-px flex-1 bg-term-muted/30" aria-hidden />
+              <span className="select-none text-xs">or</span>
+              <span className="h-px flex-1 bg-term-muted/30" aria-hidden />
+            </div>
+
+            <button
+              type="button"
+              onClick={onGoogle}
+              disabled={status === "sending"}
+              className={cn(
+                "w-full rounded-sm border border-term-muted/40 px-3 py-1 text-term-fg",
+                "hover:bg-term-accent/20 focus:bg-term-accent/20 focus:outline-none",
+                "disabled:opacity-60",
+              )}
+            >
+              continue with Google
             </button>
           </form>
         )}

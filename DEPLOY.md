@@ -115,6 +115,49 @@ In the Supabase dashboard → **Authentication** → **URL Configuration**:
 
 ---
 
+## 3a. Google sign-in setup (optional — enables "Continue with Google")
+
+The login screen shows a **"Continue with Google"** button alongside the
+email form. It calls `supabase.auth.signInWithOAuth({ provider: "google" })`
+and returns through the **same** `/auth/callback` route the magic-link flow
+uses. Google's OAuth credentials live in **Supabase**, not the app — there
+are **no new env vars** on the Railway service. If you skip this section the
+button still renders, but clicking it surfaces a Supabase "provider not
+enabled" error inline.
+
+1. **Google Cloud Console** (https://console.cloud.google.com) → create or
+   pick a project. Under **APIs & Services → OAuth consent screen**,
+   configure the consent screen (User Type *External* for a public app; set
+   the app name, support email, and your domain).
+2. Under **APIs & Services → Credentials → Create Credentials → OAuth client
+   ID**, choose application type **Web application**.
+3. Set the **Authorized redirect URI** to **Supabase's** callback:
+
+   ```
+   https://<project-ref>.supabase.co/auth/v1/callback
+   ```
+
+   For this project that is:
+
+   ```
+   https://rjfusrxkocbktskjkoli.supabase.co/auth/v1/callback
+   ```
+
+   > ⚠️ **This is the Supabase-hosted callback, NOT the app's
+   > `/auth/callback`.** Google redirects to Supabase first; Supabase then
+   > redirects back to the app's `/auth/callback`. Pasting the app URL here
+   > is the #1 reason Google sign-in fails — don't mix them up.
+
+4. Copy the generated **Client ID** and **Client secret** into Supabase →
+   **Authentication → Providers → Google**, paste both, and **enable** the
+   provider.
+5. **No extra app redirect needed.** The app's existing Site URL / redirect
+   allowlist from **step 3** (the `/auth/callback` entry) already covers the
+   post-login return — Google users land back in the terminal through the
+   same path as magic-link users and get a `players` row on first login.
+
+---
+
 ## 4. Deploy on Railway
 
 1. **New Project → Deploy from GitHub repo**, and pick this repo.

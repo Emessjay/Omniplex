@@ -254,3 +254,17 @@ gotchas) accrete here as workers surface things worth persisting. See
   on failure, otherwise dispatches the canonical verb/args via
   `dispatchResolved` and prepends a muted `» <canonical>` echo line whenever
   abbreviation expanded the typed input (so players learn the full form).
+
+### Load-bearing decisions from `google-auth`
+
+- **Google sign-in** is additive: `LoginScreen` shows a "Continue with Google"
+  button (when `configured`) alongside the magic-link form, calling
+  `signInWithOAuth({ provider: "google", options: { redirectTo:
+  ${window.location.origin}/auth/callback } })` via the shared
+  `getAuthBrowserClient()`. OAuth errors surface inline like magic-link send
+  errors. PKCE OAuth returns to the **same** `/auth/callback` route (it
+  already exchanges the `code` for a session — never was magic-link-specific),
+  so player bootstrap (`getOrCreatePlayer`) and the `publicOrigin` redirect
+  fix are shared unchanged. **Provider creds (Google Client ID/secret) live in
+  Supabase → Authentication → Providers → Google, NOT in app env** — there are
+  no new app env vars. Setup runbook in `DEPLOY.md` §3a.
