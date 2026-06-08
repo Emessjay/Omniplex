@@ -308,3 +308,41 @@ gotchas) accrete here as workers surface things worth persisting. See
   cargo space **before** mutating, then `addInventory` + `addPlayerCredits(−total)`
   + `setMarketPrice(priceAfterPurchase(...))`. The `buy` abbrev domain is
   `["fuel", ...RESOURCES ids]`; the `qty` arg stays opaque (numeric).
+
+### Load-bearing decisions from `temp-hazard`
+
+- **Hazard is derived from temperature** (`hazardFor` in
+  `src/lib/universe/gen.ts`), no longer uniform random. A comfort band
+  (`TEMP_COMFORT_MID` 15°C ± `TEMP_COMFORT_BAND` 50°C) reads as ~0 hazard;
+  beyond it, `(departure / TEMP_EXTREME_SCALE)^TEMP_HAZARD_POWER ×
+  TEMP_HAZARD_WEIGHT` plus ≤`HAZARD_JITTER` random, clamped [0,1]. Still pure
+  & deterministic (one `rng()` draw). Knock-on: extreme-temp worlds are
+  high-hazard → (via `rarityWeight`) carry the rarest resources. Because the
+  coldest stars bottom out ~−160°C but hot stars exceed +400°C, the very
+  highest hazards (voidstone) skew toward scorching worlds.
+- The universe-gen suite's "both calm AND savage planets exist" assertions are
+  the guardrail against over-coupling — keep the random jitter so the
+  distribution doesn't collapse.
+
+### Load-bearing decisions from `ship-upgrades`
+
+- **Upgrade catalog lives in code** (`src/lib/game/upgrades.ts`), like
+  `RESOURCES`: `UPGRADES`/`UPGRADE_IDS`/`isUpgradeId`/`getUpgrade`/`recipeOf`/
+  `recipeCost`/`upgradeValue`. Recipes: Ablative Shields = titanium+silica,
+  Antifreeze Tanks = titanium+iron. `upgradeValue = round(recipeCost ×
+  CRAFT_VALUE_MARKUP)` (~1.2 — "a bit above components"). Upgrades are NOT in
+  the `markets` table (no FK, no price drift); prices are code-derived.
+- **Ownership** in `public.player_upgrades` (migration
+  `20260608073000_ship-upgrades.sql`): `(player_id, upgrade_id, qty)`, RLS
+  read-own, service-role writes, atomic `add_player_upgrade(player, upgrade,
+  delta)` RPC clamped at 0. Owning ≥1 = capability active; selling the last
+  one removes it.
+- **Landing gate** (`canLand`/`landingRequirement` in `rules.ts`,
+  `FREEZING_C` 0 / `BOILING_C` 100, boundaries survivable): `land` and `mine`
+  are blocked on a world below freezing (needs Antifreeze Tanks) or above
+  boiling (needs Ablative Shields) unless owned; **`warp` is never gated**
+  (arrive in-orbit at planet 0 → can't softlock). `scan` shows the requirement.
+- **`craft <upgrade>`** consumes recipe components from inventory atomically
+  (validate `canCraft` first). `buy`/`sell` extended to upgrade ids (buy at
+  `buyUnitCost(upgradeValue)`, sell at `upgradeValue`). Abbrev domains: `craft`
+  → upgrade ids; `buy`/`sell` → resources + upgrade ids.
