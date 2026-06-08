@@ -146,6 +146,24 @@ export interface Planet {
   readonly hazard: number;
   /** Mean surface temperature in °C (finite). */
   readonly temperature: number;
+  /**
+   * Orbital mechanics (deterministic per planet coord; time is NEVER stored
+   * here). Planets actually orbit their sun in real time, so the distance
+   * between two planets — and the regular-fuel cost of flying between them
+   * (`land`) — varies with WHEN you travel. The pure helpers in `rules.ts`
+   * (`planetPosition` / `interplanetaryDistance`) take these three fields plus a
+   * `timeMs` and compute the current position/separation.
+   *
+   *  - `orbitalRadius` — distance from the sun in AU-ish units, in
+   *    `[ORBIT_RADIUS_MIN, ORBIT_RADIUS_MAX]`.
+   *  - `orbitalPeriod` — the length of this planet's year, in MILLISECONDS of
+   *    REAL time, in `[ORBIT_PERIOD_MIN_MS, ORBIT_PERIOD_MAX_MS]` (≈6h→30d), so
+   *    orbits visibly shift over hours-to-weeks of wall-clock time.
+   *  - `orbitalPhase` — its starting angle at t=0, in `[0, 2π)`.
+   */
+  readonly orbitalRadius: number;
+  readonly orbitalPeriod: number;
+  readonly orbitalPhase: number;
 }
 
 /**

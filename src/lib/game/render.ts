@@ -11,7 +11,7 @@ import type { Biome, Planet, Region, StarSystem } from "@/lib/universe";
 import { getResource } from "@/lib/universe";
 import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
-import { effectiveAbundance, fuelCost, FREEZING_C, BOILING_C } from "./rules";
+import { effectiveAbundance, warpFuelCost, FREEZING_C, BOILING_C } from "./rules";
 import { UPGRADES, getUpgrade } from "./upgrades";
 import { VERBS, USAGE, usageLine } from "./usage";
 
@@ -210,6 +210,16 @@ export interface ScanView {
   maxHealth: number;
   /** True = aboard ship; false = on foot in this region. */
   embarked: boolean;
+  /** Regular fuel (burned to `land` between planets). */
+  fuel?: number;
+  /** Warp fuel (burned to `warp` between systems). */
+  warpFuel?: number;
+  /**
+   * Per-sibling-planet `land` info: the (time-varying) regular-fuel cost and
+   * whether the player can perform the land right now (embarked + enough fuel).
+   * Keyed by the planet index; absent entries fall back to embark-only gating.
+   */
+  siblingLand?: { index: number; fuelCost: number; affordable: boolean }[];
   /** Active combat encounter to surface (with `attack`/`flee` options), or null. */
   encounter?: EncounterView | null;
   /** Bases present in this region (shared-world presence); yours are marked. */
@@ -270,6 +280,18 @@ export function renderScan(view: ScanView): RenderFrame {
         : text("on foot", "warning"),
     ]),
   );
+
+  // Fuel readout: both pools (regular feeds `land`, warp feeds `warp`).
+  if (view.fuel !== undefined || view.warpFuel !== undefined) {
+    lines.push(
+      line([
+        text("fuel ", "muted"),
+        text(`${view.fuel ?? 0}`, "default"),
+        text("   warp fuel ", "muted"),
+        text(`${view.warpFuel ?? 0}`, "default"),
+      ]),
+    );
+  }
 
   // Active combat encounter: name the creature, its HP, and the attack/flee
   // options. Surfaced on scan so a player who steps away mid-fight can see it.
@@ -412,18 +434,29 @@ export function renderScan(view: ScanView): RenderFrame {
           line([text(`  ${i}: `, "muted"), text(`${sib.name} (here)`, "accent")]),
         );
       } else {
-        // `land` is embarked-only (you fly the ship between planets), so a land
-        // action is shown disabled (red) when the player is on foot.
-        lines.push(
-          line([
-            text(`  ${i}: `, "muted"),
-            action(sib.name, `land ${i}`, {
-              style: "link",
-              title: view.embarked ? `land on ${sib.name}` : "embark to fly between planets",
-              disabled: !view.embarked,
-            }),
-          ]),
-        );
+        // `land` is embarked-only (you fly the ship) AND burns regular fuel
+        // (takeoff + time-varying interplanetary distance), so the action reads
+        // red when on foot OR short on regular fuel — the same gates `land`
+        // enforces. The (orbit-dependent) fuel cost is shown alongside.
+        const landInfo = view.siblingLand?.find((s) => s.index === i);
+        const affordable = landInfo ? landInfo.affordable : view.embarked;
+        const title = !view.embarked
+          ? "embark to fly between planets"
+          : landInfo && !affordable
+            ? `not enough fuel (need ${landInfo.fuelCost})`
+            : `land on ${sib.name}`;
+        const row: RenderSpan[] = [
+          text(`  ${i}: `, "muted"),
+          action(sib.name, `land ${i}`, {
+            style: "link",
+            title,
+            disabled: !affordable,
+          }),
+        ];
+        if (landInfo) {
+          row.push(text(`  fuel ${landInfo.fuelCost}`, affordable ? "muted" : "danger"));
+        }
+        lines.push(line(row));
       }
     }
   }
@@ -526,7 +559,8 @@ export interface MapLocation {
 /**
  * Nearby-systems map: the player's full location (galaxy/arm/cluster/system/
  * planet/region) and the galaxy's arm count, then each neighbor as a `warp <arm>
- * <cluster> <system>` action + its fuel cost.
+ * <cluster> <system>` action + its WARP-fuel cost. `currentFuel` is the player's
+ * WARP-fuel pool (warp burns warp fuel), used for the affordability red marking.
  */
 export function renderMap(
   neighbors: MapNeighbor[],
@@ -537,7 +571,7 @@ export function renderMap(
     line([
       text(`Galaxy ${loc.galaxy} `, "heading"),
       text(`${loc.galaxyName} `, "accent"),
-      text(`(${loc.armCount} arms)   fuel ${currentFuel}`, "muted"),
+      text(`(${loc.armCount} arms)   warp fuel ${currentFuel}`, "muted"),
     ]),
     line([
       text("you are at  ", "muted"),
@@ -553,19 +587,19 @@ export function renderMap(
     return frame(lines);
   }
   for (const n of neighbors) {
-    const cost = fuelCost(n.distance);
+    const cost = warpFuelCost(n.distance);
     const affordable = cost <= currentFuel;
     lines.push(
       line([
         action(n.name, `warp ${n.arm} ${n.cluster} ${n.system}`, {
           style: "link",
-          // Not enough fuel to make the jump → the same gate `warp` enforces, so
-          // the token reads red up-front.
-          title: affordable ? `warp to ${n.name}` : `not enough fuel (need ${cost})`,
+          // Not enough warp fuel to make the jump → the same gate `warp` enforces,
+          // so the token reads red up-front.
+          title: affordable ? `warp to ${n.name}` : `not enough warp fuel (need ${cost})`,
           disabled: !affordable,
         }),
         text(`  ${n.arm}:${n.cluster}:${n.system}`, "muted"),
-        text(`  fuel ${cost}`, affordable ? "default" : "danger"),
+        text(`  warp fuel ${cost}`, affordable ? "default" : "danger"),
         text(n.discovered ? "  ✓ discovered" : "  • uncharted", "muted"),
       ]),
     );
@@ -584,13 +618,15 @@ export interface InventoryView {
   cargoCap: number;
   credits: number;
   fuel: number;
+  /** Warp fuel (burned on `warp`); shown alongside regular fuel. */
+  warpFuel?: number;
   health: number;
   maxHealth: number;
   embarked: boolean;
 }
 
 export function renderInventory(view: InventoryView): RenderFrame {
-  const { stacks, cargoUsed, cargoCap, credits, fuel, health, maxHealth, embarked } = view;
+  const { stacks, cargoUsed, cargoCap, credits, fuel, warpFuel, health, maxHealth, embarked } = view;
   const lowHealth = health <= maxHealth * 0.3;
   const lines: RenderLine[] = [
     line([
@@ -598,6 +634,7 @@ export function renderInventory(view: InventoryView): RenderFrame {
       text(`${cargoUsed}/${cargoCap}`, cargoUsed >= cargoCap ? "warning" : "default"),
       text(`   credits ${credits}`, "accent"),
       text(`   fuel ${fuel}`, "default"),
+      text(`   warp fuel ${warpFuel ?? 0}`, "default"),
     ]),
     line([
       text("HP ", "muted"),

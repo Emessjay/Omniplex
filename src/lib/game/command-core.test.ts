@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  fuelCost,
+  warpFuelCost,
   effectiveAbundance,
   miningYield,
   sellValue,
@@ -8,17 +8,21 @@ import {
 } from "@/lib/game/rules";
 import { parseCommand } from "@/lib/game/parse";
 
-describe("fuelCost (AC#3, AC#4)", () => {
+// P2 split the single `fuelCost` into `warpFuelCost` (distance-only, for `warp`)
+// and `regularFuelCost` (takeoff + interplanetary, for `land`). This suite
+// tracks the warp side — same distance-only contract the original `fuelCost`
+// had; the orbital/regular-fuel contract lives in `fuel-orbital.test.ts`.
+describe("warpFuelCost (AC#3, AC#4)", () => {
   it("is zero at distance 0 and a positive integer beyond", () => {
-    expect(fuelCost(0)).toBe(0);
-    expect(fuelCost(5)).toBeGreaterThan(0);
-    expect(Number.isInteger(fuelCost(5))).toBe(true);
-    expect(Number.isInteger(fuelCost(13))).toBe(true);
+    expect(warpFuelCost(0)).toBe(0);
+    expect(warpFuelCost(5)).toBeGreaterThan(0);
+    expect(Number.isInteger(warpFuelCost(5))).toBe(true);
+    expect(Number.isInteger(warpFuelCost(13))).toBe(true);
   });
 
   it("is non-decreasing in distance", () => {
-    expect(fuelCost(10)).toBeGreaterThanOrEqual(fuelCost(5));
-    expect(fuelCost(50)).toBeGreaterThanOrEqual(fuelCost(10));
+    expect(warpFuelCost(10)).toBeGreaterThanOrEqual(warpFuelCost(5));
+    expect(warpFuelCost(50)).toBeGreaterThanOrEqual(warpFuelCost(10));
   });
 });
 

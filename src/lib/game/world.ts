@@ -498,12 +498,13 @@ export async function addPlayerCredits(
 }
 
 /**
- * Set fuel and full location in one update (warp). Region is always reset to 0
- * — you touch down in region 0 of the arrival planet.
+ * Set WARP fuel and full location in one update (warp). Region is always reset
+ * to 0 — you touch down in region 0 of the arrival planet. Warp burns warp fuel;
+ * regular `fuel` is untouched here (P2).
  */
-export async function setFuelAndLocation(
+export async function setWarpFuelAndLocation(
   playerId: string,
-  fuel: number,
+  warpFuel: number,
   loc: {
     galaxy: number;
     arm: number;
@@ -516,7 +517,7 @@ export async function setFuelAndLocation(
   const { error } = await db
     .from("players")
     .update({
-      fuel,
+      warp_fuel: warpFuel,
       galaxy: loc.galaxy,
       arm: loc.arm,
       cluster: loc.cluster,
@@ -529,15 +530,20 @@ export async function setFuelAndLocation(
 }
 
 /**
- * Move within the current system to a new planet index (land). Region resets to
- * 0 — landing always puts you down in region 0, even when re-landing the planet
- * you're already on.
+ * Move within the current system to a new planet index AND set regular fuel in
+ * one update (land). Region resets to 0 — landing always puts you down in region
+ * 0, even when re-landing the planet you're already on. `land` burns regular
+ * fuel (takeoff + interplanetary); warp fuel is untouched here.
  */
-export async function setPlanet(playerId: string, planet: number): Promise<void> {
+export async function setFuelAndPlanet(
+  playerId: string,
+  fuel: number,
+  planet: number,
+): Promise<void> {
   const db = getServerClient();
   const { error } = await db
     .from("players")
-    .update({ planet, region: 0 })
+    .update({ fuel, planet, region: 0 })
     .eq("id", playerId);
   if (error) throw error;
 }
@@ -552,10 +558,20 @@ export async function setRegion(playerId: string, region: number): Promise<void>
   if (error) throw error;
 }
 
-/** Set absolute fuel (buy fuel). */
+/** Set absolute regular fuel (buy fuel). */
 export async function setFuel(playerId: string, fuel: number): Promise<void> {
   const db = getServerClient();
   const { error } = await db.from("players").update({ fuel }).eq("id", playerId);
+  if (error) throw error;
+}
+
+/** Set absolute warp fuel (buy warpfuel). */
+export async function setWarpFuel(playerId: string, warpFuel: number): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ warp_fuel: warpFuel })
+    .eq("id", playerId);
   if (error) throw error;
 }
 

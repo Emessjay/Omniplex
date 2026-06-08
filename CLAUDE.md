@@ -915,3 +915,55 @@ gotchas) accrete here as workers surface things worth persisting. See
   the emitting handler already knows it would be rejected. The exploration track
   should mark P2 can't-afford warp/fuel and P3 galaxy-jump-without-condensate
   actions `disabled` too.
+
+### Load-bearing decisions from `fuel-orbital`
+
+- **There are now TWO fuels (P2), with two cost models.** The existing `fuel`
+  column/`Player.fuel` **is regular fuel**; a new `warp_fuel` column /
+  `Player.warpFuel` is the second pool (migration
+  `20260608130000_fuel-orbital.sql`, forward-only/idempotent `add column if not
+  exists`, `default 100 check (warp_fuel >= 0)`; carried on `PlayerRow`/`Player`
+  + `rowToPlayer`). RLS/leaderboard untouched (neither fuel is exposed there).
+  - **WARP fuel** powers `warp` (system-and-larger jumps). Cost =
+    `warpFuelCost(warpDistance(...))`, which scales **only with distance** (the
+    old `fuelCost` renamed; identical `ceil(distance · WARP_FUEL_PER_DISTANCE)`
+    contract — 0 at 0, non-decreasing, positive integer).
+  - **REGULAR fuel** powers `land` (planet-to-planet WITHIN a system). Cost =
+    `regularFuelCost(fromPlanet, toPlanet, Date.now())` = **takeoff +
+    interplanetary**, the two ADDITIVE: `takeoffCost(atm, gravity)` =
+    `(TAKEOFF_BASE + TAKEOFF_ATM_COEF · atmosphereDensity(atm)) · gravity`
+    (additive in atmosphere density, multiplicative/linear in gravity) PLUS
+    `INTERPLANETARY_FUEL_PER_DISTANCE · interplanetaryDistance(...)`, `ceil`'d to
+    a positive integer. Region `jump` stays **free** (no interplanetary move).
+- **Planets now have real, time-varying orbits.** `Planet` gained
+  `orbitalRadius` (AU-ish, `[0.3, 40]`), `orbitalPeriod` (REAL-time ms,
+  `[~6h, ~30d]`), `orbitalPhase` (`[0, 2π)`), all drawn deterministically in
+  `generatePlanet` — appended **last** in the RNG stream so every pre-existing
+  planet field stayed byte-identical. Position is the PURE
+  `planetPosition(orbit, timeMs)` (circle: `angle = phase + 2π·timeMs/period`);
+  `interplanetaryDistance(a, b, timeMs)` is the Euclidean separation (≥0,
+  symmetric, **varies with time** as the two planets sweep at different rates).
+  Gen NEVER touches `Date`; `timeMs` is a parameter (handlers pass `Date.now()`),
+  so all of `rules.ts` stays pure & deterministic (seeded contract:
+  `fuel-orbital.test.ts`).
+- **Prices:** `REGULAR_FUEL_PRICE_PER_UNIT` (3, renamed from
+  `FUEL_PRICE_PER_UNIT`) and `WARP_FUEL_PRICE_PER_UNIT` (9, **> regular** — warp
+  fuel is the premium long-haul stuff). **`buy fuel [n]`** refills regular,
+  **`buy warpfuel [n]`** refills warp; both embarked-only, share
+  `handleBuyFuel(kind)`. `buy`'s arg domain is now
+  `["fuel", "warpfuel", ...resources, ...upgrades]`; `tradeCategoryOf("warpfuel")
+  = "fuel"` (so `help buy` groups it with fuel; pricing branches on the id).
+- **World adapters:** `setWarpFuelAndLocation` (warp — warp_fuel + location,
+  region→0; regular fuel untouched), `setFuelAndPlanet` (land — regular fuel +
+  planet, region→0; warp fuel untouched), `setWarpFuel` (buy warpfuel), `setFuel`
+  (buy fuel, unchanged). The old `setFuelAndLocation`/`setPlanet` were replaced
+  by these fuel-aware mutators.
+- **UI** shows BOTH fuels (`scan` fuel readout + per-sibling `land` fuel cost;
+  `map` warp options show warp-fuel cost; `inventory` + boot banner). Affordability
+  red reuses P9b's `disabled`-action convention: `map` warp tokens red when
+  `warpFuelCost > warpFuel`; `scan` `land` siblings red when on foot OR
+  `regularFuelCost > fuel` (`ScanView.siblingLand` carries the per-sibling cost +
+  affordability the handler computed).
+- **For P3 (galaxy jump):** consumes Hyperwarp Condensate and may also draw warp
+  fuel; cross-galaxy `warpDistance` is `Infinity` so such warps are simply not
+  offered until P3 adds the condensate path.

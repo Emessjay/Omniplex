@@ -70,6 +70,8 @@ function bootFrame(player?: Player): RenderFrame {
         text(String(player.credits), "success"),
         text("   fuel: ", "muted"),
         text(String(player.fuel), "success"),
+        text("   warp fuel: ", "muted"),
+        text(String(player.warpFuel), "success"),
         text("   cargo cap: ", "muted"),
         text(String(player.cargoCap), "default"),
       ]),

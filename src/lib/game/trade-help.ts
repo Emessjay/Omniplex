@@ -18,7 +18,7 @@ import { isUpgradeId } from "./upgrades";
 export type TradeCategory = "fuel" | "minerals" | "upgrades" | "everything";
 
 export function tradeCategoryOf(id: string): TradeCategory {
-  if (id === "fuel") return "fuel";
+  if (id === "fuel" || id === "warpfuel") return "fuel";
   if (id === "all") return "everything";
   if (isUpgradeId(id)) return "upgrades";
   return "minerals";

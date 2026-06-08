@@ -404,6 +404,23 @@ function atmosphereFor(rng: Rng): Atmosphere {
   return pick(rng, ATMOSPHERES);
 }
 
+// ---------------------------------------------------------------------------
+// Orbits. Each planet orbits its sun on a deterministic ellipse-circle; the
+// generator only fixes the SHAPE (radius), SPEED (period) and STARTING ANGLE
+// (phase) — the actual position is a pure function of these + wall-clock time,
+// computed in `rules.ts` (gen never touches `Date`). Periods are real-time
+// milliseconds chosen so a planet completes its "year" over hours-to-weeks, so
+// interplanetary distances (and `land` fuel costs) visibly drift between visits.
+// ---------------------------------------------------------------------------
+
+/** Orbital radius bounds (AU-ish): inner scorchers to far-flung iceballs. */
+const ORBIT_RADIUS_MIN = 0.3;
+const ORBIT_RADIUS_MAX = 40;
+/** Orbital-period bounds in REAL milliseconds: ~6 hours to ~30 days. */
+const ORBIT_PERIOD_MIN_MS = 6 * 60 * 60 * 1000; // 6h
+const ORBIT_PERIOD_MAX_MS = 30 * 24 * 60 * 60 * 1000; // 30d
+const TWO_PI = Math.PI * 2;
+
 /**
  * Generate a single planet. Pure in (seed, coord, starClass): the star class
  * is passed in (derived once per system) so the planet's temperature can
@@ -436,6 +453,12 @@ function generatePlanet(
   );
   const hazard = Number(hazardFor(rng, temperature).toFixed(4));
   const regionCount = regionCountFor(rng);
+  // Orbital attributes are drawn LAST so adding them left every pre-existing
+  // field (palette, atmosphere, gravity, temperature, hazard, regionCount)
+  // byte-identical — the orbital draws only consume fresh stream after them.
+  const orbitalRadius = Number(randFloat(rng, ORBIT_RADIUS_MIN, ORBIT_RADIUS_MAX).toFixed(4));
+  const orbitalPeriod = Math.round(randFloat(rng, ORBIT_PERIOD_MIN_MS, ORBIT_PERIOD_MAX_MS));
+  const orbitalPhase = Number(randFloat(rng, 0, TWO_PI).toFixed(6));
 
   return {
     coord,
@@ -446,6 +469,9 @@ function generatePlanet(
     gravity,
     hazard,
     temperature,
+    orbitalRadius,
+    orbitalPeriod,
+    orbitalPhase,
   };
 }
 

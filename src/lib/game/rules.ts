@@ -9,16 +9,24 @@
  * signatures, so extend additively rather than reshaping them.
  */
 
+import type { Atmosphere } from "@/lib/universe/types";
+
 // ---------------------------------------------------------------------------
 // Tuning constants. Exported so handlers, render, and the data adapters share
 // one definition of each knob. Documented inline; tweak here, nowhere else.
 // ---------------------------------------------------------------------------
 
-/** Fuel burned per unit of `warpDistance`. Warp cost = ceil(distance * this). */
-export const FUEL_PER_DISTANCE = 1;
+/** Warp fuel burned per unit of `warpDistance`. Warp cost = ceil(distance * this). */
+export const WARP_FUEL_PER_DISTANCE = 1;
 
-/** Credits charged per unit of fuel at `buy fuel`. */
-export const FUEL_PRICE_PER_UNIT = 3;
+/**
+ * Two fuels (P2). Regular fuel moves you BETWEEN PLANETS within a system
+ * (`land` — takeoff + interplanetary travel); warp fuel makes the long
+ * system-and-larger `warp` jumps. Warp fuel is deliberately a fair bit pricier
+ * to buy than regular fuel (the long-haul drive burns the premium stuff).
+ */
+export const REGULAR_FUEL_PRICE_PER_UNIT = 3;
+export const WARP_FUEL_PRICE_PER_UNIT = 9;
 
 /**
  * Units a single `mine` extracts from a perfectly-rich (abundance 1.0)
@@ -436,17 +444,130 @@ export function baseCapacity(siloCount: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Navigation.
+// Navigation (P2: two fuels + orbital mechanics).
+//
+// Travel splits into two pools with two cost models:
+//   * WARP fuel (`warp`, system-and-larger jumps): cost scales ONLY with the
+//     generalized `warpDistance` — see `warpFuelCost`.
+//   * REGULAR fuel (`land`, planet-to-planet within a system): cost is takeoff
+//     (atmosphere + gravity) PLUS an interplanetary component that scales with
+//     the TIME-VARYING distance between the two planets' orbits — see
+//     `regularFuelCost`. Region `jump` is free (no interplanetary move).
+//
+// Everything here is PURE & DETERMINISTIC: the caller passes `timeMs`
+// (`Date.now()` in the handlers); these functions never read the clock or RNG.
 // ---------------------------------------------------------------------------
 
 /**
- * Fuel required to warp `distance` (from `warpDistance`). `fuelCost(0) === 0`;
- * for distance > 0 the result is a positive integer, and the function is
- * non-decreasing in distance.
+ * Warp fuel required to traverse `distance` (from `warpDistance`).
+ * `warpFuelCost(0) === 0`; for distance > 0 the result is a positive integer,
+ * and the function is non-decreasing in distance. Scales ONLY with distance
+ * (no takeoff / planet terms — that's regular fuel's job). Replaces the old
+ * single `fuelCost` for warps.
  */
-export function fuelCost(distance: number): number {
+export function warpFuelCost(distance: number): number {
   if (!(distance > 0)) return 0; // covers 0, negative, and NaN guards
-  return Math.ceil(distance * FUEL_PER_DISTANCE);
+  return Math.ceil(distance * WARP_FUEL_PER_DISTANCE);
+}
+
+/** The three orbital fields of a planet that the orbital math depends on. */
+export interface OrbitLike {
+  orbitalRadius: number;
+  orbitalPeriod: number;
+  orbitalPhase: number;
+}
+
+/**
+ * A planet's position in its orbital plane at absolute time `timeMs`. The orbit
+ * is a circle of `orbitalRadius` swept at a constant angular rate set by
+ * `orbitalPeriod`, starting from `orbitalPhase` at t=0:
+ *   angle = orbitalPhase + 2π · (timeMs / orbitalPeriod)
+ * Pure & periodic — `planetPosition(o, t)` equals `planetPosition(o, t + period)`.
+ * A non-positive period degenerates to a fixed point at the phase angle.
+ */
+export function planetPosition(
+  orbit: OrbitLike,
+  timeMs: number,
+): { x: number; y: number } {
+  const sweep = orbit.orbitalPeriod > 0 ? (2 * Math.PI * timeMs) / orbit.orbitalPeriod : 0;
+  const angle = orbit.orbitalPhase + sweep;
+  return {
+    x: orbit.orbitalRadius * Math.cos(angle),
+    y: orbit.orbitalRadius * Math.sin(angle),
+  };
+}
+
+/**
+ * Euclidean distance between two planets' orbital positions at `timeMs`. Always
+ * ≥ 0, symmetric in its two orbit arguments, and (because the two planets sweep
+ * at different rates) it VARIES with `timeMs` — the same pair is generally a
+ * different distance apart at a different time. Pure.
+ */
+export function interplanetaryDistance(
+  a: OrbitLike,
+  b: OrbitLike,
+  timeMs: number,
+): number {
+  const pa = planetPosition(a, timeMs);
+  const pb = planetPosition(b, timeMs);
+  return Math.hypot(pa.x - pb.x, pa.y - pb.y);
+}
+
+/**
+ * Relative "thickness/hostility" of each atmosphere, used by `takeoffCost` — a
+ * heavier or more corrosive atmosphere is harder to punch out of. `none` is the
+ * lowest (a vacuum takeoff is cheapest); the rest climb roughly with how much
+ * the air fights the ship. Non-negative for every `Atmosphere`.
+ */
+export function atmosphereDensity(atmosphere: Atmosphere): number {
+  const DENSITY: Record<Atmosphere, number> = {
+    none: 0,
+    thin: 0.3,
+    breathable: 1,
+    toxic: 1.2,
+    inert: 1.4,
+    corrosive: 1.6,
+    dense: 2,
+  };
+  return DENSITY[atmosphere] ?? 0;
+}
+
+/** Base regular-fuel cost of a takeoff before atmosphere/gravity scaling. */
+export const TAKEOFF_BASE = 2;
+/** How much each unit of atmosphere density ADDS to the pre-gravity takeoff. */
+export const TAKEOFF_ATM_COEF = 1.5;
+/** Regular fuel per unit of interplanetary distance (the inter component). */
+export const INTERPLANETARY_FUEL_PER_DISTANCE = 0.5;
+
+/**
+ * Regular fuel to lift off a planet: atmosphere density adds (lightly,
+ * additively) to a base, then the whole thing is multiplied (linearly) by
+ * gravity — a thick-aired, high-gravity world is the costliest to leave:
+ *   (TAKEOFF_BASE + TAKEOFF_ATM_COEF · atmosphereDensity(atm)) · gravity
+ * Positive for gravity > 0; rises with both atmosphere density and gravity.
+ * Not rounded (the integer rounding happens in `regularFuelCost`).
+ */
+export function takeoffCost(atmosphere: Atmosphere, gravity: number): number {
+  const g = Math.max(0, gravity);
+  return (TAKEOFF_BASE + TAKEOFF_ATM_COEF * atmosphereDensity(atmosphere)) * g;
+}
+
+/**
+ * Regular fuel to fly from planet `from` to planet `to` at time `timeMs`:
+ * the takeoff cost from `from` PLUS an interplanetary component scaled from the
+ * (time-varying) `interplanetaryDistance` between the two orbits. The two
+ * components are ADDITIVE; the result is a positive integer (`ceil`, so it is
+ * always ≥ the takeoff component alone). Pure — `timeMs` is supplied by the
+ * caller (`Date.now()` in `land`).
+ */
+export function regularFuelCost(
+  from: { atmosphere: Atmosphere; gravity: number; orbit: OrbitLike },
+  to: { orbit: OrbitLike },
+  timeMs: number,
+): number {
+  const takeoff = takeoffCost(from.atmosphere, from.gravity);
+  const inter = INTERPLANETARY_FUEL_PER_DISTANCE * interplanetaryDistance(from.orbit, to.orbit, timeMs);
+  return Math.max(1, Math.ceil(takeoff + inter));
 }
 
 // ---------------------------------------------------------------------------

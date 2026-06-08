@@ -18,8 +18,10 @@ export interface Player {
   handle: string;
   /** Credits balance (DB `bigint`; safe-integer range in practice). */
   credits: number;
-  /** Ship fuel. */
+  /** Regular ship fuel — burned moving between planets within a system (`land`). */
   fuel: number;
+  /** Warp fuel — burned on system-and-larger `warp` jumps (scales with distance). */
+  warpFuel: number;
   /** Cargo capacity. */
   cargoCap: number;
   /**
@@ -73,6 +75,7 @@ export interface PlayerRow {
   handle: string;
   credits: number;
   fuel: number;
+  warp_fuel: number;
   cargo_cap: number;
   galaxy: number;
   arm: number;

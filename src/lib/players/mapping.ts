@@ -13,6 +13,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     handle: row.handle,
     credits: row.credits,
     fuel: row.fuel,
+    warpFuel: row.warp_fuel,
     cargoCap: row.cargo_cap,
     galaxy: row.galaxy,
     arm: row.arm,

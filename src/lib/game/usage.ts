@@ -92,7 +92,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
   look: { desc: "alias for scan", slots: [], alias: true },
   map: { desc: "list nearby systems to warp to", slots: [] },
   warp: {
-    desc: "travel to another system in this galaxy (burns fuel)",
+    desc: "travel to another system in this galaxy (burns warp fuel)",
     slots: [
       { name: "arm", hint: "an arm # (wraps around the galaxy); see `map`" },
       { name: "cluster", hint: "see `map` for destinations" },
@@ -100,7 +100,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     ],
   },
   land: {
-    desc: "move to another planet in this system",
+    desc: "fly to another planet in this system (burns regular fuel)",
     slots: [{ name: "planet", hint: "a planet # in this system; see `scan`" }],
   },
   jump: {
@@ -202,7 +202,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "resource" }],
   },
   buy: {
-    desc: "buy fuel, minerals or upgrades",
+    desc: "buy fuel, warp fuel, minerals or upgrades",
     slots: [
       { name: "item" },
       { name: "qty", optional: true, hint: "a number (default 1)" },

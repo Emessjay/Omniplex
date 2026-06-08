@@ -37,7 +37,8 @@ import { VERBS, USAGE, usageLine } from "./usage";
 import { getWorldSeed } from "./seed";
 import {
   effectiveAbundance,
-  fuelCost,
+  warpFuelCost,
+  regularFuelCost,
   miningYield,
   priceAfterSale,
   priceAfterPurchase,
@@ -57,7 +58,8 @@ import {
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
-  FUEL_PRICE_PER_UNIT,
+  REGULAR_FUEL_PRICE_PER_UNIT,
+  WARP_FUEL_PRICE_PER_UNIT,
 } from "./rules";
 import {
   UPGRADES,
@@ -175,6 +177,24 @@ async function regionScanFrame(
     world.basesInRegion(rKey),
   ]);
   const requiredUpgrade = landingRequirement(planet.temperature);
+  // Regular-fuel cost to `land` on each sibling planet, takeoff from the planet
+  // being scanned. Time-varying (planets orbit) — recomputed each scan with
+  // `Date.now()`. Marked unaffordable (red) when on foot or short on regular fuel.
+  const now = Date.now();
+  const siblingLand = system.planets
+    .filter((sib) => sib.coord.planet !== planet.coord.planet)
+    .map((sib) => {
+      const cost = regularFuelCost(
+        { atmosphere: planet.atmosphere, gravity: planet.gravity, orbit: planet },
+        { orbit: sib },
+        now,
+      );
+      return {
+        index: sib.coord.planet,
+        fuelCost: cost,
+        affordable: player.embarked && player.fuel >= cost,
+      };
+    });
   return renderScan({
     planet,
     system,
@@ -186,6 +206,9 @@ async function regionScanFrame(
     health: player.health,
     maxHealth: MAX_HEALTH,
     embarked: player.embarked,
+    fuel: player.fuel,
+    warpFuel: player.warpFuel,
+    siblingLand,
     encounter: encounterView(player),
     // Shared-world presence: bases here, yours marked, others shown by handle.
     bases: regionBases.map((b): ScanBase => ({
@@ -341,7 +364,7 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // than a bare "no such" from the resolver). Foods abbreviate handler-side.
       if (verb === "craft" && argIndex === 0) return null;
       if (verb === "buy" && argIndex === 0) {
-        return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
+        return ["fuel", "warpfuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
       }
       return null; // opaque: warp coords, land index, buy/craft quantity, …
     },
@@ -585,7 +608,8 @@ async function handleHelp(
  * Build the labeled, price-annotated groups for a `buy`/`sell` argument from its
  * (already `argDomain`-sourced) candidate ids. Grouping is the pure
  * `groupTradeCandidates`; this layers the live prices on top:
- *   - buy: fuel = `FUEL_PRICE_PER_UNIT`; minerals = `buyUnitCost(price)`;
+ *   - buy: fuel = `REGULAR_FUEL_PRICE_PER_UNIT` / warpfuel =
+ *     `WARP_FUEL_PRICE_PER_UNIT`; minerals = `buyUnitCost(price)`;
  *     upgrades = `buyUnitCost(upgradeValue)`.
  *   - sell: minerals = current market price; upgrades = `upgradeValue`; the
  *     `all` token carries no price.
@@ -623,7 +647,7 @@ function buyDisabled(
     case "everything":
       return false; // `all` is sell-only; never a buy candidate
     case "fuel":
-      return ctx.credits < FUEL_PRICE_PER_UNIT;
+      return ctx.credits < (id === "warpfuel" ? WARP_FUEL_PRICE_PER_UNIT : REGULAR_FUEL_PRICE_PER_UNIT);
     case "upgrades": {
       const supply = ctx.supplies[id] ?? 0;
       if (!canBuyFromSupply(supply)) return true; // out of stock
@@ -647,7 +671,7 @@ function tradeAnnotation(
     case "everything":
       return undefined; // the `all` token has no single price
     case "fuel":
-      return creditLabel(FUEL_PRICE_PER_UNIT);
+      return creditLabel(id === "warpfuel" ? WARP_FUEL_PRICE_PER_UNIT : REGULAR_FUEL_PRICE_PER_UNIT);
     case "upgrades": {
       const value = upgradeValue(id);
       return creditLabel(verb === "buy" ? buyUnitCost(value) : value);
@@ -788,7 +812,9 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
     })
     .sort((a, b) => a.distance - b.distance)
     .slice(0, 8);
-  return renderMap(neighbors, player.fuel, {
+  // `map` lists `warp` targets, which burn WARP fuel — affordability is checked
+  // against the warp-fuel pool.
+  return renderMap(neighbors, player.warpFuel, {
     galaxyName: galaxy.name,
     armCount: galaxy.armCount,
     galaxy: current.galaxy,
@@ -835,15 +861,16 @@ async function handleWarp(
   }
 
   const distance = warpDistance(current, dest, armCount);
-  const cost = fuelCost(distance);
-  if (cost > player.fuel) {
+  // Warp burns WARP fuel, scaling only with distance (P2).
+  const cost = warpFuelCost(distance);
+  if (cost > player.warpFuel) {
     return errorFrame(
-      `Not enough fuel: warp needs ${cost}, you have ${player.fuel}. Try a closer system or \`buy fuel\`.`,
+      `Not enough warp fuel: warp needs ${cost}, you have ${player.warpFuel}. Try a closer system or \`buy warpfuel\`.`,
     );
   }
 
-  const newFuel = player.fuel - cost;
-  await world.setFuelAndLocation(player.id, newFuel, {
+  const newWarpFuel = player.warpFuel - cost;
+  await world.setWarpFuelAndLocation(player.id, newWarpFuel, {
     galaxy: dest.galaxy,
     arm: dest.arm,
     cluster: dest.cluster,
@@ -860,7 +887,7 @@ async function handleWarp(
   return frame([
     line([
       text(`Warped to ${destSystem.name}. `, "success"),
-      text(`−${cost} fuel (${newFuel} left).`, "muted"),
+      text(`−${cost} warp fuel (${newWarpFuel} left).`, "muted"),
     ]),
     ...scan.lines,
   ]);
@@ -900,13 +927,31 @@ async function handleLand(
     );
   }
 
+  // Regular fuel: takeoff from your CURRENT planet + the (time-varying)
+  // interplanetary hop to the destination. Validate before mutating.
+  const fromPlanet = planetAt(seed, locOf(player));
+  const cost = regularFuelCost(
+    { atmosphere: fromPlanet.atmosphere, gravity: fromPlanet.gravity, orbit: fromPlanet },
+    { orbit: planet },
+    Date.now(),
+  );
+  if (cost > player.fuel) {
+    return errorFrame(
+      `Not enough fuel: landing on ${planet.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` first.`,
+    );
+  }
+
   // Landing always touches you down in region 0 (resets `region`), even when
   // re-landing the planet you're already on after jumping around it.
-  await world.setPlanet(player.id, idx);
+  const newFuel = player.fuel - cost;
+  await world.setFuelAndPlanet(player.id, newFuel, idx);
 
   const scan = await regionScanFrame(player, seed, coord, 0);
   return frame([
-    line(text(`Landed on ${planet.name}.`, "success")),
+    line([
+      text(`Landed on ${planet.name}. `, "success"),
+      text(`−${cost} fuel (${newFuel} left).`, "muted"),
+    ]),
     ...scan.lines,
   ]);
 }
@@ -1375,6 +1420,7 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
     cargoCap: fresh.cargoCap,
     credits: fresh.credits,
     fuel: fresh.fuel,
+    warpFuel: fresh.warpFuel,
     health: fresh.health,
     maxHealth: MAX_HEALTH,
     embarked: fresh.embarked,
@@ -2407,36 +2453,56 @@ async function handleSellMaterial(
 
 async function handleBuy(player: Player, args: string[]): Promise<RenderFrame> {
   const what = args[0]?.toLowerCase();
-  if (!what) return errorFrame("Usage: buy fuel [n]  or  buy <resource> [qty]");
-  if (what !== "fuel") {
-    if (isUpgradeId(what)) return handleBuyUpgrade(player, what, args[1]);
-    return handleBuyResource(player, what, args[1]);
-  }
+  if (!what) return errorFrame("Usage: buy fuel [n]  |  buy warpfuel [n]  |  buy <resource> [qty]");
+  if (what === "fuel") return handleBuyFuel(player, "regular", args[1]);
+  if (what === "warpfuel") return handleBuyFuel(player, "warp", args[1]);
+  if (isUpgradeId(what)) return handleBuyUpgrade(player, what, args[1]);
+  return handleBuyResource(player, what, args[1]);
+}
+
+/**
+ * `buy fuel [n]` / `buy warpfuel [n]` — refill a fuel pool at its per-unit
+ * price. Regular fuel (`REGULAR_FUEL_PRICE_PER_UNIT`) feeds `land`; warp fuel
+ * (`WARP_FUEL_PRICE_PER_UNIT`, pricier) feeds `warp`. With no `n`, buys as much
+ * as credits allow. Validates credits before charging; both are embarked-only
+ * (gated in `dispatchResolved`).
+ */
+async function handleBuyFuel(
+  player: Player,
+  kind: "regular" | "warp",
+  nArg: string | undefined,
+): Promise<RenderFrame> {
+  const isWarp = kind === "warp";
+  const label = isWarp ? "warp fuel" : "fuel";
+  const command = isWarp ? "buy warpfuel" : "buy fuel";
+  const price = isWarp ? WARP_FUEL_PRICE_PER_UNIT : REGULAR_FUEL_PRICE_PER_UNIT;
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
-  const maxAffordable = Math.floor(fresh.credits / FUEL_PRICE_PER_UNIT);
-  const requested = toInt(args[1]);
-  if (args[1] !== undefined && (requested === null || requested <= 0)) {
-    return errorFrame("Usage: buy fuel [n]  — n must be a positive whole number.");
+  const maxAffordable = Math.floor(fresh.credits / price);
+  const requested = toInt(nArg);
+  if (nArg !== undefined && (requested === null || requested <= 0)) {
+    return errorFrame(`Usage: ${command} [n]  — n must be a positive whole number.`);
   }
   const want = requested ?? maxAffordable;
   const buy = Math.min(want, maxAffordable);
 
   if (buy <= 0) {
     return errorFrame(
-      `Not enough credits: fuel is ${FUEL_PRICE_PER_UNIT} cr/unit and you have ${fresh.credits}.`,
+      `Not enough credits: ${label} is ${price} cr/unit and you have ${fresh.credits}.`,
     );
   }
 
-  const cost = buy * FUEL_PRICE_PER_UNIT;
-  const newFuel = fresh.fuel + buy;
+  const cost = buy * price;
+  const current = isWarp ? fresh.warpFuel : fresh.fuel;
+  const newFuel = current + buy;
   await world.addPlayerCredits(player.id, -cost);
-  await world.setFuel(player.id, newFuel);
+  if (isWarp) await world.setWarpFuel(player.id, newFuel);
+  else await world.setFuel(player.id, newFuel);
 
   return frame([
     line([
-      text(`Bought ${buy} fuel for ${cost} cr. `, "success"),
-      text(`Fuel ${newFuel}, credits ${fresh.credits - cost}.`, "muted"),
+      text(`Bought ${buy} ${label} for ${cost} cr. `, "success"),
+      text(`${isWarp ? "Warp fuel" : "Fuel"} ${newFuel}, credits ${fresh.credits - cost}.`, "muted"),
     ]),
   ]);
 }
