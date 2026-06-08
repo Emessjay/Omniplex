@@ -8,4 +8,4 @@
  */
 export type { Player, PlayerRow } from "./types";
 export { rowToPlayer } from "./mapping";
-export { deriveHandleBase, uniqueHandle } from "./handle";
+export { generateCallsign, uniqueHandle, CALLSIGN_WORDS } from "./handle";

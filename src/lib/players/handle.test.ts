@@ -1,22 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { deriveHandleBase, uniqueHandle } from "./handle";
+import { CALLSIGN_WORDS, generateCallsign, uniqueHandle } from "./handle";
 
-describe("deriveHandleBase", () => {
-  it("takes the email local-part, lowercased", () => {
-    expect(deriveHandleBase("Nova@example.com")).toBe("nova");
-    expect(deriveHandleBase("PILOT@omniplex.gg")).toBe("pilot");
+describe("generateCallsign", () => {
+  it("is a word from the pool plus a short slug suffix", () => {
+    // Deterministic rng: 0 ⇒ first word + first suffix char each draw.
+    expect(generateCallsign(() => 0)).toBe(`${CALLSIGN_WORDS[0]}-aaa`);
   });
 
-  it("slugs non-alphanumeric runs to single dashes and trims them", () => {
-    expect(deriveHandleBase("first.last@x.com")).toBe("first-last");
-    expect(deriveHandleBase("a..b__c@x.com")).toBe("a-b-c");
-    expect(deriveHandleBase("_edge_@x.com")).toBe("edge");
-    expect(deriveHandleBase("plus+tag@x.com")).toBe("plus-tag");
+  it("never leaks the email: no '@' and never the email local-part", () => {
+    // The local-part of these emails ('john.smith', 'jane') would have been
+    // the OLD handle. A generated callsign must not equal or contain it.
+    const emails = [
+      "john.smith@gmail.com",
+      "jane@example.com",
+      "first.last@omniplex.gg",
+    ];
+    for (const email of emails) {
+      const local = email.split("@")[0];
+      // Sample the whole rng range so every word/suffix combination is hit.
+      for (let i = 0; i < 200; i += 1) {
+        const callsign = generateCallsign(() => i / 200);
+        expect(callsign).not.toContain("@");
+        expect(callsign).not.toContain(email);
+        expect(callsign).not.toBe(local);
+        expect(callsign).not.toContain(local);
+      }
+    }
   });
 
-  it("falls back to 'player' when nothing usable remains", () => {
-    expect(deriveHandleBase("!!!@x.com")).toBe("player");
-    expect(deriveHandleBase("@x.com")).toBe("player");
+  it("draws only from the built-in callsign word pool", () => {
+    for (let i = 0; i < 200; i += 1) {
+      const callsign = generateCallsign(() => i / 200);
+      const word = callsign.split("-")[0];
+      expect(CALLSIGN_WORDS).toContain(word);
+    }
   });
 });
 
