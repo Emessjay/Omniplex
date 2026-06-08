@@ -150,8 +150,8 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   craft: {
-    desc: "cook food, or craft Hyperwarp Condensate (upgrades are now `produce`d)",
-    slots: [{ name: "item", hint: "a food id, or `hyperwarp_condensate`" }],
+    desc: "cook food, refine biofuel, or craft Hyperwarp Condensate (upgrades are now `produce`d)",
+    slots: [{ name: "item", hint: "a food id, `biofuel <material>`, or `hyperwarp_condensate`" }],
   },
   eat: {
     desc: "eat a cooked food to restore health",
@@ -203,7 +203,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     ],
   },
   sell: {
-    desc: "sell cargo (or an upgrade) at the global market",
+    desc: "sell cargo (or an upgrade) at a settlement/outpost market",
     slots: [{ name: "resource" }],
   },
   buy: {

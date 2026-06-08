@@ -23,6 +23,13 @@ export interface PlayerStateView {
   embarked: boolean;
   /** In an active combat encounter (`player.encounter != null`). */
   inCombat: boolean;
+  /**
+   * Physically at a TRADE LOCATION — a surface region bearing a settlement, or
+   * the planet's orbital outpost (P12a). The economy commands (`buy`/`sell`)
+   * are usable iff this holds (regardless of embark state), superseding the old
+   * "economy = embarked anywhere" rule. Travel still requires being embarked.
+   */
+  atTradeLocation: boolean;
 }
 
 /**
@@ -49,13 +56,19 @@ const INFORMATIONAL = new Set([
 const COMBAT_ONLY = new Set(["attack", "flee"]);
 
 /**
- * Economy + ship travel + ship fabrication — require being ABOARD the ship (and
- * out of combat). `disembark` lives here: you can only step off the ship while
- * you're on it.
+ * Economy commands — applicable iff at a TRADE LOCATION (a settlement region or
+ * the orbital outpost) and out of combat, REGARDLESS of embark state (P12a). You
+ * can only `buy`/`sell` where there's actually a market to trade with; this
+ * superseded the old "economy = embarked anywhere" rule. (`buy fuel`/`buy
+ * warpfuel` are covered by `buy`.)
+ */
+const ECONOMY = new Set(["buy", "sell"]);
+
+/**
+ * Ship travel — requires being ABOARD the ship (and out of combat). `disembark`
+ * lives here: you can only step off the ship while you're on it.
  */
 const EMBARKED_ACTIONS = new Set([
-  "buy",
-  "sell",
   "warp",
   "land",
   "hyperwarp",
@@ -102,8 +115,9 @@ const ALWAYS = new Set<string>(["eat", ...INFORMATIONAL]);
  * Combat overrides everything: while `inCombat`, only the combat actions
  * (`attack`/`flee`) plus the always-applicable set (informational + `eat`) are
  * applicable. Out of combat, the combat actions are hidden ("nothing to fight"),
- * fabrication/navigation work in either embark state, and the remaining actions
- * split by embark state (economy/travel aboard, surface/base on foot).
+ * fabrication/navigation work in either embark state, the economy commands work
+ * iff at a trade location (settlement/outpost), and the remaining actions split
+ * by embark state (travel aboard, surface/base on foot).
  */
 export function isApplicable(verb: string, state: PlayerStateView): boolean {
   if (ALWAYS.has(verb)) return true;
@@ -114,7 +128,14 @@ export function isApplicable(verb: string, state: PlayerStateView): boolean {
   // Out of combat:
   if (COMBAT_ONLY.has(verb)) return false; // nothing to fight
   if (ANYTIME_OUT_OF_COMBAT.has(verb)) return true;
+  // Economy is gated by LOCATION (a settlement/outpost), not embark state.
+  if (ECONOMY.has(verb)) return state.atTradeLocation;
   return state.embarked ? EMBARKED_ACTIONS.has(verb) : DISEMBARKED_ACTIONS.has(verb);
+}
+
+/** Whether `verb` is an economy command (gated by being at a trade location). */
+export function isEconomyVerb(verb: string): boolean {
+  return ECONOMY.has(verb);
 }
 
 /**

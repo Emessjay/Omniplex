@@ -623,3 +623,41 @@ export function priceAfterSale(price: number, qtySold: number): number {
   const dropped = price * (1 - PRICE_IMPACT) ** qtySold;
   return Math.max(PRICE_FLOOR, Math.round(dropped));
 }
+
+// ---------------------------------------------------------------------------
+// Biofuel — the anti-softlock conversion (P12a).
+//
+// `craft biofuel <flora|animal material>` refines plant/animal materials into
+// REGULAR fuel so a pilot can never be permanently stranded with an empty tank
+// in deep space (where the economy — `buy fuel` — is now gated to settlements /
+// outposts). It is deliberately INEFFICIENT: only `BIOFUEL_EFFICIENCY` of the
+// materials' credit value comes back as fuel, so it is always a value loss vs
+// just selling the materials and buying fuel at a market — a last resort, never
+// an economy. Pure & deterministic (the handler validates ownership + persists).
+// ---------------------------------------------------------------------------
+
+/**
+ * Fraction of a refined material's credit value that is recovered as fuel; the
+ * rest is lost in the conversion. Strictly < 1, so `biofuelYield` always obeys
+ * the loss invariant regardless of the fuel price. Tunable.
+ */
+export const BIOFUEL_EFFICIENCY = 0.5;
+
+/**
+ * Regular-fuel units produced by refining `qty` units of a material worth
+ * `materialValue` credits each. Recovers `BIOFUEL_EFFICIENCY` of the materials'
+ * total credit value and converts it to fuel at `REGULAR_FUEL_PRICE_PER_UNIT`,
+ * floored to a whole unit. A non-negative integer; 0 for non-positive inputs.
+ * Monotonically non-decreasing in both `materialValue` and `qty`.
+ *
+ * LOSS INVARIANT (the reason biofuel exists only as a last resort): the credit
+ * value of the fuel produced is STRICTLY LESS than the credit value of the
+ * materials consumed — `biofuelYield(v, q) * REGULAR_FUEL_PRICE_PER_UNIT
+ * < v * q` for all `v, q > 0`. Because `fuel ≤ v·q·EFF / PRICE`, we get
+ * `fuel · PRICE ≤ v·q·EFF < v·q` since `EFF < 1`.
+ */
+export function biofuelYield(materialValue: number, qty: number): number {
+  if (!(materialValue > 0) || !(qty > 0)) return 0;
+  const recoveredCredits = materialValue * qty * BIOFUEL_EFFICIENCY;
+  return Math.floor(recoveredCredits / REGULAR_FUEL_PRICE_PER_UNIT);
+}

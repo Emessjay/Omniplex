@@ -328,9 +328,19 @@ export function renderScan(view: ScanView): RenderFrame {
       text(region.biome, "accent"),
     ]),
   );
-  // Settlement presence (P11): an inhabited region. Trade wiring is P12.
+  // Settlement presence (P11): an inhabited region. P12a: its market is open —
+  // you can `buy`/`sell` here (the economy is gated to settlements/outposts).
   if (view.settlement) {
-    lines.push(line(text("⌂ There is a settlement here.", "success")));
+    lines.push(
+      line([
+        text("⌂ There is a settlement here", "success"),
+        text(" — its market is open; you can ", "muted"),
+        action("buy", "buy", { style: "link", title: "buy at this settlement's market" }),
+        text(" / ", "muted"),
+        action("sell", "sell", { style: "link", title: "sell at this settlement's market" }),
+        text(" here.", "muted"),
+      ]),
+    );
   }
   // Per-region climate: this region's own temperature + hazard (the biome nudges
   // them off the planet mean shown below, never crossing the 0/100 band). This is

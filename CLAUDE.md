@@ -1191,3 +1191,57 @@ gotchas) accrete here as workers surface things worth persisting. See
   gating, per-system/per-planet frequency variance, ~2 outposts/system,
   determinism). Existing suites needed NO change — `region = -1` is a new value
   on an existing plain-int column.
+
+### Load-bearing decisions from `per-system-market`
+
+- **Resource prices are PER-SYSTEM (P12a), not one global market.** The `markets`
+  table is now keyed by `location_key = systemKey(systemOf(player))` (the 4-seg
+  `"galaxy:arm:cluster:system"`), replacing the hardcoded `'global'`. **NO
+  migration** — the table's `(location_key, resource_id)` PK already supported any
+  key; the pre-P12 `'global'` rows are now INERT (never read/written) and may be
+  cleaned up later. `world.ts` market adapters all take a leading `locationKey`:
+  `getMarketPrices(locationKey)`, `getMarketPrice(locationKey, resourceId)`,
+  `setMarketPrice(locationKey, resourceId, price)`.
+  - **Untraded system → `base_value`.** A system with no stored row for a resource
+    defaults to that resource's catalog `base_value`. `getMarketPrices` SEEDS the
+    full `RESOURCES` map at `base_value` then overrides with drifted stored rows;
+    `getMarketPrice` falls back to `base_value` on a missing row (null only for an
+    unknown id). So `sell`/`buy` always have a price at a fresh system.
+  - **Reversion target = `getResource(id).baseValue`**, applied on read via the
+    unchanged `priceTowardBase(stored, base, now − updated_at)` — now per system
+    row, so EACH system reverts on its own clock with no player present.
+  - **`setMarketPrice` is now an UPSERT** on `(location_key, resource_id)` (was a
+    bare UPDATE): the FIRST trade in a system CREATES its row (most systems start
+    rowless), later trades update it + stamp `updated_at = now`. Trades read+write
+    ONLY the current system's rows, so prices move locally; travelling never moves
+    a price (you just see the destination's reverted/base prices).
+  - Materials/upgrades stay CODE-priced (not in `markets`, no per-system pricing);
+    only resource PRICES went per-system. Upgrade SUPPLY stays global this phase
+    (per-system supply + parts-as-tradeable = P12b).
+- **Economy is gated by LOCATION, not embark (supersedes embarked-only).** The
+  single applicability source (`applicability.ts`) gained `atTradeLocation` on
+  `PlayerStateView` and a new `ECONOMY = {buy, sell}` bucket: economy commands are
+  applicable iff `atTradeLocation && !inCombat`, REGARDLESS of embark state (trade
+  aboard or on foot once you've arrived somewhere inhabited). `buy`/`sell` left the
+  old `EMBARKED_ACTIONS` set (now just travel: `warp`/`land`/`hyperwarp`/
+  `disembark`). `atTradeLocation(player, seed)` (in `commands.ts`) = `atOutpost`
+  (region === −1) OR `hasSettlement(seed, currentRegionCoord)`; `playerState` now
+  takes `seed` to compute it. `dispatchResolved` rejects an off-market economy verb
+  with the trade-location message (`isEconomyVerb` exported from `applicability`);
+  `scan` at a settlement / the outpost surfaces clickable `buy`/`sell` hints.
+  **Travel stays embarked-only; surface/combat rules unchanged.** Help-parity +
+  P10 per-state applicability + P9b red-marking all stay consistent (the existing
+  `context-help`/`help-args` suites were updated to the 3-field state, not weakened).
+- **Biofuel — the anti-softlock conversion.** `craft biofuel <flora|animal
+  material> [qty]` refines plant/animal materials into REGULAR fuel so an empty
+  tank in deep space (where `buy fuel` is now trade-gated) can never strand you.
+  `craft` is OPAQUE-armed, so `handleCraft` resolves `biofuel` (+ foods +
+  condensate) handler-side; `handleCraftBiofuel` resolves the material against the
+  player's OWNED flora/animal stacks (abbreviates; non-bio/unowned → clear error),
+  consumes them (`add_player_material(-)`) and adds fuel (`setFuel`), validating
+  ownership first. **`craft` works anywhere** (ungated by location; out-of-combat
+  like all fabrication). The pure rule is `biofuelYield(materialValue, qty)` in
+  `rules.ts` (`floor(materialValue·qty·BIOFUEL_EFFICIENCY / REGULAR_FUEL_PRICE_PER_UNIT)`,
+  `BIOFUEL_EFFICIENCY = 0.5`) with the **loss invariant**: fuel credit-value
+  `< materials' credit-value` for all positive inputs (since `EFF < 1`). Seeded
+  contract: `src/lib/game/per-system-market.test.ts`.

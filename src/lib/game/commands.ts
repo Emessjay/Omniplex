@@ -36,7 +36,7 @@ import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
 import { VERBS, USAGE, usageLine } from "./usage";
-import { isApplicable, type PlayerStateView } from "./applicability";
+import { isApplicable, isEconomyVerb, type PlayerStateView } from "./applicability";
 import { getWorldSeed } from "./seed";
 import {
   effectiveAbundance,
@@ -58,6 +58,7 @@ import {
   healValue,
   excavatorYield,
   baseCapacity,
+  biofuelYield,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
@@ -152,6 +153,18 @@ const OUTPOST_REGION = -1;
 /** True when the player is docked at the orbital outpost (not on a surface region). */
 function atOutpost(player: Player): boolean {
   return player.region === OUTPOST_REGION;
+}
+
+/**
+ * Whether the player is physically AT A TRADE LOCATION (P12a) — docked at the
+ * planet's orbital outpost, or standing in a surface region that bears a
+ * settlement. This is the gate for the economy commands (`buy`/`sell`): you can
+ * only trade where there is actually a market. Embark state is irrelevant here
+ * (you may trade aboard or on foot once you've arrived somewhere inhabited).
+ */
+function atTradeLocation(player: Player, seed: string): boolean {
+  if (atOutpost(player)) return true;
+  return hasSettlement(seed, { ...locOf(player), region: player.region });
 }
 
 /** The clear error for a surface-only action attempted at the orbital outpost. */
@@ -435,8 +448,12 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
 }
 
 /** The minimal player-state slice the unified applicability model reads. */
-function playerState(player: Player): PlayerStateView {
-  return { embarked: player.embarked, inCombat: player.encounter != null };
+function playerState(player: Player, seed: string): PlayerStateView {
+  return {
+    embarked: player.embarked,
+    inCombat: player.encounter != null,
+    atTradeLocation: atTradeLocation(player, seed),
+  };
 }
 
 /**
@@ -452,6 +469,9 @@ function inapplicableReason(verb: string, state: PlayerStateView): string {
   }
   if (verb === "attack" || verb === "flee") {
     return "Nothing to fight here — `explore` to find creatures.";
+  }
+  if (isEconomyVerb(verb)) {
+    return "You can only trade at a settlement or orbital outpost — find one and `jump O` to dock, or `jump`/`land` to a settlement region.";
   }
   if (verb === "embark") return "You're already aboard your ship.";
   if (verb === "disembark") return "You're already on the surface.";
@@ -472,7 +492,7 @@ async function dispatchResolved(
   // `help` omits — both consult `isApplicable`, so "shown" ⇔ "usable". The
   // older finer errors (e.g. `attack` with no encounter) still live in the
   // handlers and stay consistent with this gate.
-  const state = playerState(player);
+  const state = playerState(player, seed);
   if (!isApplicable(verb, state)) {
     return errorFrame(inapplicableReason(verb, state));
   }
@@ -580,7 +600,7 @@ async function handleHelp(
 ): Promise<RenderFrame> {
   // No-arg `help` is now CONTEXT-AWARE: list only the verbs applicable in the
   // player's current state (the same predicate the dispatch gate uses).
-  const state = playerState(player);
+  const state = playerState(player, seed);
   if (args.length === 0) return renderHelp(state);
 
   const targetRaw = args[0]!;
@@ -607,7 +627,7 @@ async function handleHelp(
   // Trade commands annotate their candidates with live prices; fetch the drifted
   // market prices once (the candidate SET still comes from `argDomain`).
   const isTrade = verb === "buy" || verb === "sell";
-  const prices = isTrade ? await world.getMarketPrices() : null;
+  const prices = isTrade ? await world.getMarketPrices(systemKey(systemOf(player))) : null;
   // `help buy` additionally marks candidates the player can't perform RIGHT NOW
   // (can't afford, or — for upgrades — out of stock) red, using the same checks
   // `handleBuy*` enforce. `sell` candidates are things you already own, so none
@@ -779,7 +799,13 @@ function outpostScanFrame(player: Player, seed: string): RenderFrame {
     line(text("A station hangs in orbit of the planet — a trade hub.", "default")),
     line(text("No surface here: no biome, no deposits, no mining.", "muted")),
     line([
-      text("Trade comes online in a later update. ", "muted"),
+      text("Its market is open — you can ", "muted"),
+      action("buy", "buy", { style: "link", title: "buy at the outpost market" }),
+      text(" / ", "muted"),
+      action("sell", "sell", { style: "link", title: "sell at the outpost market" }),
+      text(" here.", "muted"),
+    ]),
+    line([
       action("regions", "regions", { style: "link", title: "list the planet's surface regions" }),
       text(" or ", "muted"),
       text("jump <n>", "default"),
@@ -1609,7 +1635,8 @@ async function handleFlee(player: Player): Promise<RenderFrame> {
 async function handleInventory(player: Player): Promise<RenderFrame> {
   const [stacks, prices, materials] = await Promise.all([
     world.getInventory(player.id),
-    world.getMarketPrices(),
+    // Prices are per-system now — show the prices of the system you're in.
+    world.getMarketPrices(systemKey(systemOf(player))),
     world.getPlayerMaterials(player.id),
   ]);
   const fresh = (await world.getPlayerById(player.id)) ?? player;
@@ -1680,21 +1707,118 @@ async function handleCraft(player: Player, args: string[]): Promise<RenderFrame>
     );
   }
 
-  // `craft` cooks food (from MATERIAL ingredients in player_materials) and crafts
-  // Hyperwarp Condensate (from voidstone in CARGO — P3). The arg is opaque, so
-  // resolve a food / condensate id / unique prefix handler-side (these still
-  // abbreviate: `craft ber` → the berry dish, `craft hyp` → the condensate).
-  const fr = resolveToken(target, [...FOOD_IDS, HYPERWARP_CONDENSATE_ID]);
+  // `craft` cooks food (from MATERIAL ingredients in player_materials), crafts
+  // Hyperwarp Condensate (from voidstone in CARGO — P3), and refines biofuel
+  // (flora/animal materials → regular fuel — P12a anti-softlock). The arg is
+  // opaque, so resolve a food / condensate / `biofuel` id / unique prefix
+  // handler-side (these still abbreviate: `craft ber` → the dish, `craft hyp` →
+  // the condensate, `craft bio` → biofuel).
+  const fr = resolveToken(target, [...FOOD_IDS, HYPERWARP_CONDENSATE_ID, "biofuel"]);
   if (!fr.ok) {
     if (fr.reason === "ambiguous") {
       return errorFrame(`Ambiguous item '${target}' — did you mean: ${fr.matches.join(", ")}?`);
     }
     return errorFrame(
-      `Can't craft "${target}". \`craft\` cooks food or makes Hyperwarp Condensate; upgrades are \`produce\`d.`,
+      `Can't craft "${target}". \`craft\` cooks food, makes Hyperwarp Condensate, or refines biofuel; upgrades are \`produce\`d.`,
     );
   }
+  if (fr.value === "biofuel") return handleCraftBiofuel(player, args[1], args[2]);
   if (fr.value === HYPERWARP_CONDENSATE_ID) return handleCraftCondensate(player);
   return handleCookFood(player, fr.value);
+}
+
+/**
+ * `craft biofuel <material> [qty]` — the anti-softlock conversion (P12a): refine
+ * a plant (`flora`) or animal material you carry into REGULAR fuel so an empty
+ * tank in deep space (where `buy fuel` is gated to settlements/outposts) can
+ * never strand you for good. Deliberately LOSSY (`biofuelYield`): the fuel is
+ * worth strictly less than the materials, so it's a last resort, not an economy.
+ *
+ * Resolves the material against the player's OWNED flora/animal stacks (so it
+ * abbreviates and only offers what you can actually refine). A non-bio material,
+ * an unowned one, or a bad quantity errors with NO state change. On success it
+ * consumes the materials and adds the fuel. Ungated by embark state and by
+ * location — `craft` works anywhere.
+ */
+async function handleCraftBiofuel(
+  player: Player,
+  materialArg: string | undefined,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  if (!materialArg) {
+    return errorFrame(
+      "Usage: craft biofuel <material> [qty]  — refine a plant/animal material into regular fuel.",
+    );
+  }
+
+  const stacks = await world.getPlayerMaterials(player.id);
+  // Only flora/animal materials qualify; the candidate set is what you OWN of
+  // those, so resolution abbreviates against your actual bio stock.
+  const bioOwned = stacks
+    .map((s) => s.materialId)
+    .filter((id) => {
+      const c = getMaterial(id).category;
+      return c === "flora" || c === "animal";
+    });
+
+  const mr = resolveToken(materialArg.toLowerCase(), bioOwned);
+  if (!mr.ok) {
+    const typed = materialArg.toLowerCase();
+    if (isMaterialId(typed)) {
+      const cat = getMaterial(typed).category;
+      if (cat !== "flora" && cat !== "animal") {
+        return errorFrame(
+          `${getMaterial(typed).name} can't be refined into biofuel — only plant (flora) and animal materials qualify.`,
+        );
+      }
+      return errorFrame(`You aren't carrying any ${getMaterial(typed).name} to refine.`);
+    }
+    if (mr.reason === "ambiguous") {
+      return errorFrame(`Ambiguous material '${materialArg}' — did you mean: ${mr.matches.join(", ")}?`);
+    }
+    return errorFrame(
+      `No plant/animal material '${materialArg}' on hand to refine — \`harvest\` plants or hunt fauna first.`,
+    );
+  }
+  const materialId = mr.value;
+  const material = getMaterial(materialId);
+  const ownedNow = stacks.find((s) => s.materialId === materialId)?.qty ?? 0;
+
+  // Quantity: default the whole stack; a supplied value must be a positive int.
+  let qty: number;
+  if (qtyArg === undefined) {
+    qty = ownedNow;
+  } else {
+    const requested = toInt(qtyArg);
+    if (requested === null || requested <= 0) {
+      return errorFrame("Usage: craft biofuel <material> [qty]  — qty must be a positive whole number.");
+    }
+    qty = requested;
+  }
+  if (ownedNow < qty) {
+    return errorFrame(`You only own ${ownedNow} ${material.name} — can't refine ${qty}.`);
+  }
+
+  const fuelUnits = biofuelYield(materialValue(materialId), qty);
+  if (fuelUnits <= 0) {
+    return errorFrame(
+      `That isn't enough ${material.name} to yield any fuel — refine more at once.`,
+    );
+  }
+
+  // Validate done; consume the materials and add the fuel (read fresh fuel).
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  await world.addPlayerMaterial(player.id, materialId, -qty);
+  const newFuel = fresh.fuel + fuelUnits;
+  await world.setFuel(player.id, newFuel);
+
+  return frame([
+    line([
+      text(`Refined ${qty} ${material.name} into ${fuelUnits} fuel. `, "success"),
+      text(`Fuel ${newFuel}.`, "muted"),
+    ]),
+    line(text("  Biofuel is lossy — buy fuel at a settlement when you can afford to.", "muted")),
+  ]);
 }
 
 /**
@@ -2587,7 +2711,9 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
     }
   }
 
-  const prices = await world.getMarketPrices();
+  // Per-system market: read + write only the current system's price rows.
+  const sysKey = systemKey(systemOf(player));
+  const prices = await world.getMarketPrices(sysKey);
   let totalGain = 0;
   const soldLines: RenderFrame["lines"] = [];
 
@@ -2602,7 +2728,7 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
     const gain = sellValue(price, stack.qty);
     totalGain += gain;
     const newPrice = priceAfterSale(price, stack.qty);
-    await world.setMarketPrice(stack.resourceId, newPrice);
+    await world.setMarketPrice(sysKey, stack.resourceId, newPrice);
     await world.clearInventory(player.id, stack.resourceId);
     const res = getResource(stack.resourceId);
     soldLines.push(
@@ -2801,7 +2927,9 @@ async function handleBuyResource(
   }
   const qty = requested;
 
-  const price = await world.getMarketPrice(resourceId);
+  // Per-system market: this system's price (defaults to base_value if untraded).
+  const sysKey = systemKey(systemOf(player));
+  const price = await world.getMarketPrice(sysKey, resourceId);
   if (price == null) {
     return errorFrame(`No market for ${resourceId} right now.`);
   }
@@ -2828,7 +2956,7 @@ async function handleBuyResource(
   await world.addInventory(player.id, resourceId, qty);
   const newBalance = await world.addPlayerCredits(player.id, -total);
   const newPrice = priceAfterPurchase(price, qty);
-  await world.setMarketPrice(resourceId, newPrice);
+  await world.setMarketPrice(sysKey, resourceId, newPrice);
 
   return frame([
     line([

@@ -20,10 +20,8 @@ import "server-only";
 import { getServerClient } from "@/lib/supabase/server";
 import type { Player, PlayerRow, PlayerEncounter } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
-import { getResource } from "@/lib/universe";
+import { getResource, RESOURCES } from "@/lib/universe";
 import { regeneratedDepletion, priceTowardBase } from "./rules";
-
-const GLOBAL_MARKET = "global";
 
 /** Re-read the authoritative player row by id (post-mutation refresh). */
 export async function getPlayerById(id: string): Promise<Player | null> {
@@ -408,7 +406,14 @@ export async function addPlayerMaterial(
 }
 
 // ---------------------------------------------------------------------------
-// Markets (single global market for MVP).
+// Markets — per-SYSTEM resource prices (P12a). Each system has its own market
+// row per resource, keyed by `location_key = systemKey(...)` (the 4-segment
+// `"galaxy:arm:cluster:system"`). Trades read + write only the current system's
+// rows, so prices move locally; travelling never moves a price. A system with no
+// row yet defaults to the resource's catalog `base_value`, and every read drifts
+// the stored price back toward that baseline (mean-reversion), so each system
+// reverts on its own clock with NO player present. (Pre-P12 `'global'` rows are
+// inert — never read or written — and may be cleaned up by a later migration.)
 // ---------------------------------------------------------------------------
 
 /**
@@ -431,15 +436,27 @@ function driftedPrice(stored: number, resourceId: string, updatedAt: string): nu
   return Math.round(priceTowardBase(stored, base, elapsed));
 }
 
-/** Current global prices (drift-on-read applied), keyed by resource id. */
-export async function getMarketPrices(): Promise<Record<string, number>> {
+/**
+ * Current prices for `locationKey` (a `systemKey`), keyed by resource id, with
+ * drift-on-read applied. Every catalog resource is present: a resource with no
+ * stored row for this system defaults to its `base_value` (the system simply
+ * hasn't been traded yet), and stored rows override that default with their
+ * reverted price. So callers (`sell`, `inventory`, `help`) always get a price
+ * for everything they hold here.
+ */
+export async function getMarketPrices(
+  locationKey: string,
+): Promise<Record<string, number>> {
   const db = getServerClient();
   const { data, error } = await db
     .from("markets")
     .select("resource_id, price, updated_at")
-    .eq("location_key", GLOBAL_MARKET);
+    .eq("location_key", locationKey);
   if (error) throw error;
+  // Default every resource to its catalog base value (untraded system), then
+  // override with the drifted stored price wherever a row exists.
   const map: Record<string, number> = {};
+  for (const r of RESOURCES) map[r.id] = r.baseValue;
   for (const row of data ?? []) {
     const r = row as { resource_id: string; price: number; updated_at: string };
     map[r.resource_id] = driftedPrice(r.price, r.resource_id, r.updated_at);
@@ -448,34 +465,58 @@ export async function getMarketPrices(): Promise<Record<string, number>> {
 }
 
 /**
- * Current global price for one resource with drift-on-read applied (null if the
- * market has no row).
+ * Current price for one resource in `locationKey` (a `systemKey`) with
+ * drift-on-read applied. Falls back to the resource's catalog `base_value` when
+ * this system has no stored row yet (untraded → baseline price); returns null
+ * only for an unknown resource id.
  */
-export async function getMarketPrice(resourceId: string): Promise<number | null> {
+export async function getMarketPrice(
+  locationKey: string,
+  resourceId: string,
+): Promise<number | null> {
   const db = getServerClient();
   const { data, error } = await db
     .from("markets")
     .select("price, updated_at")
-    .eq("location_key", GLOBAL_MARKET)
+    .eq("location_key", locationKey)
     .eq("resource_id", resourceId)
     .maybeSingle();
   if (error) throw error;
-  if (!data) return null;
+  if (!data) {
+    // No row for this system yet → the catalog baseline (unknown id → null).
+    try {
+      return getResource(resourceId).baseValue;
+    } catch {
+      return null;
+    }
+  }
   const r = data as { price: number; updated_at: string };
   return driftedPrice(r.price, resourceId, r.updated_at);
 }
 
-/** Persist a new global price for a resource (best-effort write). */
+/**
+ * Persist a new price for a resource in `locationKey` (a `systemKey`), stamping
+ * `updated_at = now` so drift accrues forward from this trade. UPSERTs on the
+ * `(location_key, resource_id)` primary key, so the FIRST trade in a system
+ * creates its row (most systems start with no rows) and later trades update it.
+ */
 export async function setMarketPrice(
+  locationKey: string,
   resourceId: string,
   price: number,
 ): Promise<void> {
   const db = getServerClient();
   const { error } = await db
     .from("markets")
-    .update({ price, updated_at: new Date().toISOString() })
-    .eq("location_key", GLOBAL_MARKET)
-    .eq("resource_id", resourceId);
+    .upsert(
+      {
+        location_key: locationKey,
+        resource_id: resourceId,
+        price,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "location_key,resource_id" },
+    );
   if (error) throw error;
 }
 

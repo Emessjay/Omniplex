@@ -7,9 +7,12 @@ import { applicableVerbs, isApplicable, type PlayerStateView } from "@/lib/game/
 /** The verbs `help` should SKIP (aliases of another capability, e.g. `look`). */
 const ALIASES = VERBS.filter((v) => USAGE[v]?.alias);
 
-const EMBARKED: PlayerStateView = { embarked: true, inCombat: false };
-const DISEMBARKED: PlayerStateView = { embarked: false, inCombat: false };
-const COMBAT: PlayerStateView = { embarked: false, inCombat: true };
+// Representative states. `atTradeLocation: true` so the economy commands
+// (buy/sell) are exercised in the parity checks (P12a gates them by location,
+// not embark state).
+const EMBARKED: PlayerStateView = { embarked: true, inCombat: false, atTradeLocation: true };
+const DISEMBARKED: PlayerStateView = { embarked: false, inCombat: false, atTradeLocation: true };
+const COMBAT: PlayerStateView = { embarked: false, inCombat: true, atTradeLocation: true };
 
 /** The verbs the no-arg `help` list links to in `state` (one token per command). */
 function helpListedVerbs(state: PlayerStateView): string[] {
