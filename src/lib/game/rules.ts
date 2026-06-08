@@ -362,6 +362,61 @@ export function combatRound(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Bases — buildings & storage (P8a: silos + excavators).
+//
+// Silos give a base storage CAPACITY; excavators slowly, passively drain the
+// region's ore over real time and funnel it into that storage on `collect`.
+// As with mining and regen, the math is PURE and time is passed in as
+// `elapsedMs` — the handlers in `commands.ts` supply `now` (Date.now()) and the
+// per-region effective abundance (already regen+depletion-adjusted), so these
+// stay deterministic and unit-testable. The extracted ore is written back as
+// ordinary per-region depletion (`recordDepletion`), so excavation drains the
+// SHARED region exactly like manual mining — no separate model.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-silo storage capacity, in units. A base's total storage capacity is
+ * `SILO_CAPACITY * (number of silos)` (see `baseCapacity`). Tunable.
+ */
+export const SILO_CAPACITY = 1000;
+
+/**
+ * Ore units a single excavator drains per millisecond from a perfectly-rich
+ * (abundance 1.0) deposit. Deliberately small — excavators "slowly drain over
+ * time": at this rate a full-abundance deposit yields ~10 units/hour per
+ * excavator (3_600_000ms / 360_000 = 10), so meaningful accrual takes hours, not
+ * seconds. Yield scales down with the deposit's (effective) abundance.
+ */
+export const EXCAVATOR_RATE_PER_MS = 1 / 360_000;
+
+/**
+ * Ore units a single excavator has accrued for a deposit of `abundance` over
+ * `elapsedMs`, BEFORE storage-capacity clamping. 0 when `abundance <= 0` or
+ * `elapsedMs <= 0`; otherwise `floor(min(1, abundance) * elapsedMs * ratePerMs)`
+ * — a non-negative integer that grows monotonically with both abundance and
+ * elapsed time. Pure — the handler supplies the real elapsed time and the
+ * deposit's current effective abundance.
+ */
+export function excavatorYield(
+  abundance: number,
+  elapsedMs: number,
+  ratePerMs: number = EXCAVATOR_RATE_PER_MS,
+): number {
+  if (!(abundance > 0) || !(elapsedMs > 0)) return 0;
+  const a = abundance < 1 ? abundance : 1;
+  return Math.floor(a * elapsedMs * ratePerMs);
+}
+
+/**
+ * Total storage capacity of a base with `siloCount` silos: `SILO_CAPACITY`
+ * per silo. 0 with no silos. Negative/fractional counts are floored at 0 / down
+ * defensively (the caller passes an integer building count).
+ */
+export function baseCapacity(siloCount: number): number {
+  return SILO_CAPACITY * Math.max(0, Math.floor(siloCount));
+}
+
+// ---------------------------------------------------------------------------
 // Navigation.
 // ---------------------------------------------------------------------------
 

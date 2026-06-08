@@ -658,6 +658,138 @@ export async function basesOwnedBy(playerId: string): Promise<OwnedBase[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Base buildings + storage (P8a) — structures INSIDE a base (silos/excavators)
+// and a base's stored items (silo contents). Public read (bases are public), so
+// these reads are public-safe; writes go through the service role. The building
+// *catalog* (kinds, costs) and the accrual math live in code (`bases.ts` /
+// `rules.ts`); the DB stores ownership + mutable per-building state.
+// ---------------------------------------------------------------------------
+
+/** A structure inside a base: its id, kind, mutable state, and creation time. */
+export interface BaseBuilding {
+  id: string;
+  kind: string;
+  state: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** A base the current player owns, with the id needed to address its buildings. */
+export interface OwnedBaseRow {
+  id: string;
+  name: string | null;
+}
+
+/**
+ * The base `ownerId` owns in `regionKey`, or null if they have none there. The
+ * `(owner_id, region_key)` unique constraint guarantees at most one. Returns the
+ * id (to address its buildings/storage) + name.
+ */
+export async function getBaseInRegion(
+  ownerId: string,
+  regionKey: string,
+): Promise<OwnedBaseRow | null> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("bases")
+    .select("id, name")
+    .eq("owner_id", ownerId)
+    .eq("region_key", regionKey)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const r = data as { id: string; name: string | null };
+  return { id: r.id, name: r.name };
+}
+
+/** All buildings in a base, oldest first. */
+export async function getBaseBuildings(baseId: string): Promise<BaseBuilding[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("base_buildings")
+    .select("id, kind, state, created_at")
+    .eq("base_id", baseId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as {
+      id: string;
+      kind: string;
+      state: Record<string, unknown> | null;
+      created_at: string;
+    };
+    return { id: r.id, kind: r.kind, state: r.state ?? {}, createdAt: r.created_at };
+  });
+}
+
+/** Insert a building of `kind` into a base with an initial `state` (default {}). */
+export async function createBaseBuilding(
+  baseId: string,
+  kind: string,
+  state: Record<string, unknown> = {},
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("base_buildings")
+    .insert({ base_id: baseId, kind, state });
+  if (error) throw error;
+}
+
+/** Overwrite a building's mutable `state` (e.g. an excavator's lastCollectedAt). */
+export async function setBuildingState(
+  buildingId: string,
+  state: Record<string, unknown>,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("base_buildings")
+    .update({ state })
+    .eq("id", buildingId);
+  if (error) throw error;
+}
+
+/** A stored item in a base's storage. */
+export interface StorageStack {
+  itemId: string;
+  qty: number;
+}
+
+/** A base's non-empty stored items (qty > 0), ascending by id for stable display. */
+export async function getBaseStorage(baseId: string): Promise<StorageStack[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("base_storage")
+    .select("item_id, qty")
+    .eq("base_id", baseId)
+    .gt("qty", 0)
+    .order("item_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    itemId: (r as { item_id: string }).item_id,
+    qty: (r as { qty: number }).qty,
+  }));
+}
+
+/**
+ * Atomically adjust a base's stored quantity of an item by `delta` (negative to
+ * withdraw); returns the new qty. Clamped at 0 in SQL, but handlers validate
+ * holdings/capacity first.
+ */
+export async function addBaseStorage(
+  baseId: string,
+  itemId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_base_storage", {
+    p_base: baseId,
+    p_item: itemId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Leaderboards (`who`). Reads public-safe data only.
 // ---------------------------------------------------------------------------
 

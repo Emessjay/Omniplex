@@ -49,3 +49,43 @@ export function canAffordBase(
 ): boolean {
   return Object.entries(cost).every(([key, need]) => (have[key] ?? 0) >= need);
 }
+
+// ---------------------------------------------------------------------------
+// Buildings inside a base (P8a: silos + excavators). Like `BASE_BUILD_COST`,
+// each is a tunable cost map mixing the literal `credits` key with mineral ids
+// (consumed from the cargo hold). `canAffordBase` checks any of them uniformly.
+// ---------------------------------------------------------------------------
+
+/** The in-base structures buildable today (beyond the base itself). P8b grows this. */
+export const STRUCTURE_KINDS = ["silo", "excavator"] as const;
+export type StructureKind = (typeof STRUCTURE_KINDS)[number];
+
+/** True iff `kind` is a buildable in-base structure (`silo` / `excavator`). */
+export function isStructureKind(kind: string): kind is StructureKind {
+  return (STRUCTURE_KINDS as readonly string[]).includes(kind);
+}
+
+/**
+ * What each in-base structure costs to `build` — tunable. Keys are the literal
+ * `credits` (charged against the balance) or a mineral id (consumed from cargo).
+ * Silos are cheaper (raw storage); excavators cost more (active machinery).
+ */
+export const BUILDING_BUILD_COST: Readonly<Record<StructureKind, Readonly<Record<string, number>>>> = {
+  silo: { credits: 300, iron: 5 },
+  excavator: { credits: 400, titanium: 3, iron: 5 },
+};
+
+/** The cost map for one structure kind. */
+export function buildingCost(kind: StructureKind): Readonly<Record<string, number>> {
+  return BUILDING_BUILD_COST[kind];
+}
+
+/** The credits portion of a cost map (the `credits` line, 0 if absent). */
+export function creditsOf(cost: Record<string, number>): number {
+  return cost.credits ?? 0;
+}
+
+/** The mineral ingredients of a cost map (everything except `credits`). */
+export function mineralsOf(cost: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(Object.entries(cost).filter(([k]) => k !== "credits"));
+}

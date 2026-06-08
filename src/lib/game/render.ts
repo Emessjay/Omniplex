@@ -704,6 +704,76 @@ export function renderBases(view: BasesView): RenderFrame {
   return frame(lines);
 }
 
+export interface StorageView {
+  /** The base's name, or null if unnamed. */
+  name: string | null;
+  /** Friendly location label for the base's region. */
+  location: string;
+  /** Number of silos (storage) and excavators (passive ore drain) in the base. */
+  silos: number;
+  excavators: number;
+  /** Stored units used + total capacity (= SILO_CAPACITY × silos). */
+  used: number;
+  capacity: number;
+  /** Stored items: resource id, quantity, and display name. */
+  items: { itemId: string; qty: number; name: string }[];
+}
+
+/**
+ * `storage` (alias `base`) — the current region's base: its silo/excavator
+ * counts and what's stored against capacity. A clickable `build silo` /
+ * `build excavator` / `collect` hint guides expanding it.
+ */
+export function renderStorage(view: StorageView): RenderFrame {
+  const label = view.name && view.name.length > 0 ? view.name : "(unnamed base)";
+  const lines: RenderLine[] = [
+    line([
+      text("Base ", "heading"),
+      text(label, "accent"),
+      text(`  ${view.location}`, "muted"),
+    ]),
+    line([
+      text("silos ", "muted"),
+      text(`${view.silos}`, "default"),
+      text("   excavators ", "muted"),
+      text(`${view.excavators}`, "default"),
+      text("   storage ", "muted"),
+      text(`${view.used}/${view.capacity}`, view.used >= view.capacity ? "warning" : "default"),
+    ]),
+  ];
+
+  if (view.items.length === 0) {
+    lines.push(line(text("Storage is empty. `deposit <item>` or `collect` from excavators.", "muted")));
+  } else {
+    lines.push(line(text("Stored:", "heading")));
+    for (const it of view.items) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${it.name} ×${it.qty}  `, "default"),
+          action(`withdraw ${it.itemId}`, `withdraw ${it.itemId}`, {
+            style: "link",
+            title: `withdraw ${it.name}`,
+          }),
+        ]),
+      );
+    }
+  }
+
+  // Expansion hints (clickable).
+  const hints: RenderSpan[] = [
+    action("build silo", "build silo", { style: "link", title: "add storage capacity" }),
+    text("   ", "muted"),
+    action("build excavator", "build excavator", { style: "link", title: "add an ore drain" }),
+  ];
+  if (view.excavators > 0) {
+    hints.push(text("   ", "muted"));
+    hints.push(action("collect", "collect", { style: "link", title: "funnel accrued ore in" }));
+  }
+  lines.push(line(hints));
+  return frame(lines);
+}
+
 export interface WhoView {
   topCredits: { handle: string; credits: number }[];
   topDiscoveries: { handle: string; count: number }[];

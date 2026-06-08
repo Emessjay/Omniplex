@@ -708,3 +708,67 @@ gotchas) accrete here as workers surface things worth persisting. See
   deterministic function of the region coord. Seeded contract:
   `biome-minerals.test.ts` (the old fixed-catalog-size assertion in
   `universe-gen.test.ts` was relaxed to `>= 7`, preserving coverage).
+
+### Load-bearing decisions from `base-buildings`
+
+- **P8a opens the production track INSIDE a base: silos (storage) + excavators
+  (passive, time-based ore drain).** Two new tables (migration
+  `20260608110000_base-buildings.sql`, forward-only/idempotent), both **public
+  read** (bases are public, so their buildings/contents are too) with
+  service-role-only writes:
+  - `base_buildings` — `id uuid pk`, `base_id → bases(id) on delete cascade`,
+    `kind text` (`'silo' | 'excavator'`; no DB enum so P8b kinds need no
+    migration), `state jsonb default '{}'` (excavator: `{ lastCollectedAt:
+    <iso> }`), `created_at`, index on `base_id`.
+  - `base_storage` — `(base_id → bases, item_id text, qty int ≥0)`, pk
+    `(base_id, item_id)`; `item_id` is a **resource id for now** (P8b extends to
+    materials/advanced). Atomic `add_base_storage(p_base, p_item, p_delta)` RPC
+    mirroring `add_inventory`/`add_player_material` (single statement,
+    `greatest(0, …)` clamp). No FK on `item_id` (code catalog, like inventory).
+- **`world.ts` adapters**: `getBaseInRegion(ownerId, regionKey) → {id, name}|null`
+  (the `(owner,region)` unique key ⇒ ≤1), `getBaseBuildings(baseId) →
+  BaseBuilding[]` (`{id, kind, state, createdAt}`), `createBaseBuilding(baseId,
+  kind, state?)`, `setBuildingState(buildingId, state)`, `getBaseStorage(baseId)
+  → StorageStack[]` (`{itemId, qty}`, qty>0), `addBaseStorage(baseId, itemId,
+  delta) → newQty`.
+- **Pure rules** (`rules.ts`, seeded contract `base-buildings.test.ts`):
+  `SILO_CAPACITY = 1000` (units/silo); `EXCAVATOR_RATE_PER_MS = 1/360_000`
+  (~10 units/hr per excavator at abundance 1.0 — "slowly drains over time");
+  `baseCapacity(siloCount) = SILO_CAPACITY · siloCount`; `excavatorYield(
+  abundance, elapsedMs, ratePerMs?) = floor(min(1,abundance) · elapsedMs ·
+  ratePerMs)`, 0 when abundance≤0 or elapsed≤0, monotonic in both. Time is passed
+  in (handler supplies `Date.now()`); these stay pure & deterministic.
+- **Building costs are tunable code catalog** in `bases.ts` (mirrors
+  `BASE_BUILD_COST`): `BUILDING_BUILD_COST: Record<StructureKind, costMap>` =
+  `{ silo: {credits:300, iron:5}, excavator: {credits:400, titanium:3, iron:5} }`;
+  `STRUCTURE_KINDS`/`isStructureKind`/`buildingCost(kind)` + the generic
+  `creditsOf`/`mineralsOf` splitters. `canAffordBase(have, cost)` checks any cost
+  map uniformly. `commands.ts` shares `consumeCost`/`refundCost`/`affordContext`
+  for the base AND building build paths.
+- **`build` structure domain is now `["base","silo","excavator"]`** (abbrev-
+  resolvable). `build silo`/`build excavator` are **DISEMBARKED_ONLY** (like
+  `build base`) AND require an owned base in the current region; charge their cost
+  atomically (validate→consume; nothing consumed on failure), create the building
+  row. Excavators start with `lastCollectedAt = now`.
+- **`deposit <item> [qty]` / `withdraw <item> [qty]`** move resources between ship
+  cargo and the current region's base storage — **ungated by embark state**
+  ("it's your base"). Bounded by holdings, free cargo, and `baseCapacity(#silos)`;
+  default qty = "as much as fits". Atomic (`add_inventory`/`add_base_storage`
+  pair). Abbrev domains: `deposit` arg0 = held resource ids; `withdraw` arg0 =
+  this base's stored item ids (loaded in `loadArgDomainContext`).
+- **`collect`** (ungated): for each excavator and each region deposit, accrue
+  `excavatorYield(effectiveAbundance, elapsedSinceLastCollected)`, **clamped to
+  remaining storage capacity** (banked in deposit order). Banked ore is added to
+  `base_storage` AND written back via `recordDepletion(regionKey, …, qty ·
+  DEPLETION_PER_UNIT, …)` — so excavation drains the **same** per-region
+  depletion model as manual `mine` (others see less; regen refills). All
+  excavators' `lastCollectedAt` advance to `now` whenever there was room (no time
+  lost). No elapsed ⇒ nothing accrues.
+- **`storage` (alias `base`)** shows the current region's base: silo/excavator
+  counts + stored contents vs capacity (`renderStorage`/`StorageView` in
+  `render.ts`). `base` is a `USAGE` alias (`alias:true`, skipped in the `help`
+  list, like `look`→`scan`); both resolve to `handleStorage`.
+- **For P8b**: production lines consume siloed raw → advanced materials (extend
+  `base_buildings.kind`, the `build` domain, and `base_storage.item_id` beyond
+  resource ids — no schema change needed for new kinds/items). P9 routes
+  ship-upgrade manufacture through production lines.

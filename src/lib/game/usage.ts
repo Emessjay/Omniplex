@@ -41,6 +41,11 @@ export const VERBS: string[] = [
   "eat",
   "build",
   "bases",
+  "base",
+  "storage",
+  "deposit",
+  "withdraw",
+  "collect",
   "sell",
   "buy",
   "who",
@@ -147,14 +152,41 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "food" }],
   },
   build: {
-    desc: "establish a base in this region (must be on foot)",
+    desc: "build a base or an in-base structure here (must be on foot)",
     slots: [
       { name: "structure" },
-      { name: "name", optional: true, hint: "an optional base name" },
+      { name: "name", optional: true, hint: "an optional base name (build base only)" },
     ],
   },
   bases: {
     desc: "list the bases you've established",
+    slots: [],
+  },
+  storage: {
+    desc: "show this region's base: buildings + stored contents",
+    slots: [],
+  },
+  base: {
+    desc: "alias for storage",
+    slots: [],
+    alias: true,
+  },
+  deposit: {
+    desc: "move cargo from your ship into this base's storage",
+    slots: [
+      { name: "item" },
+      { name: "qty", optional: true, hint: "a number (default: as much as fits)" },
+    ],
+  },
+  withdraw: {
+    desc: "move stored items from this base back to your ship",
+    slots: [
+      { name: "item" },
+      { name: "qty", optional: true, hint: "a number (default: as much as fits)" },
+    ],
+  },
+  collect: {
+    desc: "funnel ore your excavators have drained into storage",
     slots: [],
   },
   sell: {

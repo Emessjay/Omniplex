@@ -51,6 +51,8 @@ import {
   combatRound,
   exploreOutcome,
   healValue,
+  excavatorYield,
+  baseCapacity,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
@@ -83,6 +85,11 @@ import {
   BASE_BUILD_CREDITS,
   BASE_BUILD_MINERALS,
   canAffordBase,
+  isStructureKind,
+  buildingCost,
+  creditsOf,
+  mineralsOf,
+  type StructureKind,
 } from "./bases";
 import {
   renderHelp,
@@ -93,6 +100,7 @@ import {
   renderInventory,
   renderUpgrades,
   renderBases,
+  renderStorage,
   renderWho,
   errorFrame,
   type MapNeighbor,
@@ -238,12 +246,18 @@ interface ArgDomainContext {
   sellCandidates: string[] | null;
   /** Owned food ids — the `eat` arg domain (you can only eat what you carry). */
   eatCandidates: string[] | null;
+  /** Held resource ids — the `deposit` arg domain (you can only deposit what you carry). */
+  depositCandidates: string[] | null;
+  /** Item ids in this region's base storage — the `withdraw` arg domain. */
+  withdrawCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   mineCandidates: null,
   sellCandidates: null,
   eatCandidates: null,
+  depositCandidates: null,
+  withdrawCandidates: null,
 };
 
 /**
@@ -267,6 +281,17 @@ async function loadArgDomainContext(
     const owned = materials.map((m) => m.materialId).filter(isFoodId);
     return { ...EMPTY_ARG_CONTEXT, eatCandidates: owned };
   }
+  if (verb === "deposit") {
+    // You can only deposit resources you're carrying.
+    const stacks = await world.getInventory(player.id);
+    return { ...EMPTY_ARG_CONTEXT, depositCandidates: stacks.map((s) => s.resourceId) };
+  }
+  if (verb === "withdraw") {
+    // You can only withdraw items your base here is storing.
+    const base = await world.getBaseInRegion(player.id, regionKey(regionAt(seed, locOf(player), player.region).coord));
+    const stored = base ? await world.getBaseStorage(base.id) : [];
+    return { ...EMPTY_ARG_CONTEXT, withdrawCandidates: stored.map((s) => s.itemId) };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -285,9 +310,11 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "mine" && argIndex === 0) return ctx.mineCandidates;
       if (verb === "sell" && argIndex === 0) return ctx.sellCandidates;
       if (verb === "eat" && argIndex === 0) return ctx.eatCandidates;
-      // `build`'s structure domain is just `["base"]` today; P8 grows it with
-      // in-base structures (excavators / silos / production lines).
-      if (verb === "build" && argIndex === 0) return ["base"];
+      if (verb === "deposit" && argIndex === 0) return ctx.depositCandidates;
+      if (verb === "withdraw" && argIndex === 0) return ctx.withdrawCandidates;
+      // `build`'s structure domain: the base itself plus the in-base structures
+      // (P8a silos/excavators). P8b grows it with production lines.
+      if (verb === "build" && argIndex === 0) return ["base", "silo", "excavator"];
       if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS, ...FOOD_IDS];
       if (verb === "buy" && argIndex === 0) {
         return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
@@ -399,6 +426,15 @@ async function dispatchResolved(
       return handleBuild(player, seed, args);
     case "bases":
       return handleBases(player);
+    case "base":
+    case "storage":
+      return handleStorage(player, seed);
+    case "deposit":
+      return handleDeposit(player, seed, args);
+    case "withdraw":
+      return handleWithdraw(player, seed, args);
+    case "collect":
+      return handleCollect(player, seed);
     case "sell":
       return handleSell(player, args);
     case "buy":
@@ -423,6 +459,10 @@ function emptyDomainNote(verb: string): string {
       return "your hold is empty — `mine` something first";
     case "eat":
       return "no food on hand — `craft` a meal first";
+    case "deposit":
+      return "your hold is empty — `mine` something first";
+    case "withdraw":
+      return "this base is storing nothing — `deposit` or `collect` first";
     default:
       return "nothing available right now";
   }
@@ -1431,19 +1471,16 @@ async function handleEat(player: Player, args: string[]): Promise<RenderFrame> {
 
 // ---------------------------------------------------------------------------
 // build / bases — establish a base in the current region (P7) and list yours.
-// `build` is disembarked-only (surface infrastructure, gated like `mine`); this
-// phase only accepts `build base`. P8 extends the structure domain with the
-// buildings that go INSIDE a base.
+// `build` is disembarked-only (surface infrastructure, gated like `mine`) and
+// now accepts `base`, `silo` and `excavator` (P8a). The silo/excavator path,
+// plus `deposit`/`withdraw`/`collect`/`storage`, live further below.
 // ---------------------------------------------------------------------------
 
 /**
- * `build base [name]` — establish a base in the player's current region. Charges
- * the tunable `BASE_BUILD_COST` (credits + mineral ingredients from the cargo
- * hold). Validates disembarked (gated in `dispatchResolved`), no existing base
- * here, and affordability BEFORE mutating; the cost is consumed atomically and
- * only then is the base created. A lost create race (unique constraint) refunds
- * the cost, so a failure never leaves you charged without a base. Other players
- * see the base via `scan` (the table is public-read).
+ * `build <structure> [name]` — establish a base (`build base`) or add an in-base
+ * structure (`build silo` / `build excavator`) in the player's current region.
+ * Disembarked-only (gated in `dispatchResolved`). Routes to the base or building
+ * path; an unknown structure errors without touching state.
  */
 async function handleBuild(
   player: Player,
@@ -1451,10 +1488,62 @@ async function handleBuild(
   args: string[],
 ): Promise<RenderFrame> {
   const structure = args[0]?.toLowerCase();
-  if (!structure) return errorFrame("Usage: build base [name]");
-  if (structure !== "base") {
-    return errorFrame(`Can't build "${structure}" — only \`base\` for now.`);
+  if (!structure) return errorFrame("Usage: build <base|silo|excavator> [name]");
+  if (structure === "base") return handleBuildBase(player, seed, args);
+  if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
+  return errorFrame(`Can't build "${structure}" — try \`base\`, \`silo\` or \`excavator\`.`);
+}
+
+/**
+ * Build the `have` map (credits + cargo) used to check a cost map's affordability.
+ */
+async function affordContext(player: Player): Promise<Record<string, number>> {
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const stacks = await world.getInventory(player.id);
+  const have: Record<string, number> = { credits: fresh.credits };
+  for (const s of stacks) have[s.resourceId] = s.qty;
+  return have;
+}
+
+/** Consume a build cost atomically: minerals from cargo, then credits. */
+async function consumeCost(playerId: string, cost: Record<string, number>): Promise<void> {
+  for (const [rid, qty] of Object.entries(mineralsOf(cost))) {
+    await world.removeInventory(playerId, rid, qty);
   }
+  const credits = creditsOf(cost);
+  if (credits > 0) await world.addPlayerCredits(playerId, -credits);
+}
+
+/** Refund a previously-consumed cost (used when a create race loses). */
+async function refundCost(playerId: string, cost: Record<string, number>): Promise<void> {
+  for (const [rid, qty] of Object.entries(mineralsOf(cost))) {
+    await world.addInventory(playerId, rid, qty);
+  }
+  const credits = creditsOf(cost);
+  if (credits > 0) await world.addPlayerCredits(playerId, credits);
+}
+
+/** Render a cost map as a "5 Iron + 300 cr" cost summary. */
+function costSummary(cost: Record<string, number>): string {
+  return [
+    ...Object.entries(mineralsOf(cost)).map(([rid, qty]) => `${qty} ${getResource(rid).name}`),
+    ...(creditsOf(cost) > 0 ? [`${creditsOf(cost)} cr`] : []),
+  ].join(" + ");
+}
+
+/**
+ * `build base [name]` — establish a base in the player's current region. Charges
+ * the tunable `BASE_BUILD_COST` (credits + mineral ingredients from the cargo
+ * hold). Validates no existing base here and affordability BEFORE mutating; the
+ * cost is consumed atomically and only then is the base created. A lost create
+ * race (unique constraint) refunds the cost, so a failure never leaves you
+ * charged without a base. Other players see the base via `scan` (public-read).
+ */
+async function handleBuildBase(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
   // The (optional) name is a free-form, case-preserved opaque tail.
   const name = args.slice(1).join(" ").trim() || undefined;
 
@@ -1488,23 +1577,13 @@ async function handleBuild(
   }
 
   // Consume the cost atomically (minerals from cargo, then credits), then build.
-  for (const [rid, qty] of Object.entries(BASE_BUILD_MINERALS)) {
-    await world.removeInventory(player.id, rid, qty);
-  }
-  if (BASE_BUILD_CREDITS > 0) {
-    await world.addPlayerCredits(player.id, -BASE_BUILD_CREDITS);
-  }
+  await consumeCost(player.id, BASE_BUILD_COST);
 
   const created = await world.createBase(player.id, rKey, name);
   if (!created) {
     // Lost a race (a base appeared between our check and the insert): refund the
     // cost so nothing is consumed on this failure.
-    for (const [rid, qty] of Object.entries(BASE_BUILD_MINERALS)) {
-      await world.addInventory(player.id, rid, qty);
-    }
-    if (BASE_BUILD_CREDITS > 0) {
-      await world.addPlayerCredits(player.id, BASE_BUILD_CREDITS);
-    }
+    await refundCost(player.id, BASE_BUILD_COST);
     return errorFrame(
       `You already have a base in region ${player.region} of ${planet.name}.`,
     );
@@ -1558,6 +1637,339 @@ function describeRegionKey(key: string): string {
     /* fall through to the raw key */
   }
   return key;
+}
+
+// ---------------------------------------------------------------------------
+// build silo / excavator — in-base structures (P8a). Disembarked-only (gated in
+// `dispatchResolved`); additionally require owning a base in the current region.
+// deposit / withdraw / collect / storage operate on that base's storage and
+// excavators below.
+// ---------------------------------------------------------------------------
+
+/**
+ * `build silo` / `build excavator` — add a structure to the base in the player's
+ * current region. Requires a base here (helpful error otherwise) and charges the
+ * structure's tunable cost (credits + minerals). Validates ownership +
+ * affordability BEFORE mutating; the cost is consumed atomically, then the
+ * building row is created (an excavator starts with `lastCollectedAt = now`, so
+ * it accrues from the moment it's built).
+ */
+async function handleBuildStructure(
+  player: Player,
+  seed: string,
+  kind: StructureKind,
+): Promise<RenderFrame> {
+  const coord = locOf(player);
+  const region = regionAt(seed, coord, player.region);
+  const rKey = regionKey(region.coord);
+  const planet = planetAt(seed, coord);
+
+  const base = await world.getBaseInRegion(player.id, rKey);
+  if (!base) {
+    return errorFrame(
+      `No base here to build in — \`build base\` first (region ${player.region} of ${planet.name}).`,
+    );
+  }
+
+  const cost = buildingCost(kind);
+  const have = await affordContext(player);
+  if (!canAffordBase(have, cost)) {
+    const short = Object.entries(cost)
+      .filter(([k, q]) => (have[k] ?? 0) < q)
+      .map(([k, q]) =>
+        k === "credits"
+          ? `${q} cr (have ${have.credits ?? 0})`
+          : `${q} ${getResource(k).name} (have ${have[k] ?? 0})`,
+      );
+    return errorFrame(`Can't build a ${kind} — short on ${short.join(", ")}.`);
+  }
+
+  await consumeCost(player.id, cost);
+  const state = kind === "excavator" ? { lastCollectedAt: new Date().toISOString() } : {};
+  await world.createBaseBuilding(base.id, kind, state);
+
+  const buildings = await world.getBaseBuildings(base.id);
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+  const excavators = buildings.filter((b) => b.kind === "excavator").length;
+  const detail =
+    kind === "silo"
+      ? `Storage capacity is now ${baseCapacity(silos)} (${silos} silo${silos === 1 ? "" : "s"}).`
+      : `${excavators} excavator${excavators === 1 ? "" : "s"} now draining this region — \`collect\` to funnel ore in.`;
+  return frame([
+    line([
+      text(`Built a ${kind} `, "success"),
+      text(`in region ${player.region} of ${planet.name}. `, "default"),
+      text(`Cost: ${costSummary(cost)}.`, "muted"),
+    ]),
+    line(text(detail, "muted")),
+  ]);
+}
+
+/** Resolve the base the player owns in their current region (or null). */
+async function baseHere(
+  player: Player,
+  seed: string,
+): Promise<{ id: string; name: string | null; rKey: string } | null> {
+  const region = regionAt(seed, locOf(player), player.region);
+  const rKey = regionKey(region.coord);
+  const base = await world.getBaseInRegion(player.id, rKey);
+  return base ? { id: base.id, name: base.name, rKey } : null;
+}
+
+/**
+ * `storage` (alias `base`) — show the current region's base: its silo/excavator
+ * counts, and its stored contents against the silo-derived capacity. Either
+ * embark state is fine — it's your base.
+ */
+async function handleStorage(player: Player, seed: string): Promise<RenderFrame> {
+  const base = await baseHere(player, seed);
+  const planet = planetAt(seed, locOf(player));
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name}. \`disembark\` then \`build base\`.`,
+    );
+  }
+  const [buildings, stored] = await Promise.all([
+    world.getBaseBuildings(base.id),
+    world.getBaseStorage(base.id),
+  ]);
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+  const excavators = buildings.filter((b) => b.kind === "excavator").length;
+  const capacity = baseCapacity(silos);
+  const used = stored.reduce((sum, s) => sum + s.qty, 0);
+  return renderStorage({
+    name: base.name,
+    location: describeRegionKey(base.rKey),
+    silos,
+    excavators,
+    used,
+    capacity,
+    items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: getResource(s.itemId).name })),
+  });
+}
+
+/**
+ * `deposit <item> [qty]` — move a resource from your ship cargo into this
+ * region's base storage. Requires a base here; either embark state is fine.
+ * Bounded by what you hold AND remaining storage capacity. With no `qty`,
+ * deposits as much as fits. Atomic: `add_inventory(-)` then `add_base_storage(+)`.
+ */
+async function handleDeposit(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const itemId = args[0]?.toLowerCase();
+  if (!itemId) return errorFrame("Usage: deposit <item> [qty]  (see `storage`)");
+
+  const base = await baseHere(player, seed);
+  const planet = planetAt(seed, locOf(player));
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name} to deposit into. \`build base\` first.`,
+    );
+  }
+
+  const stacks = await world.getInventory(player.id);
+  const held = stacks.find((s) => s.resourceId === itemId)?.qty ?? 0;
+  if (held <= 0) return errorFrame(`You aren't carrying any ${itemId}.`);
+
+  const [buildings, stored] = await Promise.all([
+    world.getBaseBuildings(base.id),
+    world.getBaseStorage(base.id),
+  ]);
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+  const capacity = baseCapacity(silos);
+  const used = stored.reduce((sum, s) => sum + s.qty, 0);
+  const remaining = capacity - used;
+  if (remaining <= 0) {
+    return errorFrame(
+      silos === 0
+        ? "This base has no silos — `build silo` to add storage first."
+        : `Base storage is full (${used}/${capacity}). \`build silo\` for more.`,
+    );
+  }
+
+  // Default (no qty): deposit as much as fits. Otherwise the requested amount,
+  // bounded by holdings and remaining capacity.
+  const requested = args[1] === undefined ? held : toInt(args[1]);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: deposit <item> [qty]  — qty must be a positive whole number.");
+  }
+  const move = Math.min(requested, held, remaining);
+  if (move <= 0) return errorFrame("Nothing to deposit.");
+
+  await world.removeInventory(player.id, itemId, move);
+  const nowStored = await world.addBaseStorage(base.id, itemId, move);
+
+  const res = getResource(itemId);
+  return frame([
+    line([
+      text(`Deposited ${move} ${res.name} `, "success"),
+      text(`into your base. `, "default"),
+      text(`Storage ${used + move}/${capacity}.`, "muted"),
+    ]),
+    line(text(`  ${res.name} in store: ${nowStored}. ${held - move} left in cargo.`, "muted")),
+  ]);
+}
+
+/**
+ * `withdraw <item> [qty]` — the reverse of `deposit`: move a resource from this
+ * region's base storage back into ship cargo. Bounded by what's stored AND your
+ * free cargo space. With no `qty`, withdraws as much as fits. Atomic:
+ * `add_base_storage(-)` then `add_inventory(+)`.
+ */
+async function handleWithdraw(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const itemId = args[0]?.toLowerCase();
+  if (!itemId) return errorFrame("Usage: withdraw <item> [qty]  (see `storage`)");
+
+  const base = await baseHere(player, seed);
+  const planet = planetAt(seed, locOf(player));
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name} to withdraw from. \`build base\` first.`,
+    );
+  }
+
+  const stored = await world.getBaseStorage(base.id);
+  const inStore = stored.find((s) => s.itemId === itemId)?.qty ?? 0;
+  if (inStore <= 0) return errorFrame(`Your base here isn't storing any ${itemId}.`);
+
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const used = await world.getCargoUsed(player.id);
+  const cargoSpace = fresh.cargoCap - used;
+  if (cargoSpace <= 0) return errorFrame("Cargo hold is full. `sell` or `deposit` something first.");
+
+  const requested = args[1] === undefined ? inStore : toInt(args[1]);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: withdraw <item> [qty]  — qty must be a positive whole number.");
+  }
+  const move = Math.min(requested, inStore, cargoSpace);
+  if (move <= 0) return errorFrame("Nothing to withdraw.");
+
+  await world.addBaseStorage(base.id, itemId, -move);
+  await world.addInventory(player.id, itemId, move);
+
+  const res = getResource(itemId);
+  return frame([
+    line([
+      text(`Withdrew ${move} ${res.name} `, "success"),
+      text(`to your cargo. `, "default"),
+      text(`Cargo ${used + move}/${fresh.cargoCap}.`, "muted"),
+    ]),
+    line(text(`  ${res.name} left in store: ${inStore - move}.`, "muted")),
+  ]);
+}
+
+/**
+ * `collect` — funnel the ore your excavators have accrued (since each one's
+ * `lastCollectedAt`) into base storage. For each excavator and each deposit in
+ * the current region, `excavatorYield(effectiveAbundance, elapsed)` units accrue
+ * — clamped to the base's remaining storage capacity. The collected ore is added
+ * to storage AND written back as per-region depletion (`recordDepletion`), so
+ * excavation drains the SHARED region exactly like manual mining (others see
+ * less; regen slowly refills). Each excavator's clock advances to now. Either
+ * embark state is fine — it's your base.
+ */
+async function handleCollect(player: Player, seed: string): Promise<RenderFrame> {
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  const base = await baseHere(player, seed);
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name}. \`build base\` then \`build excavator\`.`,
+    );
+  }
+
+  const region = regionAt(seed, coord, player.region);
+  const rKey = regionKey(region.coord);
+  const [buildings, stored, depletionMap] = await Promise.all([
+    world.getBaseBuildings(base.id),
+    world.getBaseStorage(base.id),
+    world.getEffectiveDepletionMap(rKey),
+  ]);
+
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+  const excavators = buildings.filter((b) => b.kind === "excavator");
+  if (excavators.length === 0) {
+    return errorFrame("No excavators here — `build excavator` to start draining this region.");
+  }
+
+  const capacity = baseCapacity(silos);
+  const used = stored.reduce((sum, s) => sum + s.qty, 0);
+  let remaining = capacity - used;
+  if (remaining <= 0) {
+    return errorFrame(
+      silos === 0
+        ? "No silos to store the ore — `build silo` first."
+        : `Base storage is full (${used}/${capacity}). \`withdraw\` or \`build silo\` first.`,
+    );
+  }
+
+  // Accrue per-resource across all excavators using each one's elapsed time and
+  // the deposit's current effective abundance. (Capacity clamping happens after.)
+  const now = Date.now();
+  const accrued: Record<string, number> = {};
+  for (const exc of excavators) {
+    const lastIso =
+      typeof exc.state.lastCollectedAt === "string" ? exc.state.lastCollectedAt : exc.createdAt;
+    const lastAt = Date.parse(lastIso);
+    const elapsed = Number.isNaN(lastAt) ? 0 : Math.max(0, now - lastAt);
+    for (const dep of region.deposits) {
+      const eff = effectiveAbundance(dep.abundance, depletionMap[dep.resourceId] ?? 0);
+      const y = excavatorYield(eff, elapsed);
+      if (y > 0) accrued[dep.resourceId] = (accrued[dep.resourceId] ?? 0) + y;
+    }
+  }
+
+  // Store what was accrued, in deposit order, up to the remaining capacity. The
+  // stored amount is what we both bank and deplete the region by.
+  const collected: { resourceId: string; qty: number }[] = [];
+  for (const dep of region.deposits) {
+    if (remaining <= 0) break;
+    const want = accrued[dep.resourceId] ?? 0;
+    if (want <= 0) continue;
+    const take = Math.min(want, remaining);
+    remaining -= take;
+    collected.push({ resourceId: dep.resourceId, qty: take });
+  }
+
+  // Always advance the clocks (time accrued is "spent" whether or not it all
+  // fit), then bank + deplete what was actually collected.
+  for (const exc of excavators) {
+    await world.setBuildingState(exc.id, { ...exc.state, lastCollectedAt: new Date(now).toISOString() });
+  }
+
+  if (collected.length === 0) {
+    return frame([
+      line(text("Excavators are still working — nothing to collect yet.", "muted")),
+    ]);
+  }
+
+  for (const c of collected) {
+    await world.addBaseStorage(base.id, c.resourceId, c.qty);
+    await world.recordDepletion(rKey, c.resourceId, c.qty * DEPLETION_PER_UNIT, player.id);
+  }
+
+  const totalQty = collected.reduce((sum, c) => sum + c.qty, 0);
+  const lines: RenderLine[] = [
+    line([
+      text(`Collected ${totalQty} units `, "success"),
+      text(`from ${excavators.length} excavator${excavators.length === 1 ? "" : "s"}. `, "default"),
+      text(`Storage ${used + totalQty}/${capacity}.`, "muted"),
+    ]),
+  ];
+  for (const c of collected) {
+    lines.push(line(text(`  • ${getResource(c.resourceId).name}: +${c.qty}`, "accent")));
+  }
+  if (remaining <= 0) {
+    lines.push(line(text("Storage is now full — `build silo` for more, or `withdraw`.", "warning")));
+  }
+  return frame(lines);
 }
 
 // ---------------------------------------------------------------------------
