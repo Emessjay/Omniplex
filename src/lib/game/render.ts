@@ -72,6 +72,12 @@ export interface CommandHelpCandidate {
   command: string | null;
   /** Optional annotation shown muted after the token, e.g. a price (`8cr`). */
   annotation?: string;
+  /**
+   * Marks a clickable candidate the player can't currently perform (e.g. a `buy`
+   * item they can't afford or is out of stock) — rendered red. Ignored for
+   * non-clickable (`command: null`) candidates.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -152,7 +158,13 @@ export function renderCommandHelp(view: CommandHelpView): RenderFrame {
           group.candidates.forEach((c, idx) => {
             if (idx > 0) spans.push(text(" ", "muted"));
             if (c.command) {
-              spans.push(action(c.label, c.command, { style: "link", title: c.command }));
+              spans.push(
+                action(c.label, c.command, {
+                  style: "link",
+                  title: c.command,
+                  disabled: c.disabled,
+                }),
+              );
             } else {
               spans.push(text(c.label, "accent"));
             }
@@ -327,7 +339,12 @@ export function renderScan(view: ScanView): RenderFrame {
     }
   }
 
-  // Deposits (this region) with effective (post-depletion) abundance.
+  // Deposits (this region) with effective (post-depletion) abundance. A `mine`
+  // action is shown disabled (red) when the player can't mine right now — using
+  // the SAME gates the `mine` command enforces: you must be on foot
+  // (DISEMBARKED_ONLY) and, on a hostile surface, hold the landing gear.
+  const mineBlocked =
+    view.embarked || (!!view.requiredUpgrade && view.hasRequiredUpgrade === false);
   if (region.deposits.length === 0) {
     lines.push(line(text("No mineable deposits in this region.", "muted")));
   } else {
@@ -345,7 +362,12 @@ export function renderScan(view: ScanView): RenderFrame {
         spans.push(
           action(`mine ${dep.resourceId}`, `mine ${dep.resourceId}`, {
             style: "link",
-            title: `mine ${res.name}`,
+            title: mineBlocked
+              ? view.embarked
+                ? "disembark to mine"
+                : "missing landing gear for this surface"
+              : `mine ${res.name}`,
+            disabled: mineBlocked,
           }),
         );
       }
@@ -390,10 +412,16 @@ export function renderScan(view: ScanView): RenderFrame {
           line([text(`  ${i}: `, "muted"), text(`${sib.name} (here)`, "accent")]),
         );
       } else {
+        // `land` is embarked-only (you fly the ship between planets), so a land
+        // action is shown disabled (red) when the player is on foot.
         lines.push(
           line([
             text(`  ${i}: `, "muted"),
-            action(sib.name, `land ${i}`, { style: "link", title: `land on ${sib.name}` }),
+            action(sib.name, `land ${i}`, {
+              style: "link",
+              title: view.embarked ? `land on ${sib.name}` : "embark to fly between planets",
+              disabled: !view.embarked,
+            }),
           ]),
         );
       }
@@ -531,7 +559,10 @@ export function renderMap(
       line([
         action(n.name, `warp ${n.arm} ${n.cluster} ${n.system}`, {
           style: "link",
-          title: `warp to ${n.name}`,
+          // Not enough fuel to make the jump → the same gate `warp` enforces, so
+          // the token reads red up-front.
+          title: affordable ? `warp to ${n.name}` : `not enough fuel (need ${cost})`,
+          disabled: !affordable,
         }),
         text(`  ${n.arm}:${n.cluster}:${n.system}`, "muted"),
         text(`  fuel ${cost}`, affordable ? "default" : "danger"),
@@ -642,6 +673,8 @@ export interface UpgradesView {
    * buy price. `buy` works only while `supply > 0`; `sell`/manufacture grow it.
    */
   market?: { upgradeId: string; supply: number; price: number }[];
+  /** The player's credits — used to mark unaffordable buy actions red. */
+  credits?: number;
 }
 
 /**
@@ -683,12 +716,23 @@ export function renderUpgrades(view: UpgradesView): RenderFrame {
     for (const m of view.market) {
       const up = getUpgrade(m.upgradeId);
       const inStock = m.supply > 0;
+      // `buy` is gated by finite supply (out of stock) and by credits — the same
+      // checks `handleBuyUpgrade` enforces. The token stays clickable either way
+      // (the click returns the informative error) but is shown red when blocked.
+      const unaffordable = view.credits !== undefined && view.credits < m.price;
+      const buyBlocked = !inStock || unaffordable;
       lines.push(
         line([
           text("  • ", "muted"),
-          inStock
-            ? action(up.name, `buy ${m.upgradeId}`, { style: "link", title: `buy ${up.name}` })
-            : text(up.name, "muted"),
+          action(up.name, `buy ${m.upgradeId}`, {
+            style: "link",
+            title: !inStock
+              ? `out of stock — manufacture & sell one`
+              : unaffordable
+                ? `not enough credits (need ${m.price})`
+                : `buy ${up.name}`,
+            disabled: buyBlocked,
+          }),
           text(
             inStock ? ` — ${m.supply} in stock (${m.price} cr)` : " — out of stock",
             inStock ? "muted" : "warning",
@@ -751,8 +795,15 @@ export interface StorageView {
   /**
    * Parts a production line here can manufacture (each with a recipe summary).
    * Empty when there's no production line — only surfaced once one exists.
+   * `disabled` marks a part whose recipe isn't fully siloed (can't produce now).
    */
-  producible: { id: string; name: string; recipe: string }[];
+  producible: { id: string; name: string; recipe: string; disabled?: boolean }[];
+  /**
+   * Affordability of each `build <structure>` hint (credits + cargo minerals).
+   * A structure the player can't currently afford renders its hint red. Absent
+   * = treat as affordable (back-compatible).
+   */
+  buildable?: { silo: boolean; excavator: boolean; production_line: boolean };
 }
 
 /**
@@ -798,7 +849,8 @@ export function renderStorage(view: StorageView): RenderFrame {
     }
   }
 
-  // Producible parts (only once a production line exists), each clickable.
+  // Producible parts (only once a production line exists), each clickable. A
+  // part whose raw recipe isn't fully siloed is shown red (can't `produce` now).
   if (view.producible.length > 0) {
     lines.push(line(text("Producible:", "heading")));
     for (const p of view.producible) {
@@ -807,7 +859,8 @@ export function renderStorage(view: StorageView): RenderFrame {
           text("  • ", "muted"),
           action(`produce ${p.id}`, `produce ${p.id}`, {
             style: "link",
-            title: `manufacture ${p.name}`,
+            title: p.disabled ? "missing siloed inputs" : `manufacture ${p.name}`,
+            disabled: p.disabled,
           }),
           text(`  (${p.recipe})`, "muted"),
         ]),
@@ -815,15 +868,26 @@ export function renderStorage(view: StorageView): RenderFrame {
     }
   }
 
-  // Expansion hints (clickable).
+  // Expansion hints (clickable). A structure you can't afford is shown red,
+  // matching the affordability check `build` enforces.
+  const b = view.buildable;
   const hints: RenderSpan[] = [
-    action("build silo", "build silo", { style: "link", title: "add storage capacity" }),
+    action("build silo", "build silo", {
+      style: "link",
+      title: b && !b.silo ? "can't afford a silo" : "add storage capacity",
+      disabled: b ? !b.silo : false,
+    }),
     text("   ", "muted"),
-    action("build excavator", "build excavator", { style: "link", title: "add an ore drain" }),
+    action("build excavator", "build excavator", {
+      style: "link",
+      title: b && !b.excavator ? "can't afford an excavator" : "add an ore drain",
+      disabled: b ? !b.excavator : false,
+    }),
     text("   ", "muted"),
     action("build production_line", "build production_line", {
       style: "link",
-      title: "add a parts manufacturer",
+      title: b && !b.production_line ? "can't afford a production line" : "add a parts manufacturer",
+      disabled: b ? !b.production_line : false,
     }),
   ];
   if (view.excavators > 0) {

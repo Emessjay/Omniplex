@@ -534,6 +534,17 @@ async function handleHelp(
   // market prices once (the candidate SET still comes from `argDomain`).
   const isTrade = verb === "buy" || verb === "sell";
   const prices = isTrade ? await world.getMarketPrices() : null;
+  // `help buy` additionally marks candidates the player can't perform RIGHT NOW
+  // (can't afford, or — for upgrades — out of stock) red, using the same checks
+  // `handleBuy*` enforce. `sell` candidates are things you already own, so none
+  // are "unperformable"; only fetch the affordability inputs for `buy`.
+  const buyCtx =
+    verb === "buy"
+      ? {
+          credits: ((await world.getPlayerById(player.id)) ?? player).credits,
+          supplies: await world.getUpgradeSupplies(),
+        }
+      : null;
 
   const slots: CommandHelpSlotView[] = usage.slots.map((slot, i) => {
     const domain = spec.argDomain(verb, i, []);
@@ -547,7 +558,7 @@ async function handleHelp(
     const clickable = i === 0 && laterAllOptional;
     const groups =
       isTrade && prices
-        ? tradeSlotGroups(verb, domain, prices, clickable)
+        ? tradeSlotGroups(verb as "buy" | "sell", domain, prices, clickable, buyCtx)
         : [
             {
               // Single, unlabeled category (mine/craft): renders as one line
@@ -584,6 +595,7 @@ function tradeSlotGroups(
   domain: string[],
   prices: Record<string, number>,
   clickable: boolean,
+  buyCtx: { credits: number; supplies: Record<string, number> } | null,
 ): CommandHelpGroup[] {
   return groupTradeCandidates(domain).map((g) => ({
     label: g.category,
@@ -591,8 +603,37 @@ function tradeSlotGroups(
       label: id,
       command: clickable ? `${verb} ${id}` : null,
       annotation: tradeAnnotation(verb, id, g.category, prices),
+      disabled: buyCtx ? buyDisabled(id, g.category, prices, buyCtx) : false,
     })),
   }));
+}
+
+/**
+ * Whether a `buy` candidate is currently unperformable — reusing the exact gates
+ * the buy handlers enforce: can't afford the per-unit cost, or (upgrades) the
+ * shared market supply is exhausted. Marks the help token red.
+ */
+function buyDisabled(
+  id: string,
+  category: TradeCategory,
+  prices: Record<string, number>,
+  ctx: { credits: number; supplies: Record<string, number> },
+): boolean {
+  switch (category) {
+    case "everything":
+      return false; // `all` is sell-only; never a buy candidate
+    case "fuel":
+      return ctx.credits < FUEL_PRICE_PER_UNIT;
+    case "upgrades": {
+      const supply = ctx.supplies[id] ?? 0;
+      if (!canBuyFromSupply(supply)) return true; // out of stock
+      return ctx.credits < buyUnitCost(upgradeValue(id));
+    }
+    case "minerals": {
+      const price = prices[id] ?? getResource(id).baseValue;
+      return ctx.credits < buyUnitCost(price);
+    }
+  }
 }
 
 /** The credit-per-unit annotation for one trade candidate (undefined for `all`). */
@@ -1357,6 +1398,8 @@ async function handleUpgrades(player: Player): Promise<RenderFrame> {
       supply: supplies[u.id] ?? 0,
       price: buyUnitCost(upgradeValue(u.id)),
     })),
+    // Credits drive the unaffordable→red marking on the buy actions above.
+    credits: player.credits,
   });
 }
 
@@ -1757,15 +1800,22 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       `No base in region ${player.region} of ${planet.name}. \`disembark\` then \`build base\`.`,
     );
   }
-  const [buildings, stored] = await Promise.all([
+  const [buildings, stored, have] = await Promise.all([
     world.getBaseBuildings(base.id),
     world.getBaseStorage(base.id),
+    affordContext(player),
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
   const productionLines = buildings.filter((b) => b.kind === "production_line").length;
   const capacity = baseCapacity(silos);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
+
+  // Siloed amounts for the producible-affordability check (`produce` consumes
+  // recipe inputs from the silo, not cargo) — same `canProduce` the handler uses.
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+
   return renderStorage({
     name: base.name,
     location: describeRegionKey(base.rKey),
@@ -1776,6 +1826,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     capacity,
     items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: storageItemName(s.itemId) })),
     // What a production line here can manufacture (only surfaced when one exists).
+    // A part is disabled (red) when its recipe isn't fully siloed to make one.
     producible:
       productionLines > 0
         ? PARTS.map((p) => ({
@@ -1784,8 +1835,15 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
             recipe: Object.entries(p.recipe)
               .map(([rid, qty]) => `${qty} ${getResource(rid).name}`)
               .join(" + "),
+            disabled: !canProduce(siloed, p.recipe, 1),
           }))
         : [],
+    // Per-structure affordability (credits + cargo minerals) → red build hints.
+    buildable: {
+      silo: canAffordBase(have, buildingCost("silo")),
+      excavator: canAffordBase(have, buildingCost("excavator")),
+      production_line: canAffordBase(have, buildingCost("production_line")),
+    },
   });
 }
 

@@ -50,6 +50,16 @@ export interface ActionSpan {
   style?: SpanStyle;
   /** Optional tooltip / hover hint. */
   title?: string;
+  /**
+   * Marks an action the player CANNOT currently perform (can't afford, out of
+   * stock, wrong embark state, missing landing gear, …). The renderer styles a
+   * disabled action with the `danger` (red) color instead of the usual `link`
+   * (blue), overriding `style`. It stays clickable — clicking just yields the
+   * command's normal "you can't do that" error frame, which is informative.
+   * Set by the emitting handler using the SAME check that gates the command,
+   * so red ⇔ the command would reject it. Default undefined/false = performable.
+   */
+  disabled?: boolean;
 }
 
 export type RenderSpan = TextSpan | ActionSpan;

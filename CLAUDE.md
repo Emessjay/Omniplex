@@ -881,3 +881,37 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **For P9b**: render unbuyable (out-of-stock / unaffordable) and otherwise-
   unperformable action tokens RED. The supply read (`getUpgradeSupplies`) +
   `canBuyFromSupply` are the hooks for the out-of-stock case.
+
+### Load-bearing decisions from `red-actions`
+
+- **`ActionSpan.disabled` is the "unperformable → red" convention.** An
+  `ActionSpan` (`src/lib/terminal/types.ts`) carries an optional
+  `disabled?: boolean`; when set, the renderer colors the token with the
+  `danger` (red) intent instead of the usual `link` (blue), **overriding any
+  declared `style`**. It is **color-only** (theme-parity rule — no geometry
+  change) and the token **stays clickable**: clicking a red action still submits
+  its command and returns the normal "you can't do that" error frame (which is
+  informative). Default undefined/false = performable = blue.
+- **Renderer color choice is the pure `actionStyle(span)`** in
+  `src/lib/terminal/helpers.ts` (`disabled → "danger"`, else `style ?? "link"`),
+  used by `<Terminal>`'s `Span` (`STYLE_CLASS[actionStyle(span)]`) so the mapping
+  is unit-testable without React (`src/lib/terminal/red-actions.test.ts`). The
+  `action(label, command, { disabled })` helper gained the optional flag and
+  stays back-compatible (falsey `disabled` is not serialized).
+- **Server decides performability using the SAME gates that reject the command**
+  — never parallel logic — so red ⇔ the command would error. Coverage today
+  (`render.ts` + `commands.ts`): `mine` actions in `scan` (red when embarked, or
+  hostile surface without the landing gear — `view.embarked` /
+  `requiredUpgrade`+`hasRequiredUpgrade`); `land` siblings (red when on foot);
+  `warp` in `map` (red when `fuelCost > fuel`); upgrade `buy` in `upgrades`
+  (`!canBuyFromSupply(supply)` out-of-stock, or `credits < price`); `build
+  silo|excavator|production_line` hints in `storage` (`canAffordBase(have,
+  buildingCost(kind))`); `produce <part>` in `storage` (`!canProduce(siloed,
+  recipe, 1)`); and `help buy` candidates (`buyDisabled` reusing
+  `FUEL_PRICE_PER_UNIT`/`buyUnitCost`/`canBuyFromSupply`). `CommandHelpCandidate`
+  and `StorageView`/`UpgradesView` gained the flags/affordability inputs that
+  carry this from handler to renderer.
+- **Future actionable output adopts this:** mark an action `disabled` whenever
+  the emitting handler already knows it would be rejected. The exploration track
+  should mark P2 can't-afford warp/fuel and P3 galaxy-jump-without-condensate
+  actions `disabled` too.

@@ -22,7 +22,7 @@ import type {
   RenderSpan,
   SpanStyle,
 } from "@/lib/terminal/types";
-import { action, frame, line, text } from "@/lib/terminal/helpers";
+import { action, actionStyle, frame, line, text } from "@/lib/terminal/helpers";
 import { submitCommand } from "@/lib/terminal/pipeline";
 import { completeCommand } from "@/lib/terminal/completion";
 import type { Player } from "@/lib/players/types";
@@ -105,6 +105,11 @@ function Span({
   onAction: (command: string) => void;
 }) {
   if (span.kind === "action") {
+    // A `disabled` action stays clickable (the click yields the command's
+    // normal error) but is colored red (`danger`) to signal up-front that it
+    // can't be performed right now — this overrides any `style`. Color-only,
+    // so theme parity holds (no geometry change vs. a performable action).
+    const colorClass = STYLE_CLASS[actionStyle(span)];
     return (
       <button
         type="button"
@@ -113,7 +118,7 @@ function Span({
         className={cn(
           "underline decoration-dotted underline-offset-2",
           "rounded-sm hover:bg-term-accent/20 focus:bg-term-accent/20 focus:outline-none",
-          STYLE_CLASS[span.style ?? "link"],
+          colorClass,
         )}
       >
         {span.text}

@@ -20,16 +20,35 @@ export function text(value: string, style?: SpanStyle): TextSpan {
   return style ? { kind: "text", text: value, style } : { kind: "text", text: value };
 }
 
-/** A clickable action span carrying the command submitted on click. */
+/**
+ * A clickable action span carrying the command submitted on click. Pass
+ * `disabled: true` to mark an action the player can't currently perform — the
+ * renderer colors it red (`danger`) instead of blue (`link`) while keeping it
+ * clickable (the click yields the command's normal error). The flag is optional
+ * and absent by default, so existing call sites are unchanged.
+ */
 export function action(
   label: string,
   command: string,
-  opts: { style?: SpanStyle; title?: string } = {},
+  opts: { style?: SpanStyle; title?: string; disabled?: boolean } = {},
 ): ActionSpan {
   const span: ActionSpan = { kind: "action", text: label, command };
   if (opts.style) span.style = opts.style;
   if (opts.title) span.title = opts.title;
+  if (opts.disabled) span.disabled = true;
   return span;
+}
+
+/**
+ * The effective SpanStyle the renderer should color an action span with. A
+ * `disabled` action is forced to `danger` (red) — signalling "can't do this
+ * right now" — overriding any declared `style`; otherwise the span's own style
+ * applies, defaulting to `link` (blue). Pure, so the renderer's color choice is
+ * unit-testable without mounting the React component.
+ */
+export function actionStyle(span: ActionSpan): SpanStyle {
+  if (span.disabled) return "danger";
+  return span.style ?? "link";
 }
 
 /** A line from spans (or a single span). */
