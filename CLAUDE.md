@@ -200,3 +200,24 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **Deploy runbook** is [`DEPLOY.md`](DEPLOY.md) (linked from `README.md`);
   it owns the Railway + Supabase setup, including the Supabase Auth redirect
   allowlist gotcha for magic-link login.
+
+### Load-bearing decisions from `dev-login`
+
+- **Dev login** is an env-gated bypass of the magic-link email round-trip for
+  solo testing — ⚠️ MUST stay OFF in production. The flag helper is
+  `src/lib/devAuth.ts` (`isDevLoginEnabled(env?)` / `devLoginEmail(env?)`,
+  pure + unit-tested). Gated on **server-only** env `OMNIPLEX_DEV_LOGIN`
+  (truthy = on; unset/`0`/`false`/`off`/`no` = off) — NEVER `NEXT_PUBLIC_*`.
+  Optional `OMNIPLEX_DEV_LOGIN_EMAIL` (default `dev@omniplex.local`). Neither
+  is in `REQUIRED_SERVER_ENV`.
+- **Entry point**: `GET /auth/dev` (`src/app/auth/dev/route.ts`,
+  `force-dynamic`). Flag off ⇒ returns 404 and performs no auth (impossible to
+  trigger by hitting the URL). Flag on ⇒ ensures the dev user via service-role
+  `auth.admin.createUser({ email_confirm: true })` (idempotent), mints a token
+  via `auth.admin.generateLink({ type: 'magiclink' })`, then redeems it through
+  the cookie-bound session client's `verifyOtp` — a GENUINE `@supabase/ssr`
+  session, identical to the real flow (`getUser()`/RLS/`getOrCreatePlayer` all
+  work). No faked cookies; service-role key never reaches the client.
+- **UI**: `LoginScreen` takes a `devLoginAvailable` boolean (only that boolean
+  crosses to the client, never the flag); `page.tsx` passes
+  `isDevLoginEnabled()`. The real magic-link flow is unchanged.

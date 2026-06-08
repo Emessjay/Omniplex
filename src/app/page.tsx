@@ -4,6 +4,7 @@ import { logout } from "@/app/auth/actions";
 import { getSessionClient } from "@/lib/supabase/auth-server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { getOrCreatePlayer } from "@/lib/players/getOrCreatePlayer";
+import { isDevLoginEnabled } from "@/lib/devAuth";
 
 /**
  * Auth-gated entry point. Resolved entirely server-side so the terminal never
@@ -37,7 +38,10 @@ export default async function Home({
   if (!user) {
     return (
       <main className="crt flex min-h-screen w-full flex-col bg-term-bg p-2 sm:p-4">
-        <LoginScreen authError={auth_error === "1"} />
+        <LoginScreen
+          authError={auth_error === "1"}
+          devLoginAvailable={isDevLoginEnabled()}
+        />
       </main>
     );
   }

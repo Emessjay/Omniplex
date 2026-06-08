@@ -169,6 +169,39 @@ it. If you need a fresh universe, that's a new deployment + a reset database.
 
 ---
 
+## 5a. Dev login (testing only)
+
+Supabase's magic-link email round-trip (rate limits, SMTP setup) is painful
+for solo testing. An **env-gated dev login** bypasses it: one click logs you
+in as a fixed dev user with a *genuine* Supabase session (real `auth.users`
+row, real cookies, RLS and `getOrCreatePlayer` all behave exactly as a real
+login). The real magic-link flow is untouched.
+
+> **⚠️  Leave this OFF for any real or public launch.** It lets anyone who can
+> reach the URL sign in as the dev user with no email verification. It is gated
+> on a **server-only** env var (never `NEXT_PUBLIC_*`), so it cannot be probed
+> or toggled from the browser, and with the flag unset the `/auth/dev` route
+> returns 404 and performs no auth. Do **not** set it in your production
+> Railway service.
+
+**Enable (e.g. a throwaway preview/staging service):**
+
+| Variable | Value | Notes |
+| --- | --- | --- |
+| `OMNIPLEX_DEV_LOGIN` | `1` | Truthy enables it; unset / `0` / `false` / `off` / `no` disable it. |
+| `OMNIPLEX_DEV_LOGIN_EMAIL` | `dev@omniplex.local` | Optional. The dev user's email; this is the default. |
+
+Supabase must still be configured (the dev login mints a real session via the
+service-role key). Once enabled, the login screen shows a **"dev login (skip
+email)"** link; clicking it (or visiting `/auth/dev` directly) ensures the dev
+user exists, signs you in, and drops you into the terminal. The dev user
+appears in `auth.users` and gets a normal `players` row on first login.
+
+To disable: remove `OMNIPLEX_DEV_LOGIN` (or set it to `0`) and redeploy — the
+button disappears and the route goes inert.
+
+---
+
 ## 6. Local-dev quickstart (pointer)
 
 For day-to-day development you don't deploy at all:

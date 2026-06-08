@@ -18,9 +18,16 @@ type Status = "idle" | "sending" | "sent" | "error";
 export function LoginScreen({
   configured = true,
   authError = false,
+  devLoginAvailable = false,
 }: {
   configured?: boolean;
   authError?: boolean;
+  /**
+   * When true, render a "dev login" shortcut that bypasses the email round-trip
+   * (gated server-side by `OMNIPLEX_DEV_LOGIN`; see `src/lib/devAuth.ts`). Only
+   * a boolean crosses to the client — never the flag itself.
+   */
+  devLoginAvailable?: boolean;
 }) {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>("idle");
@@ -132,6 +139,20 @@ export function LoginScreen({
               {status === "sending" ? "sending…" : "send magic link"}
             </button>
           </form>
+        )}
+
+        {configured && devLoginAvailable && (
+          <div className="mt-6 border-t border-term-muted/20 pt-3">
+            <a
+              href="/auth/dev"
+              className="text-term-link underline decoration-dotted underline-offset-2 hover:bg-term-accent/20 focus:bg-term-accent/20 focus:outline-none"
+            >
+              → dev login (skip email)
+            </a>
+            <p className="mt-1 text-xs text-term-warning">
+              testing only — disabled in production
+            </p>
+          </div>
         )}
       </div>
     </div>
