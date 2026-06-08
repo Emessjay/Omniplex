@@ -12,6 +12,12 @@
 # This runner is psql-based and driven purely by a connection string, so it
 # does NOT require the Supabase CLI to be installed or linked.
 #
+# NOTE: For deploys and for anyone without `psql`, prefer the Node runner
+# `npm run db:migrate` (scripts/migrate.mjs) — Node-only (the `pg` package),
+# runs automatically before `next start` on Railway, and uses the SAME
+# `public.schema_migrations` table + filename-order logic as this script, so
+# the two never diverge. This bash runner remains for psql users / --dry-run.
+#
 # Usage:
 #   DATABASE_URL='postgresql://...' scripts/db-migrate.sh
 #   scripts/db-migrate.sh --database-url 'postgresql://...'
@@ -39,7 +45,7 @@ DATABASE_URL="${DATABASE_URL:-}"
 DRY_RUN=0
 
 usage() {
-  sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do

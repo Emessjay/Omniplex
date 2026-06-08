@@ -19,10 +19,12 @@ Total time for a first deploy: ~20–30 minutes.
 - A [Supabase](https://supabase.com) account.
 - A [Railway](https://railway.app) account, with this repo pushed to a
   GitHub repo Railway can read.
-- `psql` (the Postgres client) on your machine, to run migrations:
-  `brew install libpq` (macOS) or `apt-get install postgresql-client`
-  (Debian/Ubuntu). The migration runner is psql-based and does **not**
-  require the Supabase CLI.
+- Nothing else to install for migrations: the default runner is
+  Node-based (`npm run db:migrate`), so it works anywhere Node runs —
+  including the Railway container, where migrations apply **automatically
+  on every deploy**. `psql` is only needed if you prefer the legacy
+  `scripts/db-migrate.sh` runner (`brew install libpq` / `apt-get install
+  postgresql-client`). Neither runner needs the Supabase CLI.
 
 ---
 
@@ -42,49 +44,69 @@ All four live under your project's settings:
 | **Project URL**             | Project Settings → **API** → "Project URL"                 | `NEXT_PUBLIC_SUPABASE_URL`       |
 | **Anon (public) key**       | Project Settings → **API** → "Project API keys" → `anon`   | `NEXT_PUBLIC_SUPABASE_ANON_KEY`  |
 | **Service-role key**        | Project Settings → **API** → "Project API keys" → `service_role` | `SUPABASE_SERVICE_ROLE_KEY` |
-| **DB connection string**    | Project Settings → **Database** → "Connection string" → URI | `DATABASE_URL` (migrations only) |
+| **DB connection string**    | Project Settings → **Database** → "Connection string" → URI | `DATABASE_URL` (runs migrations) |
 
 > ⚠️ The **service-role key** and the **DB connection string** are secrets
 > with full database access. Never expose them to the browser, never commit
 > them. Only `NEXT_PUBLIC_*` vars are safe in client code.
 
-> The connection-string URI looks like
-> `postgresql://postgres:[YOUR-PASSWORD]@db.<ref>.supabase.co:5432/postgres`.
+> ⚠️ **Use the pooler connection string for `DATABASE_URL`**, not the
+> direct host. In the dashboard pick the **Connection pooling** URI, which
+> looks like
+> `postgresql://postgres.<ref>:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres`.
 > Substitute the database password you set in step 1 for `[YOUR-PASSWORD]`.
-> Either the direct (port 5432) or pooled string works for DDL; the direct
-> one is the safest for migrations.
+> The pooler host is **IPv4-friendly**; the direct host
+> (`db.<ref>.supabase.co`) is **IPv6-only** and will fail to connect from
+> many environments (including the Railway container). The pooler works fine
+> for DDL/migrations.
 
 ---
 
-## 2. Apply the database migrations
+## 2. Database migrations (automatic on deploy)
 
 The schema lives in [`supabase/migrations/`](supabase/migrations/) as
-forward-only SQL files. Apply them with the bundled runner, which tracks
-applied files in a `public.schema_migrations` table and skips ones already
-applied (and the migrations are themselves idempotent, so a re-run is safe
-either way):
+forward-only SQL files. **You do not need to apply these by hand for a
+Railway deploy.** As long as `DATABASE_URL` is set on the Railway service
+(see [step 4](#4-deploy-on-railway)), every deploy runs
+`node scripts/migrate.mjs` **before** `next start`, so pending migrations
+always apply before the app serves traffic — code can never ship ahead of
+its schema.
+
+The runner is:
+
+- **Idempotent** — it tracks applied files in a `public.schema_migrations`
+  table and skips ones already recorded; the migrations are themselves
+  idempotent, so a re-run is harmless either way.
+- **Advisory-locked** — the whole run is wrapped in a Postgres advisory
+  lock, so two Railway instances booting at once can't race the same
+  migration or double-apply.
+- **Transactional per file** — each migration plus its tracking insert runs
+  in one transaction; a failed migration rolls back and fails the deploy
+  loudly (rather than serving a stale schema), and is retried next deploy.
+- **Safe without config** — if `DATABASE_URL` is unset/empty it logs a
+  warning and exits 0 (a no-op), so `npm install`, `npm run build`, and CI
+  never hard-crash.
+
+### Running migrations locally
+
+The same Node runner works on your machine — no `psql` needed:
 
 ```bash
-export DATABASE_URL='postgresql://postgres:YOUR-PASSWORD@db.<ref>.supabase.co:5432/postgres'
-scripts/db-migrate.sh
+export DATABASE_URL='postgresql://postgres.<ref>:YOUR-PASSWORD@aws-0-<region>.pooler.supabase.com:5432/postgres'
+npm run db:migrate
 ```
 
-It prints what it applied vs. skipped. Preview without changing anything:
+It prints what it applied vs. skipped. Run it again any time you add a
+migration file — already-applied ones are skipped.
 
-```bash
-scripts/db-migrate.sh --dry-run
-```
+### Alternatives
 
-`scripts/db-migrate.sh --help` documents all options. Run it again any time
-you add a new migration file — already-applied ones are skipped.
-
-### Manual fallback (no `psql`)
-
-If you can't install `psql`, paste each file in
-`supabase/migrations/` — **in filename (lexical) order** — into the Supabase
-dashboard **SQL Editor** and run it. The migrations are idempotent, so
-re-running is harmless. (Skipping the tracking table is fine in this path;
-ordering is what matters.)
+- **psql runner** — if you prefer `psql`, `scripts/db-migrate.sh` does the
+  same thing (same `public.schema_migrations` table + filename order) and
+  also offers `--dry-run`. See `scripts/db-migrate.sh --help`.
+- **Manual** — or paste each file in `supabase/migrations/` — **in filename
+  (lexical) order** — into the Supabase dashboard **SQL Editor**. The
+  migrations are idempotent, so re-running is harmless.
 
 ---
 
@@ -164,8 +186,9 @@ enabled" error inline.
 2. Railway detects [`railway.json`](railway.json) and uses it:
    - **Builder:** Nixpacks
    - **Build:** `npm run build`
-   - **Start:** `npm run start -- -p ${PORT}` (Railway injects `$PORT`;
-     the app binds it)
+   - **Start:** `node scripts/migrate.mjs && npm run start -- -p ${PORT}`
+     — applies pending migrations, then boots the app (Railway injects
+     `$PORT`; the app binds it)
    - **Health check:** `GET /api/health` (Railway waits for a 200 before
      routing traffic and uses it for liveness)
    - **Restart policy:** on failure, up to 10 retries
@@ -181,9 +204,17 @@ enabled" error inline.
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Anon key — RLS-scoped reads + Realtime (safe)     | Step 1 — Project Settings → API              |
    | `SUPABASE_SERVICE_ROLE_KEY`     | Service-role key — authoritative writes (secret)  | Step 1 — Project Settings → API              |
    | `WORLD_SEED`                    | Seed for deterministic universe generation        | You choose — see step 5                      |
+   | `DATABASE_URL`                  | Postgres URI — runs migrations on every deploy (secret) | Step 1 — Project Settings → Database (**pooler** URI) |
 
-   `DATABASE_URL` is **only** needed locally to run migrations (step 2); it
-   does **not** need to be set on the Railway service.
+   > ⚠️ **`DATABASE_URL` must be the Supabase _pooler_ connection string**
+   > (`...pooler.supabase.com:5432`), **not** the direct
+   > `db.<ref>.supabase.co` host — that host is IPv6-only and the Railway
+   > container can't reach it. With `DATABASE_URL` set, the deploy's start
+   > command runs `node scripts/migrate.mjs` before booting the app, so
+   > migrations apply automatically (idempotent + advisory-locked — see
+   > [step 2](#2-database-migrations-automatic-on-deploy)). If you leave it
+   > unset, the app still boots but **no migrations run** — a schema lagging
+   > behind the code is exactly the bug this guards against, so set it.
 
 4. Trigger a deploy. Once it's live, copy the generated domain
    (e.g. `https://omniplex-production.up.railway.app`) and go back to
