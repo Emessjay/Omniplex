@@ -46,7 +46,6 @@ export const VERBS: string[] = [
   "storage",
   "deposit",
   "withdraw",
-  "collect",
   "produce",
   "sell",
   "buy",
@@ -159,7 +158,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "food" }],
   },
   build: {
-    desc: "build a base or an in-base structure here (must be on foot)",
+    desc: "build a base or an in-base structure (silo/excavator/production_line/power plant) here (on foot)",
     slots: [
       { name: "structure" },
       { name: "name", optional: true, hint: "an optional base name (build base only)" },
@@ -191,10 +190,6 @@ export const USAGE: Record<string, UsageDescriptor> = {
       { name: "item" },
       { name: "qty", optional: true, hint: "a number (default: as much as fits)" },
     ],
-  },
-  collect: {
-    desc: "funnel ore your excavators have drained into storage",
-    slots: [],
   },
   produce: {
     desc: "manufacture a ship part or upgrade from siloed inputs (needs a production line)",

@@ -46,6 +46,7 @@ export {
   regionKey,
   parseLocationKey,
   warpDistance,
+  atmosphereDensity,
   biomeTempOffset,
   biomeHazardOffset,
   HABITABLE_BIOMES,

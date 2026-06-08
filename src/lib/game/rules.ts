@@ -10,6 +10,13 @@
  */
 
 import type { Atmosphere } from "@/lib/universe/types";
+import { atmosphereDensity } from "@/lib/universe";
+
+// `atmosphereDensity` is a physical property of an atmosphere type, so it lives
+// in the (pure) universe layer now. Re-exported here because the fuel/orbital
+// math (`takeoffCost`) and the solar-power curve below both read it, and existing
+// importers expect it from `rules`.
+export { atmosphereDensity };
 
 // ---------------------------------------------------------------------------
 // Tuning constants. Exported so handlers, render, and the data adapters share
@@ -392,7 +399,8 @@ export function combatRound(args: {
 // Bases — buildings & storage (P8a: silos + excavators).
 //
 // Silos give a base storage CAPACITY; excavators slowly, passively drain the
-// region's ore over real time and funnel it into that storage on `collect`.
+// region's ore over real time and funnel it into that storage AUTOMATICALLY
+// (P13 — realized lazily on base reads, power-gated; there is no `collect`).
 // As with mining and regen, the math is PURE and time is passed in as
 // `elapsedMs` — the handlers in `commands.ts` supply `now` (Date.now()) and the
 // per-region effective abundance (already regen+depletion-adjusted), so these
@@ -441,6 +449,86 @@ export function excavatorYield(
  */
 export function baseCapacity(siloCount: number): number {
   return SILO_CAPACITY * Math.max(0, Math.floor(siloCount));
+}
+
+// ---------------------------------------------------------------------------
+// Base power (P13) — power plants supply, consumers (excavators + production
+// lines) demand, and a base runs its consumers only when supply ≥ demand.
+//
+// Two plant kinds, each favoring a different environment so SITING is a real
+// choice: THERMAL output rises with the region's temperature (great on scorching
+// volcanic worlds, near-useless in deep cold); SOLAR output rises as the
+// atmosphere THINS (great on vacuum/thin worlds, choked under a dense one). The
+// curves are PURE — temperature/atmosphere are passed in (the impure adapters in
+// `commands.ts` read them from the universe), no `Date`/RNG/IO here.
+//
+// Tuned so a single appropriately-sited plant powers a small base (one
+// excavator/line), while stacking consumers needs more plants. The gate is
+// deliberately all-or-nothing (`powered`); brownouts/batteries are out of scope.
+// ---------------------------------------------------------------------------
+
+/** Power one excavator draws. Fixed; > 0 (a consumer always demands power). */
+export const EXCAVATOR_POWER_DEMAND = 4;
+/** Power one production line draws — pricier than an excavator (heavier machinery). */
+export const PRODUCTION_LINE_POWER_DEMAND = 6;
+
+/**
+ * Thermal plant power per °C above `THERMAL_FLOOR_C`. Tuned so a warm region
+ * (≳30°C) lets one plant clear an excavator's demand, and a scorching one powers
+ * several consumers.
+ */
+export const THERMAL_OUTPUT_PER_DEG = 0.05;
+/** Below this temperature a thermal plant produces nothing (no heat to harvest). */
+export const THERMAL_FLOOR_C = -50;
+
+/** Solar power one array makes in a vacuum (atmosphere density 0) — the ceiling. */
+export const SOLAR_OUTPUT_MAX = 10;
+/** Solar power lost per unit of `atmosphereDensity` (thicker air → less sunlight). */
+export const SOLAR_OUTPUT_PER_DENSITY = 4;
+
+/**
+ * Power one THERMAL plant produces in a region of `temperature` (°C). Rises
+ * linearly with temperature above `THERMAL_FLOOR_C` and is clamped at 0 below it,
+ * so it is non-negative and monotonically non-decreasing in temperature. A cold
+ * world yields ~nothing; a hot one yields a lot — thermal favors hot worlds.
+ */
+export function thermalOutput(temperature: number): number {
+  return Math.max(0, (temperature - THERMAL_FLOOR_C) * THERMAL_OUTPUT_PER_DEG);
+}
+
+/**
+ * Power one SOLAR array produces under `atmosphere`. Falls with
+ * `atmosphereDensity` (a thinner atmosphere lets more sunlight reach the panels),
+ * clamped at 0, so it is non-negative and strictly higher under a thinner
+ * atmosphere than a thicker one — solar favors thin-atmosphere/vacuum worlds.
+ */
+export function solarOutput(atmosphere: Atmosphere): number {
+  return Math.max(0, SOLAR_OUTPUT_MAX - SOLAR_OUTPUT_PER_DENSITY * atmosphereDensity(atmosphere));
+}
+
+/**
+ * Net power balance for a base: total plant `supply` (thermal + solar, sited by
+ * the region's `temperature` and the planet's `atmosphere`) minus total consumer
+ * `demand` (excavators + production lines). `powered` is `supply >= demand` — an
+ * all-or-nothing gate (no brownouts). With no consumers, demand is 0 and the base
+ * is trivially powered. Pure & deterministic. Designed to extend: a new plant
+ * kind adds a term to `supply`, a new consumer adds one to `demand`.
+ */
+export function basePower(args: {
+  thermalPlants: number;
+  solarArrays: number;
+  excavators: number;
+  productionLines: number;
+  temperature: number;
+  atmosphere: Atmosphere;
+}): { supply: number; demand: number; powered: boolean } {
+  const supply =
+    Math.max(0, args.thermalPlants) * thermalOutput(args.temperature) +
+    Math.max(0, args.solarArrays) * solarOutput(args.atmosphere);
+  const demand =
+    Math.max(0, args.excavators) * EXCAVATOR_POWER_DEMAND +
+    Math.max(0, args.productionLines) * PRODUCTION_LINE_POWER_DEMAND;
+  return { supply, demand, powered: supply >= demand };
 }
 
 // ---------------------------------------------------------------------------
@@ -511,25 +599,6 @@ export function interplanetaryDistance(
   const pa = planetPosition(a, timeMs);
   const pb = planetPosition(b, timeMs);
   return Math.hypot(pa.x - pb.x, pa.y - pb.y);
-}
-
-/**
- * Relative "thickness/hostility" of each atmosphere, used by `takeoffCost` — a
- * heavier or more corrosive atmosphere is harder to punch out of. `none` is the
- * lowest (a vacuum takeoff is cheapest); the rest climb roughly with how much
- * the air fights the ship. Non-negative for every `Atmosphere`.
- */
-export function atmosphereDensity(atmosphere: Atmosphere): number {
-  const DENSITY: Record<Atmosphere, number> = {
-    none: 0,
-    thin: 0.3,
-    breathable: 1,
-    toxic: 1.2,
-    inert: 1.4,
-    corrosive: 1.6,
-    dense: 2,
-  };
-  return DENSITY[atmosphere] ?? 0;
 }
 
 /** Base regular-fuel cost of a takeoff before atmosphere/gravity scaling. */

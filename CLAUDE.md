@@ -1312,3 +1312,71 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **For later phases**: more supply-market item kinds drop into `system_supply`
   by id (no schema change — `item_id` is free-text); per-system part PRICES (vs
   code-derived) would extend the `markets` keying, not `system_supply`.
+
+### Load-bearing decisions from `base-power`
+
+- **Base infrastructure now needs POWER, and excavators run THEMSELVES (P13).**
+  No migration — power plants are new `base_buildings.kind` values and auto-accrual
+  reuses each excavator's existing `state.lastCollectedAt`. Built on P8a/P8b; the
+  building/storage/cost machinery is reused wholesale (no fork).
+- **Pure power model in `rules.ts`** (seeded contract `base-power.test.ts`):
+  - `thermalOutput(temperature)` = `max(0, (temp − THERMAL_FLOOR_C) ·
+    THERMAL_OUTPUT_PER_DEG)` (`THERMAL_FLOOR_C = −50`, `…PER_DEG = 0.05`) — rises
+    with temperature, ≥0, monotonic. Cold worlds yield ~nothing; hot worlds a lot.
+  - `solarOutput(atmosphere)` = `max(0, SOLAR_OUTPUT_MAX − SOLAR_OUTPUT_PER_DENSITY
+    · atmosphereDensity(atm))` (`MAX = 10`, `PER_DENSITY = 4`) — rises as the
+    atmosphere THINS (lower `atmosphereDensity` → more sunlight), ≥0, strictly
+    higher under a thinner atmosphere. **Thermal favors hot worlds; solar favors
+    thin-atmosphere worlds — siting is a real choice.**
+  - Demands: `EXCAVATOR_POWER_DEMAND = 4`, `PRODUCTION_LINE_POWER_DEMAND = 6` (>0).
+  - `basePower({thermalPlants, solarArrays, excavators, productionLines,
+    temperature, atmosphere})` → `{supply, demand, powered}`; `supply = Σ plant
+    outputs`, `demand = Σ consumer demands`, **`powered = supply ≥ demand`** —
+    ALL-OR-NOTHING (no brownouts/batteries; out of scope). No consumers ⇒ demand 0
+    ⇒ trivially powered. Pure (temperature/atmosphere passed in); designed to
+    extend (new plant → a supply term, new consumer → a demand term).
+- **`atmosphereDensity` MOVED to the universe layer** (`gen.ts`, exported from
+  `@/lib/universe`) — it's a physical property of an atmosphere, used by both
+  `takeoffCost` (fuel) and `solarOutput` (power). `rules.ts` imports it from
+  `@/lib/universe` and RE-EXPORTS it (existing importers — `takeoffCost`,
+  `fuel-orbital.test`, the new `base-power.test`'s `@/lib/universe` import — all
+  keep working). Clean layering: universe doesn't import game.
+- **Buildings**: `thermal_plant` + `solar_array` are new `StructureKind`s
+  (`bases.ts`, `STRUCTURE_KINDS` extended — the P8a `base-buildings-cost.test.ts`
+  exact-match assertion was updated to track this, per the production-lines
+  precedent), `BUILDING_BUILD_COST.thermal_plant = {credits:500, iron:5, copper:5}`,
+  `.solar_array = {credits:500, silica:5, copper:5}`. `build`'s arg-0 domain is now
+  `["base","silo","excavator","production_line","thermal_plant","solar_array"]`.
+  Same build rules (DISEMBARKED + own a base in-region + atomic validate→consume→
+  create via the shared `consumeCost`/`affordContext`). The build-success line
+  echoes the recomputed power balance.
+- **A base's power** is `basePower(...)` over its building counts + the base
+  REGION's `temperature` (`regionAt`) and the PLANET's `atmosphere` (`planetAt`).
+  - **`produce` is power-gated**: `handleProduce` computes power after the
+    production-line check and BEFORE any consumption; underpowered → an
+    `Insufficient power (supply/demand) — build thermal_plant/solar_array` error,
+    nothing consumed.
+  - **`storage`/`base` view** shows a `power supply/demand` line — green `✓` when
+    powered, RED when short (P9b convention) — plus a `plants` count and red-marked
+    `build thermal_plant`/`build solar_array` hints (`StorageView.power`/
+    `thermalPlants`/`solarArrays`/`buildable.thermal_plant`/`.solar_array`).
+- **Automatic excavators — `collect` is GONE** (removed from `VERBS`/`USAGE`/
+  `applicability`'s `DISEMBARKED_ACTIONS`/dispatch; help-parity + per-state
+  applicability stay green). Replaced by **lazy, power-gated auto-accrual**
+  (`accrueExcavators` in `commands.ts`): on any read of a base the player owns in
+  the current region (`scan` at the base region via `maybeAccrueExcavators` in
+  `regionScanFrame` / `storage` / `deposit` / `withdraw` / `produce`), each
+  excavator's accrued ore is banked into the silos — the SAME math as old
+  `collect` (per-deposit `excavatorYield(effectiveAbundance, now − lastCollectedAt)`,
+  capacity-clamped in deposit order, banked amount written back via
+  `recordDepletion`). No cron — realized on access, like price/supply reversion.
+  - **Power gate**: if the base is `!powered`, accrue NOTHING and DON'T advance
+    timestamps (so it resumes when power returns).
+  - **No clock-reset starvation**: an excavator advances `lastCollectedAt` only
+    once it has earned ≥1 whole unit. Because accrual now fires on EVERY base read
+    (not a manual command), advancing on a sub-threshold (floored-to-0) read would
+    reset the clock and starve a frequently-read base — so a 0-yield excavator's
+    clock is left alone and time keeps accumulating until it crosses the floor.
+- **Out of scope (extension points noted)**: no brownout/partial power, no
+  batteries, no plant beyond thermal/solar — but `basePower` is shaped to add more
+  supply/demand terms, and metered (over-time) production is still a noted future.

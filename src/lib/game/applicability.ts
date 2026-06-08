@@ -78,9 +78,10 @@ const EMBARKED_ACTIONS = new Set([
 /**
  * Surface + base actions — require being ON FOOT in the region (and out of
  * combat). `embark` lives here: you can only climb aboard while you're on the
- * surface. Base operations (`produce`/`collect`/`deposit`/`withdraw`) join the
+ * surface. Base operations (`produce`/`deposit`/`withdraw`) join the
  * surface work under one model — `storage` (viewing the base) stays
- * informational, but acting on the base requires being on foot.
+ * informational, but acting on the base requires being on foot. (Excavators
+ * funnel ore on their own now — P13 removed the manual `collect`.)
  */
 const DISEMBARKED_ACTIONS = new Set([
   "mine",
@@ -88,7 +89,6 @@ const DISEMBARKED_ACTIONS = new Set([
   "harvest",
   "build",
   "produce",
-  "collect",
   "deposit",
   "withdraw",
   "embark",

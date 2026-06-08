@@ -31,6 +31,8 @@ import {
   RESOURCES,
   type SystemCoord,
   type PlanetCoord,
+  type Region,
+  type Planet,
 } from "@/lib/universe";
 import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
@@ -59,6 +61,7 @@ import {
   healValue,
   excavatorYield,
   baseCapacity,
+  basePower,
   biofuelYield,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
@@ -226,6 +229,10 @@ async function regionScanFrame(
   const system = systemAt(seed, coord);
   const region = regionAt(seed, coord, regionIndex);
   const rKey = regionKey(region.coord);
+  // Lazy auto-accrual (P13): if the player owns a base here, its powered
+  // excavators funnel accrued ore into the silos before we read/display the
+  // region — so depletion shown below reflects what the excavators just drained.
+  await maybeAccrueExcavators(player, region, planet);
   const [depletionMap, justDiscovered, owned, regionBases] = await Promise.all([
     world.getEffectiveDepletionMap(rKey),
     world.recordDiscovery(planetKey(coord), player.id),
@@ -422,8 +429,9 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "deposit" && argIndex === 0) return ctx.depositCandidates;
       if (verb === "withdraw" && argIndex === 0) return ctx.withdrawCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
-      // (P8a silos/excavators, P8b production lines).
-      if (verb === "build" && argIndex === 0) return ["base", "silo", "excavator", "production_line"];
+      // (P8a silos/excavators, P8b production lines, P13 power plants).
+      if (verb === "build" && argIndex === 0)
+        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array"];
       // `produce`'s domain: the ship parts a production line banks into storage,
       // PLUS the upgrades it manufactures (P9a — consuming siloed parts, granting
       // the upgrade to the player).
@@ -573,8 +581,6 @@ async function dispatchResolved(
       return handleDeposit(player, seed, args);
     case "withdraw":
       return handleWithdraw(player, seed, args);
-    case "collect":
-      return handleCollect(player, seed);
     case "produce":
       return handleProduce(player, seed, args);
     case "sell":
@@ -606,7 +612,7 @@ function emptyDomainNote(verb: string): string {
     case "deposit":
       return "your hold is empty — `mine` something first";
     case "withdraw":
-      return "this base is storing nothing — `deposit` or `collect` first";
+      return "this base is storing nothing — `deposit`, or wait for your excavators";
     default:
       return "nothing available right now";
   }
@@ -2016,8 +2022,9 @@ async function handleEat(player: Player, args: string[]): Promise<RenderFrame> {
 // ---------------------------------------------------------------------------
 // build / bases — establish a base in the current region (P7) and list yours.
 // `build` is disembarked-only (surface infrastructure, gated like `mine`) and
-// now accepts `base`, `silo` and `excavator` (P8a). The silo/excavator path,
-// plus `deposit`/`withdraw`/`collect`/`storage`, live further below.
+// accepts `base`, the in-base structures (silo/excavator/production_line) and
+// the P13 power plants (thermal_plant/solar_array). The structure path, plus
+// `deposit`/`withdraw`/`storage` and the automatic excavator accrual, live below.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2033,11 +2040,13 @@ async function handleBuild(
 ): Promise<RenderFrame> {
   if (atOutpost(player)) return outpostSurfaceError();
   const structure = args[0]?.toLowerCase();
-  if (!structure) return errorFrame("Usage: build <base|silo|excavator|production_line> [name]");
+  if (!structure) {
+    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array> [name]");
+  }
   if (structure === "base") return handleBuildBase(player, seed, args);
   if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
   return errorFrame(
-    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\` or \`production_line\`.`,
+    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\` or \`solar_array\`.`,
   );
 }
 
@@ -2187,10 +2196,10 @@ function describeRegionKey(key: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// build silo / excavator — in-base structures (P8a). Disembarked-only (gated in
-// `dispatchResolved`); additionally require owning a base in the current region.
-// deposit / withdraw / collect / storage operate on that base's storage and
-// excavators below.
+// build silo / excavator / production_line / power plant — in-base structures
+// (P8a/P8b/P13). Disembarked-only (gated in `dispatchResolved`); additionally
+// require owning a base in the current region. deposit / withdraw / storage
+// operate on that base's storage; excavators accrue ore automatically below.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2239,12 +2248,39 @@ async function handleBuildStructure(
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
   const lines = buildings.filter((b) => b.kind === "production_line").length;
-  const detail =
-    kind === "silo"
-      ? `Storage capacity is now ${baseCapacity(silos)} (${silos} silo${silos === 1 ? "" : "s"}).`
-      : kind === "excavator"
-        ? `${excavators} excavator${excavators === 1 ? "" : "s"} now draining this region — \`collect\` to funnel ore in.`
-        : `${lines} production line${lines === 1 ? "" : "s"} ready — \`produce <part>\` to manufacture from siloed minerals.`;
+  const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
+  const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
+  // Recompute the base's power so the player learns immediately whether the new
+  // consumer is powered (or the new plant fixed an underpowered base).
+  const power = basePower({
+    thermalPlants,
+    solarArrays,
+    excavators,
+    productionLines: lines,
+    temperature: region.temperature,
+    atmosphere: planet.atmosphere,
+  });
+  const powerNote = power.powered
+    ? `Power ${Math.round(power.supply)}/${power.demand} ✓.`
+    : `Power ${Math.round(power.supply)}/${power.demand} — underpowered; build a thermal_plant or solar_array.`;
+  let detail: string;
+  switch (kind) {
+    case "silo":
+      detail = `Storage capacity is now ${baseCapacity(silos)} (${silos} silo${silos === 1 ? "" : "s"}).`;
+      break;
+    case "excavator":
+      detail = `${excavators} excavator${excavators === 1 ? "" : "s"} draining this region automatically (no \`collect\` needed). ${powerNote}`;
+      break;
+    case "production_line":
+      detail = `${lines} production line${lines === 1 ? "" : "s"} ready — \`produce <part>\` from siloed minerals. ${powerNote}`;
+      break;
+    case "thermal_plant":
+      detail = `Thermal plant online — power rises with this region's heat. ${powerNote}`;
+      break;
+    case "solar_array":
+      detail = `Solar array online — power rises as the atmosphere thins. ${powerNote}`;
+      break;
+  }
   return frame([
     line([
       text(`Built a ${kind} `, "success"),
@@ -2296,6 +2332,11 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       `No base in region ${player.region} of ${planet.name}. \`disembark\` then \`build base\`.`,
     );
   }
+  // Realize any pending excavator output BEFORE reading the silos, so what we
+  // display already includes the ore the (powered) excavators just funneled in.
+  const region = regionAt(seed, locOf(player), player.region);
+  await accrueExcavators(player, base.id, base.rKey, region, planet);
+
   const [buildings, stored, have] = await Promise.all([
     world.getBaseBuildings(base.id),
     world.getBaseStorage(base.id),
@@ -2304,8 +2345,22 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
   const productionLines = buildings.filter((b) => b.kind === "production_line").length;
+  const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
+  const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const capacity = baseCapacity(silos);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
+
+  // Power balance (P13): plant supply vs consumer demand, sited by this region's
+  // temperature + the planet's atmosphere. Surfaced (red when short) so the
+  // player knows whether the excavators/lines are actually running.
+  const power = basePower({
+    thermalPlants,
+    solarArrays,
+    excavators,
+    productionLines,
+    temperature: region.temperature,
+    atmosphere: planet.atmosphere,
+  });
 
   // Siloed amounts for the producible-affordability check (`produce` consumes
   // recipe inputs from the silo, not cargo) — same `canProduce` the handler uses.
@@ -2318,6 +2373,9 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     silos,
     excavators,
     productionLines,
+    thermalPlants,
+    solarArrays,
+    power: { supply: power.supply, demand: power.demand, powered: power.powered },
     used,
     capacity,
     items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: storageItemName(s.itemId) })),
@@ -2339,6 +2397,8 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       silo: canAffordBase(have, buildingCost("silo")),
       excavator: canAffordBase(have, buildingCost("excavator")),
       production_line: canAffordBase(have, buildingCost("production_line")),
+      thermal_plant: canAffordBase(have, buildingCost("thermal_plant")),
+      solar_array: canAffordBase(have, buildingCost("solar_array")),
     },
   });
 }
@@ -2365,6 +2425,8 @@ async function handleDeposit(
       `No base in region ${player.region} of ${planet.name} to deposit into. \`build base\` first.`,
     );
   }
+  // Realize pending excavator output first so the capacity math below sees it.
+  await accrueExcavators(player, base.id, base.rKey, regionAt(seed, locOf(player), player.region), planet);
 
   // Items deposit from the resource cargo hold (`inventory`) OR — for ship parts
   // (P12b) — the ship's parts store (`player_parts`). Either way they land in the
@@ -2436,6 +2498,8 @@ async function handleWithdraw(
       `No base in region ${player.region} of ${planet.name} to withdraw from. \`build base\` first.`,
     );
   }
+  // Realize pending excavator output first so you can withdraw what just accrued.
+  await accrueExcavators(player, base.id, base.rKey, regionAt(seed, locOf(player), player.region), planet);
 
   // P12b: ship parts are a commodity now — withdraw moves them from the silo back
   // into the ship's parts store (`player_parts`), which is uncapped (separate
@@ -2495,112 +2559,122 @@ async function handleWithdraw(
   ]);
 }
 
-/**
- * `collect` — funnel the ore your excavators have accrued (since each one's
- * `lastCollectedAt`) into base storage. For each excavator and each deposit in
- * the current region, `excavatorYield(effectiveAbundance, elapsed)` units accrue
- * — clamped to the base's remaining storage capacity. The collected ore is added
- * to storage AND written back as per-region depletion (`recordDepletion`), so
- * excavation drains the SHARED region exactly like manual mining (others see
- * less; regen slowly refills). Each excavator's clock advances to now.
- * Disembarked-only (a surface/base action, gated in `dispatchResolved`).
- */
-async function handleCollect(player: Player, seed: string): Promise<RenderFrame> {
-  if (atOutpost(player)) return outpostSurfaceError();
-  const coord = locOf(player);
-  const planet = planetAt(seed, coord);
-  const base = await baseHere(player, seed);
-  if (!base) {
-    return errorFrame(
-      `No base in region ${player.region} of ${planet.name}. \`build base\` then \`build excavator\`.`,
-    );
-  }
+// ---------------------------------------------------------------------------
+// Automatic, power-gated excavator accrual (P13 — replaces the manual `collect`).
+//
+// Excavators funnel accrued ore into the base's silos ON THEIR OWN. There is no
+// command and no cron: accrual is computed from elapsed time and REALIZED lazily
+// whenever a base the player owns is read (scan at the base region / storage /
+// deposit / withdraw / produce), exactly like price & supply mean-reversion.
+//
+// The banking math is identical to the old `collect`: per excavator, per region
+// deposit, `excavatorYield(effectiveAbundance, elapsed)` units accrue, clamped to
+// the base's remaining storage capacity (banked in deposit order), and the banked
+// amount is written back as per-region depletion (`recordDepletion`) so excavation
+// drains the SHARED region exactly like manual mining (others see less; regen
+// refills). The two differences from `collect`: it is GATED by power (an
+// underpowered base accrues nothing and leaves its clocks alone, so it resumes
+// when power returns), and a clock advances only once its excavator has earned
+// ≥1 whole unit — because accrual now fires on every read, advancing on a
+// sub-threshold (floored-to-0) read would reset the clock and starve a
+// frequently-read base.
+// ---------------------------------------------------------------------------
 
-  const region = regionAt(seed, coord, player.region);
-  const rKey = regionKey(region.coord);
-  const [buildings, stored, depletionMap] = await Promise.all([
-    world.getBaseBuildings(base.id),
-    world.getBaseStorage(base.id),
+/**
+ * Realize any pending excavator output for a base the player owns. Pure-math via
+ * `rules.ts`; persists banked ore + depletion + advanced clocks via `world`. A
+ * no-op when the base has no excavators, is underpowered, or has no free storage.
+ */
+async function accrueExcavators(
+  player: Player,
+  baseId: string,
+  rKey: string,
+  region: Region,
+  planet: Planet,
+): Promise<void> {
+  const buildings = await world.getBaseBuildings(baseId);
+  const excavators = buildings.filter((b) => b.kind === "excavator");
+  if (excavators.length === 0) return; // nothing draining
+
+  // Power gate: consumers run only when the base's plants supply enough power.
+  const power = basePower({
+    thermalPlants: buildings.filter((b) => b.kind === "thermal_plant").length,
+    solarArrays: buildings.filter((b) => b.kind === "solar_array").length,
+    excavators: excavators.length,
+    productionLines: buildings.filter((b) => b.kind === "production_line").length,
+    temperature: region.temperature,
+    atmosphere: planet.atmosphere,
+  });
+  if (!power.powered) return; // underpowered: accrue nothing, don't advance clocks
+
+  const [stored, depletionMap] = await Promise.all([
+    world.getBaseStorage(baseId),
     world.getEffectiveDepletionMap(rKey),
   ]);
-
   const silos = buildings.filter((b) => b.kind === "silo").length;
-  const excavators = buildings.filter((b) => b.kind === "excavator");
-  if (excavators.length === 0) {
-    return errorFrame("No excavators here — `build excavator` to start draining this region.");
-  }
-
   const capacity = baseCapacity(silos);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   let remaining = capacity - used;
-  if (remaining <= 0) {
-    return errorFrame(
-      silos === 0
-        ? "No silos to store the ore — `build silo` first."
-        : `Base storage is full (${used}/${capacity}). \`withdraw\` or \`build silo\` first.`,
-    );
-  }
+  if (remaining <= 0) return; // no room: don't advance (accrued time is preserved)
 
-  // Accrue per-resource across all excavators using each one's elapsed time and
-  // the deposit's current effective abundance. (Capacity clamping happens after.)
+  // Accrue per excavator off its own elapsed time; track which earned ≥1 unit.
   const now = Date.now();
   const accrued: Record<string, number> = {};
+  const toAdvance: world.BaseBuilding[] = [];
   for (const exc of excavators) {
     const lastIso =
       typeof exc.state.lastCollectedAt === "string" ? exc.state.lastCollectedAt : exc.createdAt;
     const lastAt = Date.parse(lastIso);
     const elapsed = Number.isNaN(lastAt) ? 0 : Math.max(0, now - lastAt);
+    let produced = 0;
     for (const dep of region.deposits) {
       const eff = effectiveAbundance(dep.abundance, depletionMap[dep.resourceId] ?? 0);
       const y = excavatorYield(eff, elapsed);
-      if (y > 0) accrued[dep.resourceId] = (accrued[dep.resourceId] ?? 0) + y;
+      if (y > 0) {
+        accrued[dep.resourceId] = (accrued[dep.resourceId] ?? 0) + y;
+        produced += y;
+      }
     }
+    if (produced > 0) toAdvance.push(exc);
   }
 
-  // Store what was accrued, in deposit order, up to the remaining capacity. The
-  // stored amount is what we both bank and deplete the region by.
-  const collected: { resourceId: string; qty: number }[] = [];
+  // Bank up to the remaining capacity, in deposit order; deplete only the banked
+  // amount (same clamp as the old `collect`).
+  const banked: { resourceId: string; qty: number }[] = [];
   for (const dep of region.deposits) {
     if (remaining <= 0) break;
     const want = accrued[dep.resourceId] ?? 0;
     if (want <= 0) continue;
     const take = Math.min(want, remaining);
     remaining -= take;
-    collected.push({ resourceId: dep.resourceId, qty: take });
+    banked.push({ resourceId: dep.resourceId, qty: take });
   }
+  for (const b of banked) {
+    await world.addBaseStorage(baseId, b.resourceId, b.qty);
+    await world.recordDepletion(rKey, b.resourceId, b.qty * DEPLETION_PER_UNIT, player.id);
+  }
+  // Advance only the clocks of excavators that produced (see header note).
+  for (const exc of toAdvance) {
+    await world.setBuildingState(exc.id, {
+      ...exc.state,
+      lastCollectedAt: new Date(now).toISOString(),
+    });
+  }
+}
 
-  // Always advance the clocks (time accrued is "spent" whether or not it all
-  // fit), then bank + deplete what was actually collected.
-  for (const exc of excavators) {
-    await world.setBuildingState(exc.id, { ...exc.state, lastCollectedAt: new Date(now).toISOString() });
-  }
-
-  if (collected.length === 0) {
-    return frame([
-      line(text("Excavators are still working — nothing to collect yet.", "muted")),
-    ]);
-  }
-
-  for (const c of collected) {
-    await world.addBaseStorage(base.id, c.resourceId, c.qty);
-    await world.recordDepletion(rKey, c.resourceId, c.qty * DEPLETION_PER_UNIT, player.id);
-  }
-
-  const totalQty = collected.reduce((sum, c) => sum + c.qty, 0);
-  const lines: RenderLine[] = [
-    line([
-      text(`Collected ${totalQty} units `, "success"),
-      text(`from ${excavators.length} excavator${excavators.length === 1 ? "" : "s"}. `, "default"),
-      text(`Storage ${used + totalQty}/${capacity}.`, "muted"),
-    ]),
-  ];
-  for (const c of collected) {
-    lines.push(line(text(`  • ${getResource(c.resourceId).name}: +${c.qty}`, "accent")));
-  }
-  if (remaining <= 0) {
-    lines.push(line(text("Storage is now full — `build silo` for more, or `withdraw`.", "warning")));
-  }
-  return frame(lines);
+/**
+ * Run `accrueExcavators` for the player's base in `region` if they own one there.
+ * Cheap no-op (one base lookup) when they don't. The scan/base read paths call
+ * this before displaying the region so silos reflect the drained ore.
+ */
+async function maybeAccrueExcavators(
+  player: Player,
+  region: Region,
+  planet: Planet,
+): Promise<void> {
+  const rKey = regionKey(region.coord);
+  const base = await world.getBaseInRegion(player.id, rKey);
+  if (base) await accrueExcavators(player, base.id, rKey, region, planet);
 }
 
 // ---------------------------------------------------------------------------
@@ -2615,7 +2689,8 @@ async function handleCollect(player: Player, seed: string): Promise<RenderFrame>
  * remaining `baseCapacity`. Validation (line exists, inputs siloed, capacity)
  * happens BEFORE any mutation, so a failed produce changes nothing.
  * Disembarked-only (a surface/base action, gated in `dispatchResolved`, like
- * `deposit`/`withdraw`/`collect`).
+ * `deposit`/`withdraw`). Additionally requires the base to be POWERED (P13) — an
+ * underpowered production line manufactures nothing.
  *
  * Production is INSTANT for now (no timer). A future enhancement could meter it
  * over time like excavator drain (lastProducedAt + a per-ms rate).
@@ -2638,6 +2713,9 @@ async function handleProduce(
       `No base in region ${player.region} of ${planet.name}. \`build base\` first.`,
     );
   }
+  // Realize pending excavator output first (a base read), then read the silos.
+  const region = regionAt(seed, locOf(player), player.region);
+  await accrueExcavators(player, base.id, base.rKey, region, planet);
 
   const [buildings, stored] = await Promise.all([
     world.getBaseBuildings(base.id),
@@ -2646,6 +2724,23 @@ async function handleProduce(
   const productionLines = buildings.filter((b) => b.kind === "production_line").length;
   if (productionLines === 0) {
     return errorFrame("No production line here — `build production_line` first.");
+  }
+
+  // Power gate (P13): a production line only runs when the base's plants supply
+  // enough power. Validate BEFORE any consumption — an underpowered base produces
+  // nothing and is told how to fix it.
+  const power = basePower({
+    thermalPlants: buildings.filter((b) => b.kind === "thermal_plant").length,
+    solarArrays: buildings.filter((b) => b.kind === "solar_array").length,
+    excavators: buildings.filter((b) => b.kind === "excavator").length,
+    productionLines,
+    temperature: region.temperature,
+    atmosphere: planet.atmosphere,
+  });
+  if (!power.powered) {
+    return errorFrame(
+      `Insufficient power (${Math.round(power.supply)}/${power.demand}) — \`build thermal_plant\` or \`build solar_array\` to power the production line.`,
+    );
   }
 
   // P9a: an upgrade id manufactures the UPGRADE (consuming siloed PARTS, granting

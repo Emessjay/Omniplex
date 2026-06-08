@@ -13,9 +13,17 @@ describe("structure-kind catalog", () => {
     expect(isStructureKind("silo")).toBe(true);
     expect(isStructureKind("excavator")).toBe(true);
     expect(isStructureKind("production_line")).toBe(true); // P8b
+    expect(isStructureKind("thermal_plant")).toBe(true); // P13
+    expect(isStructureKind("solar_array")).toBe(true); // P13
     expect(isStructureKind("base")).toBe(false); // the base itself is not an in-base structure
     expect(isStructureKind("nonsense")).toBe(false);
-    expect([...STRUCTURE_KINDS]).toEqual(["silo", "excavator", "production_line"]);
+    expect([...STRUCTURE_KINDS]).toEqual([
+      "silo",
+      "excavator",
+      "production_line",
+      "thermal_plant",
+      "solar_array",
+    ]);
   });
 });
 

@@ -616,6 +616,27 @@ function atmosphereFor(rng: Rng): Atmosphere {
   return pick(rng, ATMOSPHERES);
 }
 
+/**
+ * Relative "thickness/hostility" of each atmosphere — a physical property of the
+ * atmosphere type, used by gameplay rules: `takeoffCost` (a heavier/corrosive
+ * atmosphere is harder to punch out of) and `solarOutput` (a thicker atmosphere
+ * lets less sunlight reach the panels). `none` is the lowest (a vacuum is the
+ * cheapest to leave and the sunniest for solar); the rest climb roughly with how
+ * much the air fights the ship. Non-negative for every `Atmosphere`. Pure.
+ */
+export function atmosphereDensity(atmosphere: Atmosphere): number {
+  const DENSITY: Record<Atmosphere, number> = {
+    none: 0,
+    thin: 0.3,
+    breathable: 1,
+    toxic: 1.2,
+    inert: 1.4,
+    corrosive: 1.6,
+    dense: 2,
+  };
+  return DENSITY[atmosphere] ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Orbits. Each planet orbits its sun on a deterministic ellipse-circle; the
 // generator only fixes the SHAPE (radius), SPEED (period) and STARTING ANGLE

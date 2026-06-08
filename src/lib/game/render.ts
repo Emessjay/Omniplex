@@ -941,6 +941,15 @@ export interface StorageView {
   excavators: number;
   /** Number of production lines (turn siloed minerals into ship parts via `produce`). */
   productionLines: number;
+  /** Number of power plants by kind (P13) — they power the excavators + lines. */
+  thermalPlants?: number;
+  solarArrays?: number;
+  /**
+   * Power balance (P13): plant `supply` vs consumer `demand`. Rendered as
+   * `Power supply/demand`, green ✓ when `powered`, red when short (per P9b).
+   * Absent on bases with no power-relevant buildings (back-compatible).
+   */
+  power?: { supply: number; demand: number; powered: boolean };
   /** Stored units used + total capacity (= SILO_CAPACITY × silos). */
   used: number;
   capacity: number;
@@ -957,13 +966,19 @@ export interface StorageView {
    * A structure the player can't currently afford renders its hint red. Absent
    * = treat as affordable (back-compatible).
    */
-  buildable?: { silo: boolean; excavator: boolean; production_line: boolean };
+  buildable?: {
+    silo: boolean;
+    excavator: boolean;
+    production_line: boolean;
+    thermal_plant?: boolean;
+    solar_array?: boolean;
+  };
 }
 
 /**
- * `storage` (alias `base`) — the current region's base: its silo/excavator
- * counts and what's stored against capacity. A clickable `build silo` /
- * `build excavator` / `collect` hint guides expanding it.
+ * `storage` (alias `base`) — the current region's base: its silo/excavator/plant
+ * counts, its power balance, and what's stored against capacity. Clickable
+ * `build …` hints guide expanding it (excavators funnel ore automatically — P13).
  */
 export function renderStorage(view: StorageView): RenderFrame {
   const label = view.name && view.name.length > 0 ? view.name : "(unnamed base)";
@@ -980,13 +995,31 @@ export function renderStorage(view: StorageView): RenderFrame {
       text(`${view.excavators}`, "default"),
       text("   lines ", "muted"),
       text(`${view.productionLines}`, "default"),
+      text("   plants ", "muted"),
+      text(`${(view.thermalPlants ?? 0) + (view.solarArrays ?? 0)}`, "default"),
       text("   storage ", "muted"),
       text(`${view.used}/${view.capacity}`, view.used >= view.capacity ? "warning" : "default"),
     ]),
   ];
 
+  // Power balance (P13). Green ✓ when the plants cover the consumers; red when
+  // short (per P9b's unperformable→red convention) so the player sees at a glance
+  // that excavators/production lines are stalled for lack of power.
+  if (view.power) {
+    const { supply, demand, powered } = view.power;
+    lines.push(
+      line([
+        text("power ", "muted"),
+        text(`${Math.round(supply)}/${demand}`, powered ? "success" : "danger"),
+        powered
+          ? text(" ✓", "success")
+          : text("  — underpowered; build a thermal_plant or solar_array", "danger"),
+      ]),
+    );
+  }
+
   if (view.items.length === 0) {
-    lines.push(line(text("Storage is empty. `deposit <item>` or `collect` from excavators.", "muted")));
+    lines.push(line(text("Storage is empty. `deposit <item>`, or wait for your excavators to fill it.", "muted")));
   } else {
     lines.push(line(text("Stored:", "heading")));
     for (const it of view.items) {
@@ -1043,11 +1076,19 @@ export function renderStorage(view: StorageView): RenderFrame {
       title: b && !b.production_line ? "can't afford a production line" : "add a parts manufacturer",
       disabled: b ? !b.production_line : false,
     }),
+    text("   ", "muted"),
+    action("build thermal_plant", "build thermal_plant", {
+      style: "link",
+      title: b && b.thermal_plant === false ? "can't afford a thermal plant" : "power from regional heat",
+      disabled: b ? b.thermal_plant === false : false,
+    }),
+    text("   ", "muted"),
+    action("build solar_array", "build solar_array", {
+      style: "link",
+      title: b && b.solar_array === false ? "can't afford a solar array" : "power from sunlight (thin air)",
+      disabled: b ? b.solar_array === false : false,
+    }),
   ];
-  if (view.excavators > 0) {
-    hints.push(text("   ", "muted"));
-    hints.push(action("collect", "collect", { style: "link", title: "funnel accrued ore in" }));
-  }
   lines.push(line(hints));
   return frame(lines);
 }
