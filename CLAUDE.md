@@ -268,3 +268,43 @@ gotchas) accrete here as workers surface things worth persisting. See
   fix are shared unchanged. **Provider creds (Google Client ID/secret) live in
   Supabase → Authentication → Providers → Google, NOT in app env** — there are
   no new app env vars. Setup runbook in `DEPLOY.md` §3a.
+
+### Load-bearing decisions from `living-economy`
+
+- **The shared world heals over time** via two slow, time-based mechanics plus a
+  demand-side trade. The discipline is **apply-on-read, persist-on-write**: the
+  pure recovery math runs every read off a stored timestamp, but state is only
+  rewritten (and the recovery clock reset) on an actual mutation. The pure rule
+  functions take **`elapsedMs` as a parameter** and never touch `Date` — the
+  impure `world.ts` adapters compute `elapsedMs = Date.now() − timestamp` and
+  pass it in (the only place `Date.now()` lives).
+- **Tuning constants** (all in `src/lib/game/rules.ts`, documented inline):
+  - `REGEN_PER_MS = 1 / 86_400_000` — a fully-drained ~1.0 ore vein regenerates
+    over ~24h.
+  - `PRICE_REVERT_PER_MS = 5e-6` — a ~100-credit price displacement drifts back
+    to `base_value` over ~several hours.
+  - `BUY_MARKUP = 1.5` — `buy` pays 150% of the current sell price.
+- **Pure fns** (mirror the existing `priceAfterSale`/`effectiveAbundance` style):
+  `regeneratedDepletion(totalDepleted, elapsedMs, regenPerMs?)` (clamped to
+  `[0, totalDepleted]`, monotonically non-increasing in elapsed),
+  `priceTowardBase(price, base, elapsedMs, revertPerMs?)` (moves toward `base`
+  without overshooting, floored at `PRICE_FLOOR`), `buyUnitCost(price)` =
+  `ceil(price * BUY_MARKUP)`, and `priceAfterPurchase(price, qtyBought)` (the
+  buy-side mirror of `priceAfterSale`, raising the price by
+  `ceil(price * MARKET_IMPACT)` per unit).
+- **Regen on read**: `world.getEffectiveDepletionMap(planetKey)` is the
+  regen-aware sibling of `getDepletionMap` — it sums depletion deltas and heals
+  each resource by the time since its *most recent* delta, returning the same
+  `Record<resourceId, depletion>` shape so `scan`/`mine` feed it straight into
+  `effectiveAbundance`. Mining still appends a delta, whose fresh `created_at`
+  resets that resource's recovery clock.
+- **Drift on read**: `getMarketPrices`/`getMarketPrice` apply
+  `priceTowardBase(stored, baseValue, now − updated_at)` and round to an integer
+  (the `markets.price` column is `integer ≥ 0`). `setMarketPrice` stamps
+  `updated_at = now` on every trade, so drift accrues forward from the last
+  trade. `sell`, `buy`, and `inventory` all read the drifted price.
+- **`buy <resource> [qty]`** (`handleBuyResource` in `commands.ts`): `buy fuel`
+  is unchanged; any other arg-0 is a mineral purchase. Validates credits and
+  cargo space **before** mutating, then `addInventory` + `addPlayerCredits(−total)`
+  + `setMarketPrice(priceAfterPurchase(...))`. The `buy` abbrev domain is
+  `["fuel", ...RESOURCES ids]`; the `qty` arg stays opaque (numeric).

@@ -20,6 +20,8 @@ import "server-only";
 import { getServerClient } from "@/lib/supabase/server";
 import type { Player, PlayerRow } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
+import { getResource } from "@/lib/universe";
+import { regeneratedDepletion, priceTowardBase } from "./rules";
 
 const GLOBAL_MARKET = "global";
 
@@ -64,6 +66,67 @@ export async function getDepletionMap(
     }
   }
   return map;
+}
+
+/**
+ * Effective depletion per resource for a planet, with ore *regen-on-read*
+ * applied. For each resource we replay its depletion deltas in chronological
+ * order, decaying the running depletion toward 0 over the gap *between* deltas
+ * (via the pure `regeneratedDepletion`) before adding each new mine on top, and
+ * finally decaying over the gap to `now`. The returned shape matches
+ * `getDepletionMap`, so callers feed it straight into `effectiveAbundance`.
+ *
+ * Why replay rather than regen the raw sum by the latest gap: depletion that
+ * had already healed before a later mine must stay forgiven. A naive
+ * `regen(sum, now − lastDelta)` resurrects it — the ever-growing sum would make
+ * full recovery take longer the more a planet has *ever* been mined. Replaying
+ * keeps recovery a flat ~24h no matter the history, and a fresh delta still
+ * resets the clock (it's added after the decay, with the final decay measured
+ * from it).
+ *
+ * Impure by design: `Date.now()` lives here (not in the pure `rules.ts`).
+ */
+export async function getEffectiveDepletionMap(
+  planetKey: string,
+): Promise<Record<string, number>> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("world_deltas")
+    .select("payload, created_at")
+    .eq("location_key", planetKey)
+    .eq("kind", "depletion")
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+
+  // Per resource: the running depletion and the timestamp it was last updated.
+  const depletion: Record<string, number> = {};
+  const lastAt: Record<string, number> = {};
+  for (const row of data ?? []) {
+    const r = row as { payload: DepletionPayload; created_at: string };
+    const p = r.payload;
+    if (!p || typeof p.resourceId !== "string" || typeof p.amount !== "number") {
+      continue;
+    }
+    const t = Date.parse(r.created_at);
+    if (Number.isNaN(t)) continue;
+    const id = p.resourceId;
+    const prev = depletion[id] ?? 0;
+    const prevAt = lastAt[id] ?? t;
+    // Heal what accrued before this mine, then stack the new depletion on top.
+    depletion[id] = regeneratedDepletion(prev, Math.max(0, t - prevAt)) + p.amount;
+    lastAt[id] = t;
+  }
+
+  // Final decay from each resource's last delta to "now".
+  const now = Date.now();
+  const effective: Record<string, number> = {};
+  for (const id of Object.keys(depletion)) {
+    effective[id] = regeneratedDepletion(
+      depletion[id]!,
+      Math.max(0, now - (lastAt[id] ?? now)),
+    );
+  }
+  return effective;
 }
 
 /** Append a depletion delta (append-only; safe under concurrency). */
@@ -187,34 +250,58 @@ export async function clearInventory(
 // Markets (single global market for MVP).
 // ---------------------------------------------------------------------------
 
-/** Current global prices, keyed by resource id. */
+/**
+ * Apply price mean-reversion *on read*: drift the stored price back toward the
+ * resource's `base_value` by the time since its last trade (`updated_at`),
+ * rounded to an integer (the `markets.price` column is an integer ≥ 0, and
+ * `priceTowardBase` already floors at `PRICE_FLOOR`). Persisted prices are only
+ * updated on a trade (`setMarketPrice` stamps `updated_at = now`), so drift
+ * accrues forward from the last trade — "apply-on-read, persist-on-write".
+ */
+function driftedPrice(stored: number, resourceId: string, updatedAt: string): number {
+  let base: number;
+  try {
+    base = getResource(resourceId).baseValue;
+  } catch {
+    return stored; // unknown id (shouldn't happen for seeded markets): no drift
+  }
+  const t = Date.parse(updatedAt);
+  const elapsed = Number.isNaN(t) ? 0 : Math.max(0, Date.now() - t);
+  return Math.round(priceTowardBase(stored, base, elapsed));
+}
+
+/** Current global prices (drift-on-read applied), keyed by resource id. */
 export async function getMarketPrices(): Promise<Record<string, number>> {
   const db = getServerClient();
   const { data, error } = await db
     .from("markets")
-    .select("resource_id, price")
+    .select("resource_id, price, updated_at")
     .eq("location_key", GLOBAL_MARKET);
   if (error) throw error;
   const map: Record<string, number> = {};
   for (const row of data ?? []) {
-    map[(row as { resource_id: string }).resource_id] = (
-      row as { price: number }
-    ).price;
+    const r = row as { resource_id: string; price: number; updated_at: string };
+    map[r.resource_id] = driftedPrice(r.price, r.resource_id, r.updated_at);
   }
   return map;
 }
 
-/** Current global price for one resource (null if the market has no row). */
+/**
+ * Current global price for one resource with drift-on-read applied (null if the
+ * market has no row).
+ */
 export async function getMarketPrice(resourceId: string): Promise<number | null> {
   const db = getServerClient();
   const { data, error } = await db
     .from("markets")
-    .select("price")
+    .select("price, updated_at")
     .eq("location_key", GLOBAL_MARKET)
     .eq("resource_id", resourceId)
     .maybeSingle();
   if (error) throw error;
-  return data ? (data as { price: number }).price : null;
+  if (!data) return null;
+  const r = data as { price: number; updated_at: string };
+  return driftedPrice(r.price, resourceId, r.updated_at);
 }
 
 /** Persist a new global price for a resource (best-effort write). */

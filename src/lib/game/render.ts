@@ -33,6 +33,7 @@ export function renderHelp(): RenderFrame {
     ["inventory", "show cargo, credits and fuel"],
     ["sell <resource> | sell all", "sell cargo at the global market"],
     ["buy fuel [n]", "refuel for credits"],
+    ["buy <resource> [qty]", "buy minerals at 1.5× price (pushes price up)"],
     ["who", "see the shared-world leaderboards"],
   ];
   return frame([

@@ -41,9 +41,99 @@ export const PRICE_FLOOR = 1;
  * Fraction of the current price each unit sold knocks off, rounded UP to an
  * integer (so each unit always moves the price by at least 1). This makes the
  * per-unit impact proportional to value — selling legendary goods drifts the
- * price by more credits than dumping common ore.
+ * price by more credits than dumping common ore. Buying uses the same impact in
+ * reverse (see `priceAfterPurchase`).
  */
 export const MARKET_IMPACT = 0.02;
+
+// ---------------------------------------------------------------------------
+// Living economy — slow recovery of the shared world.
+//
+// REGEN and PRICE_REVERT are deliberately "very slow": the world heals on a
+// human-scale clock (hours/days), not per-command. Both are *rates per
+// millisecond*; the impure adapters in `world.ts` compute `elapsedMs` from a
+// stored timestamp and pass it in so these functions stay pure & deterministic.
+// ---------------------------------------------------------------------------
+
+/**
+ * Abundance-units of depletion that regenerate per millisecond. Tuned so a
+ * fully-drained ~1.0 vein recovers over ~24h of real time
+ * (1.0 / 86_400_000ms ≈ 1.157e-8 per ms). Small on purpose — a mined-out planet
+ * becomes worth revisiting "tomorrow", not on the next scan.
+ */
+export const REGEN_PER_MS = 1 / 86_400_000;
+
+/**
+ * Credits of price recovered toward `base` per millisecond. Tuned so a price
+ * displaced by ~100 credits drifts back to base over ~several hours
+ * (100 / (5 * 3_600_000ms) ≈ 5.56e-6 per ms ≈ 5e-6). A crashed or spiked price
+ * settles back toward its baseline value while the market is left untraded.
+ */
+export const PRICE_REVERT_PER_MS = 5e-6;
+
+/** Buy markup over the current price: a `buy` pays 150% of the sell price. */
+export const BUY_MARKUP = 1.5;
+
+/**
+ * Remaining effective depletion after regeneration. `elapsedMs` is the time
+ * since the deposit was last mined; `regenPerMs * elapsedMs` abundance-units
+ * have healed back. Result is clamped to [0, totalDepleted]: it only shrinks,
+ * never below 0 (a fully recovered vein reads as 0 depletion) and never above
+ * the original depletion. Monotonically non-increasing in `elapsedMs`.
+ */
+export function regeneratedDepletion(
+  totalDepleted: number,
+  elapsedMs: number,
+  regenPerMs: number = REGEN_PER_MS,
+): number {
+  if (!(totalDepleted > 0)) return 0;
+  const recovered = Math.max(0, regenPerMs * elapsedMs);
+  const remaining = totalDepleted - recovered;
+  return Math.max(0, Math.min(totalDepleted, remaining));
+}
+
+/**
+ * Effective price after mean-reversion toward `base`. Moves `price` toward
+ * `base` by `revertPerMs * elapsedMs`, NEVER overshooting: a price below base
+ * rises to at most base, a price above base falls to at least base, an
+ * already-at-base price is unchanged. Stays ≥ `PRICE_FLOOR`. Monotonic toward
+ * base in `elapsedMs`.
+ */
+export function priceTowardBase(
+  price: number,
+  base: number,
+  elapsedMs: number,
+  revertPerMs: number = PRICE_REVERT_PER_MS,
+): number {
+  const move = Math.max(0, revertPerMs * elapsedMs);
+  let next: number;
+  if (price < base) {
+    next = Math.min(base, price + move);
+  } else if (price > base) {
+    next = Math.max(base, price - move);
+  } else {
+    next = price;
+  }
+  return Math.max(PRICE_FLOOR, next);
+}
+
+/** Per-unit buy cost: ceil(price * BUY_MARKUP). Always ≥ price (for price ≥ 0). */
+export function buyUnitCost(price: number): number {
+  return Math.ceil(Math.max(0, price) * BUY_MARKUP);
+}
+
+/**
+ * The new GLOBAL market price after `qtyBought` units are BOUGHT at `price` —
+ * the mirror of `priceAfterSale`. Each unit RAISES the price by
+ * `ceil(price * MARKET_IMPACT)` (≥ 1), so the result strictly increases in
+ * `qtyBought` for `qtyBought > 0`; buying nothing leaves it unchanged. Never
+ * below `PRICE_FLOOR`. This is what lets demand push the shared price up.
+ */
+export function priceAfterPurchase(price: number, qtyBought: number): number {
+  if (qtyBought <= 0) return Math.max(PRICE_FLOOR, price);
+  const risePerUnit = Math.max(1, Math.ceil(price * MARKET_IMPACT));
+  return Math.max(PRICE_FLOOR, price + qtyBought * risePerUnit);
+}
 
 // ---------------------------------------------------------------------------
 // Navigation.

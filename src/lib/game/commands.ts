@@ -21,6 +21,7 @@ import {
   planetKey,
   warpDistance,
   getResource,
+  RESOURCES,
   type SystemCoord,
   type PlanetCoord,
 } from "@/lib/universe";
@@ -34,6 +35,8 @@ import {
   fuelCost,
   miningYield,
   priceAfterSale,
+  priceAfterPurchase,
+  buyUnitCost,
   sellValue,
   DEPLETION_PER_UNIT,
   FUEL_PRICE_PER_UNIT,
@@ -89,7 +92,7 @@ const VERBS = [
 async function minableHere(player: Player, seed: string): Promise<string[]> {
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
-  const depletionMap = await world.getDepletionMap(planetKey(coord));
+  const depletionMap = await world.getEffectiveDepletionMap(planetKey(coord));
   return planet.deposits
     .filter((d) => effectiveAbundance(d.abundance, depletionMap[d.resourceId] ?? 0) > 0)
     .map((d) => d.resourceId);
@@ -124,7 +127,9 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
     argDomain: (verb, argIndex) => {
       if (verb === "mine" && argIndex === 0) return mineCandidates;
       if (verb === "sell" && argIndex === 0) return sellCandidates;
-      if (verb === "buy" && argIndex === 0) return ["fuel"];
+      if (verb === "buy" && argIndex === 0) {
+        return ["fuel", ...RESOURCES.map((r) => r.id)];
+      }
       return null; // opaque: warp coords, land index, buy quantity, …
     },
   };
@@ -187,7 +192,7 @@ async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
   const planet = planetAt(seed, coord);
   const system = systemAt(seed, coord);
   const [depletionMap, justDiscovered] = await Promise.all([
-    world.getDepletionMap(planetKey(coord)),
+    world.getEffectiveDepletionMap(planetKey(coord)),
     world.recordDiscovery(planetKey(coord), player.id),
   ]);
   return renderScan({ planet, system, depletionMap, justDiscovered });
@@ -266,7 +271,7 @@ async function handleWarp(
   const arrivalCoord: PlanetCoord = { ...dest, planet: 0 };
   const destSystem = systemAt(seed, dest);
   const [depletionMap, justDiscovered] = await Promise.all([
-    world.getDepletionMap(planetKey(arrivalCoord)),
+    world.getEffectiveDepletionMap(planetKey(arrivalCoord)),
     world.recordDiscovery(planetKey(arrivalCoord), player.id),
   ]);
 
@@ -315,7 +320,7 @@ async function handleLand(
 
   const planet = planetAt(seed, coord);
   const [depletionMap, justDiscovered] = await Promise.all([
-    world.getDepletionMap(planetKey(coord)),
+    world.getEffectiveDepletionMap(planetKey(coord)),
     world.recordDiscovery(planetKey(coord), player.id),
   ]);
   const scan = renderScan({ planet, system, depletionMap, justDiscovered });
@@ -345,7 +350,7 @@ async function handleMine(
   }
 
   const key = planetKey(coord);
-  const depletionMap = await world.getDepletionMap(key);
+  const depletionMap = await world.getEffectiveDepletionMap(key);
   const eff = effectiveAbundance(deposit.abundance, depletionMap[resourceId] ?? 0);
   if (eff <= 0) {
     return errorFrame(`The ${getResource(resourceId).name} here is mined out.`);
@@ -460,14 +465,13 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
 }
 
 // ---------------------------------------------------------------------------
-// buy fuel [n]
+// buy fuel [n]  |  buy <resource> [qty]
 // ---------------------------------------------------------------------------
 
 async function handleBuy(player: Player, args: string[]): Promise<RenderFrame> {
   const what = args[0]?.toLowerCase();
-  if (what !== "fuel") {
-    return errorFrame("You can only `buy fuel [n]` for now.");
-  }
+  if (!what) return errorFrame("Usage: buy fuel [n]  or  buy <resource> [qty]");
+  if (what !== "fuel") return handleBuyResource(player, what, args[1]);
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const maxAffordable = Math.floor(fresh.credits / FUEL_PRICE_PER_UNIT);
@@ -494,6 +498,66 @@ async function handleBuy(player: Player, args: string[]): Promise<RenderFrame> {
       text(`Bought ${buy} fuel for ${cost} cr. `, "success"),
       text(`Fuel ${newFuel}, credits ${fresh.credits - cost}.`, "muted"),
     ]),
+  ]);
+}
+
+/**
+ * Purchase a mineral from the global market at `buyUnitCost` (1.5× the current,
+ * drift-adjusted price) per unit, which drives the shared price UP — the mirror
+ * of `sell`. `resourceId` is already abbrev-resolved by the dispatcher.
+ * Validates credits and cargo space BEFORE mutating; an error frame leaves all
+ * state untouched.
+ */
+async function handleBuyResource(
+  player: Player,
+  resourceId: string,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  // Parse quantity (default 1; must be a positive whole number when supplied).
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: buy <resource> [qty]  — qty must be a positive whole number.");
+  }
+  const qty = requested;
+
+  const price = await world.getMarketPrice(resourceId);
+  if (price == null) {
+    return errorFrame(`No market for ${resourceId} right now.`);
+  }
+
+  const res = getResource(resourceId);
+  const unitCost = buyUnitCost(price);
+  const total = unitCost * qty;
+
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  if (fresh.credits < total) {
+    return errorFrame(
+      `Not enough credits: ${qty} ${res.name} costs ${total} cr (${unitCost}/u) and you have ${fresh.credits}.`,
+    );
+  }
+
+  const used = await world.getCargoUsed(player.id);
+  const cargoSpace = fresh.cargoCap - used;
+  if (qty > cargoSpace) {
+    return errorFrame(
+      `Not enough cargo space: buying ${qty} needs ${qty} free, you have ${Math.max(0, cargoSpace)}.`,
+    );
+  }
+
+  await world.addInventory(player.id, resourceId, qty);
+  const newBalance = await world.addPlayerCredits(player.id, -total);
+  const newPrice = priceAfterPurchase(price, qty);
+  await world.setMarketPrice(resourceId, newPrice);
+
+  return frame([
+    line([
+      text(`Bought ${qty} `, "success"),
+      text(`${res.name} `, "default"),
+      text(`for ${total} cr `, "accent"),
+      text(`(${unitCost}/u). `, "muted"),
+      text(`Balance ${newBalance} cr.`, "accent"),
+    ]),
+    line(text(`  price ${price}→${newPrice}`, "muted")),
   ]);
 }
 
