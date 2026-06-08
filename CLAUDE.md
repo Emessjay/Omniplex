@@ -120,3 +120,56 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **Path alias**: `@/*` → `src/*` (mirrored in `tsconfig.json` and
   `vitest.config.ts`). Tests are `src/**/*.{test,spec}.ts(x)`, run with
   `npx vitest run`.
+
+### Load-bearing decisions from `universe-gen`
+
+- **Procedural universe** lives in `src/lib/universe/` (public API in
+  `index.ts`). It is **pure & deterministic** — `systemAt(seed, coord)` and
+  `planetAt(seed, coord)` are functions of their args only; same inputs ⇒
+  byte-identical output, nothing stored. Never add I/O, `Date`, or
+  `Math.random` to this module.
+- **PRNG**: cyrb128 + sfc32 (`src/lib/universe/prng.ts`), seeded via
+  `makeRng(seed, ...parts)`. Deterministic across JS engines; no deps.
+- **Coordinates**: `SystemCoord { sector, system }`, `PlanetCoord
+  { sector, system, planet }` — integers matching the `players` table.
+- **Location keys** are colon-delimited: `systemKey` → `"<sector>:<system>"`,
+  `planetKey` → `"<sector>:<system>:<planet>"`; `parseLocationKey` round-trips
+  both. These are the `location_key` values for `world_deltas` / `discoveries`
+  / `markets` rows.
+- **`Planet`** = `{ coord, name, biome, atmosphere, gravity (0,10],
+  hazard [0,1], temperature °C, deposits: {resourceId, abundance[0,1]}[] }`.
+  **`StarSystem`** = `{ coord, name, starClass (O/B/A/F/G/K/M), planetCount
+  [1,MAX_PLANETS], planets[] }`. Enums exported as `BIOMES`/`ATMOSPHERES`/
+  `STAR_CLASSES`.
+- **Resource catalog** (`resources.ts`, `RESOURCES`/`getResource`) is the
+  gen-side source of truth and MUST stay in lock-step with the SQL seed
+  (7 ids, rarity 1–5). `getResource` throws on unknown ids.
+- **Rarity coupling**: hazard → rarity. High-hazard "savage" planets carry
+  rarity-4/5 (iridium/xenon/voidstone); voidstone is savage-gated.
+- **`warpDistance(a, b)`** is the deterministic system-to-system metric
+  (0 to self, symmetric, positive between distinct). Fuel-cost scaling off
+  it is `command-core`'s job.
+
+### Load-bearing decisions from `auth-player`
+
+- **Auth** is Supabase magic-link via `@supabase/ssr` (cookie sessions).
+  Session-aware clients live in `src/lib/supabase/auth-server.ts`
+  (`getSessionClient()`), `auth-client.ts`, `middleware.ts`, gated by
+  `isSupabaseConfigured()` in `config.ts`. These are SEPARATE from the
+  game-state clients (`getServerClient`/`getBrowserClient`): auth clients
+  manage the user session, game clients manage game data. `middleware.ts`
+  (repo root) refreshes the session per request.
+- **Gating**: `src/app/page.tsx` resolves auth server-side and re-validates
+  with `supabase.auth.getUser()` (never trust the raw cookie session for
+  gating). Unconfigured → "not configured" login; no user → `LoginScreen`;
+  authed → bootstrap player + render `<Terminal player={player} />`.
+- **Player identity**: `getOrCreatePlayer(userId, email)` in
+  `src/lib/players/` (service-role, `server-only`, idempotent via the
+  `players.user_id` unique constraint + `23505` retry). New players take DB
+  defaults (1000 credits, 100 fuel, 50 cargo, location `0/0/0` = starting
+  system). `Player` type (`src/lib/players/types.ts`) is camelCase mapping
+  the snake_case columns via `rowToPlayer`. **`command-core` imports
+  `Player` and reads the current player server-side to run commands.**
+- **Terminal greeting**: `<Terminal>` takes an optional `player` prop and
+  shows a personalized boot banner. The `submitCommand` seam and
+  `RenderFrame` types are unchanged — still the single attach point.
