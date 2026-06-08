@@ -9,7 +9,13 @@ import {
   textFrame,
 } from "./helpers";
 import { completeCommand, COMMANDS } from "./completion";
-import { submitCommand } from "./pipeline";
+
+// NOTE: the scaffold's "submitCommand stub" tests were removed by `command-core`.
+// `submitCommand` is no longer a client-side echo stub — it now delegates to the
+// `runCommand` server action (which resolves the authed player and runs the real
+// game pipeline), so it can't be exercised in a node unit test and the echo
+// behavior it used to assert no longer exists. The render-frame builders and
+// tab-completion below are unchanged and still covered.
 
 describe("render-frame builders", () => {
   it("builds a plain text span without a style key when none given", () => {
@@ -63,22 +69,5 @@ describe("tab completion", () => {
     expect(completeCommand("inv")).toEqual(["inventory"]);
     expect(completeCommand("warp Kep")).toEqual(["warp"]);
     expect(completeCommand("zzz")).toEqual([]);
-  });
-});
-
-describe("submitCommand stub", () => {
-  it("echoes arbitrary input prefixed like a shell", async () => {
-    const f = await submitCommand("  hello world  ");
-    expect(frameToText(f)).toEqual(["> hello world"]);
-  });
-
-  it("renders clickable action tokens for help", async () => {
-    const f = await submitCommand("help");
-    const actions = f.lines
-      .flat()
-      .filter((s): s is import("./types").ActionSpan => s.kind === "action");
-    expect(actions.length).toBe(COMMANDS.length);
-    // Each action token's command round-trips to a known verb.
-    expect(actions.map((a) => a.command)).toEqual([...COMMANDS]);
   });
 });

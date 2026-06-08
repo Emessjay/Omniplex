@@ -2,48 +2,25 @@
  * ┌─────────────────────────────────────────────────────────────────────┐
  * │  COMMAND PIPELINE SEAM                                                 │
  * │                                                                       │
- * │  This is the single attach point where the real server-authoritative │
- * │  command pipeline plugs in. Today it is a CLIENT-SIDE STUB that just  │
- * │  echoes input — there is no gameplay yet.                             │
+ * │  `submitCommand` is the single attach point between the <Terminal>    │
+ * │  client and the server-authoritative game. It is a thin wrapper that  │
+ * │  forwards the raw input string to the `runCommand` server action,     │
+ * │  which resolves the authed player and runs the command against the    │
+ * │  rules + DB. The client never sends player state — only the string.   │
  * │                                                                       │
- * │  When the `command-core` / auth workers land, replace the body of    │
- * │  `submitCommand` with a call to a server action / route, e.g.        │
- * │                                                                       │
- * │      'use server'                                                     │
- * │      export async function runCommand(playerId, input): RenderFrame  │
- * │                                                                       │
- * │  …and have this function POST `input` (plus the authed player) to it. │
- * │  Keep the signature `(input: string) => Promise<RenderFrame>` stable: │
- * │  the <Terminal> component depends on exactly this shape.             │
+ * │  Signature is load-bearing: keep `(input: string) =>                  │
+ * │  Promise<RenderFrame>` exactly — the <Terminal> component depends on  │
+ * │  it. `clear` is handled client-side in Terminal.tsx, not here.        │
  * └─────────────────────────────────────────────────────────────────────┘
  */
 import type { RenderFrame } from "./types";
-import { action, frame, line, text } from "./helpers";
-import { COMMANDS } from "./completion";
+import { runCommand } from "@/app/actions/runCommand";
 
 /**
- * Submit a command string and get back a render frame to append to the
- * scrollback. STUB IMPLEMENTATION — echoes input and special-cases `help`
- * so the clickable-action mechanism is demonstrable. No game state.
+ * Submit a command string (typed or from a clicked action span) and get back
+ * the render frame to append to the scrollback. Delegates entirely to the
+ * server action — there is no client-side game logic.
  */
 export async function submitCommand(input: string): Promise<RenderFrame> {
-  const cmd = input.trim();
-
-  if (cmd.toLowerCase() === "help") {
-    return frame([
-      line(text("Available commands (scaffold stub — no gameplay yet):", "heading")),
-      // Each command is a clickable action token; clicking submits it.
-      line([
-        text("  ", "muted"),
-        ...COMMANDS.flatMap((c, i) => [
-          action(c, c, { title: `run "${c}"` }),
-          text(i === COMMANDS.length - 1 ? "" : "  ", "muted"),
-        ]),
-      ]),
-      line(text("Type a command and press Enter, or click one above.", "muted")),
-    ]);
-  }
-
-  // Default: echo the input back, prefixed like a shell.
-  return frame([line([text("> ", "muted"), text(cmd, "default")])]);
+  return runCommand(input);
 }
