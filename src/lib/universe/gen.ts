@@ -196,8 +196,13 @@ function depositsFor(rng: Rng, hazard: number): ResourceDeposit[] {
     const resource = available[idx]!;
     available.splice(idx, 1); // distinct resource per slot
 
-    // Abundance in (0, 1]; common resources tend to be richer veins.
-    const richness = randFloat(rng, 0.1, 1);
+    // Abundance in (0, 1], biased by rarity so common ore forms richer veins
+    // and rare ore forms leaner ones: the upper bound of the random draw
+    // shrinks as rarity climbs (rarity 1→full range, rarity 5→a low ceiling).
+    // The draw keeps a random component, so veins still vary; only the
+    // expected abundance trends down (monotonically) with rarity.
+    const rarityBias = 1 - 0.15 * (resource.rarity - 1); // 1.0 at r1 → 0.4 at r5
+    const richness = randFloat(rng, 0.1, 1) * rarityBias;
     const abundance = Math.min(1, richness);
     deposits.push({ resourceId: resource.id, abundance });
   }

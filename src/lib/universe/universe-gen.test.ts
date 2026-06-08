@@ -169,6 +169,32 @@ describe("rarity coupling — savage planets carry rare resources (AC#5)", () =>
   });
 });
 
+describe("abundance is biased by rarity — common ore forms richer veins", () => {
+  // Collect every deposit across a large deterministic sample, tagged with the
+  // rarity of its resource, then compare mean abundance of common vs rare ore.
+  const deposits = samplePlanets(SEED).flatMap((p) =>
+    p.deposits.map((d) => ({
+      abundance: d.abundance,
+      rarity: getResource(d.resourceId).rarity,
+    })),
+  );
+  const mean = (xs: number[]) =>
+    xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+
+  const lowRarity = deposits.filter((d) => d.rarity <= 2).map((d) => d.abundance);
+  const highRarity = deposits.filter((d) => d.rarity >= 4).map((d) => d.abundance);
+
+  it("the sample has enough low- and high-rarity deposits to compare", () => {
+    expect(lowRarity.length).toBeGreaterThan(30);
+    expect(highRarity.length).toBeGreaterThan(30);
+  });
+
+  it("low-rarity deposits are meaningfully richer than high-rarity ones", () => {
+    // Directional with a margin, robust to RNG — not an exact value.
+    expect(mean(lowRarity)).toBeGreaterThan(mean(highRarity) + 0.1);
+  });
+});
+
 describe("location keys round-trip (AC#7)", () => {
   it("systemKey/planetKey parse back to the coord", () => {
     const sc: SystemCoord = { sector: 5, system: 12 };
