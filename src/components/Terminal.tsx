@@ -25,6 +25,7 @@ import type {
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { submitCommand } from "@/lib/terminal/pipeline";
 import { completeCommand } from "@/lib/terminal/completion";
+import type { Player } from "@/lib/players/types";
 import { cn } from "@/lib/utils";
 
 /** Intent → color class. COLOR ONLY (theme-parity rule); no geometry here. */
@@ -39,8 +40,49 @@ const STYLE_CLASS: Record<SpanStyle, string> = {
   heading: "text-term-heading font-semibold",
 };
 
-/** The boot banner shown before any command runs. */
-function bootFrame(): RenderFrame {
+/**
+ * The boot banner shown before any command runs. When a `player` is provided
+ * (the authenticated case) it greets them by handle and reports their
+ * starting location and credits/fuel; otherwise it falls back to the generic
+ * scaffold banner.
+ */
+function bootFrame(player?: Player): RenderFrame {
+  if (player) {
+    return frame([
+      line(text("OMNIPLEX // terminal interface", "heading")),
+      line(text("a procedurally-generated sci-fi universe, rendered as text", "muted")),
+      line(text("")),
+      line([
+        text("welcome aboard, ", "muted"),
+        text(player.handle, "accent"),
+        text(".", "muted"),
+      ]),
+      line([
+        text("location: ", "muted"),
+        text(
+          `sector ${player.sector} · system ${player.system} · planet ${player.planet}`,
+          "default",
+        ),
+        text("  (starting system)", "muted"),
+      ]),
+      line([
+        text("credits: ", "muted"),
+        text(String(player.credits), "success"),
+        text("   fuel: ", "muted"),
+        text(String(player.fuel), "success"),
+        text("   cargo cap: ", "muted"),
+        text(String(player.cargoCap), "default"),
+      ]),
+      line(text("")),
+      line([
+        text("gameplay not wired yet. Type ", "muted"),
+        action("help", "help", { title: "list commands" }),
+        text(" or click it to begin.", "muted"),
+      ]),
+      line(text("")),
+    ]);
+  }
+
   return frame([
     line(text("OMNIPLEX // terminal interface", "heading")),
     line(text("a procedurally-generated sci-fi universe, rendered as text", "muted")),
@@ -81,8 +123,8 @@ function Span({
   return <span className={STYLE_CLASS[span.style ?? "default"]}>{span.text}</span>;
 }
 
-export function Terminal() {
-  const [lines, setLines] = useState<RenderLine[]>(() => bootFrame().lines);
+export function Terminal({ player }: { player?: Player } = {}) {
+  const [lines, setLines] = useState<RenderLine[]>(() => bootFrame(player).lines);
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   // null = "editing a fresh line"; otherwise an index into `history`.
