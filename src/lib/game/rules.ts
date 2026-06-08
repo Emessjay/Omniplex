@@ -285,6 +285,20 @@ export function creditsAfterDeath(credits: number): number {
   return Math.max(0, Math.floor(Math.max(0, credits) * (1 - DEATH_GOLD_PENALTY)));
 }
 
+/**
+ * Health after eating a food that heals `healAmount` from `currentHp`, NEVER
+ * overhealing past `maxHp`: `min(maxHp, currentHp + max(0, healAmount))`. Pure.
+ * Eating at full HP is a no-op (returns `maxHp`); a negative/zero heal can't
+ * reduce health. The `eat` handler floors the input HP at the live value.
+ */
+export function healValue(
+  currentHp: number,
+  healAmount: number,
+  maxHp: number = MAX_HEALTH,
+): number {
+  return Math.min(maxHp, currentHp + Math.max(0, healAmount));
+}
+
 // ---------------------------------------------------------------------------
 // Wildlife — exploring, and on-foot combat with fauna (P5).
 //

@@ -38,6 +38,7 @@ export const VERBS: string[] = [
   "inventory",
   "upgrades",
   "craft",
+  "eat",
   "sell",
   "buy",
   "who",
@@ -136,8 +137,12 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   craft: {
-    desc: "synthesize an upgrade from mined components",
-    slots: [{ name: "upgrade" }],
+    desc: "synthesize a ship upgrade or cook food from materials",
+    slots: [{ name: "thing" }],
+  },
+  eat: {
+    desc: "eat a cooked food to restore health",
+    slots: [{ name: "food" }],
   },
   sell: {
     desc: "sell cargo (or an upgrade) at the global market",

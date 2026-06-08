@@ -45,7 +45,7 @@ describe("materials catalog", () => {
     expect(MATERIALS.length).toBeGreaterThan(0);
     for (const m of MATERIALS) {
       expect(m.value).toBeGreaterThan(0);
-      expect(["flora", "animal", "relic", "mineral"]).toContain(m.category);
+      expect(["flora", "animal", "relic", "mineral", "food"]).toContain(m.category);
     }
     const anyId = MATERIALS[0]!.id;
     expect(isMaterialId(anyId)).toBe(true);

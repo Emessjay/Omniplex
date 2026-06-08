@@ -14,8 +14,13 @@
  * tier you mostly want to be scavenging for.
  */
 
-/** A material's category — where it tends to come from. */
-export type MaterialCategory = "flora" | "animal" | "relic" | "mineral";
+/**
+ * A material's category — where it tends to come from. `food` (P6) is the odd
+ * one out: food is never found/dropped, it is COOKED from other materials via
+ * `craft` (see `FOOD_RECIPES`) and eaten to restore health. It reuses the same
+ * `player_materials` storage as everything else.
+ */
+export type MaterialCategory = "flora" | "animal" | "relic" | "mineral" | "food";
 
 export interface Material {
   id: string;
@@ -23,6 +28,11 @@ export interface Material {
   category: MaterialCategory;
   /** Fixed sell value in credits (code-derived; no market drift). */
   value: number;
+  /**
+   * Hit points restored when this item is `eat`en. Present (and > 0) only on
+   * `food` materials; undefined elsewhere (inedible). See `healOf`.
+   */
+  heal?: number;
 }
 
 /**
@@ -44,6 +54,11 @@ export const MATERIALS: readonly Material[] = [
   // Relic — rare precursor salvage; the jackpot of a scavenge.
   { id: "precursor_relic", name: "Precursor Relic", category: "relic", value: 600 },
   { id: "void_idol", name: "Void Idol", category: "relic", value: 950 },
+  // Food — COOKED from the spoils above via `craft` (see `FOOD_RECIPES`), then
+  // `eat`en to restore health. Sellable too (a `value`), but the point is `heal`.
+  { id: "spore_broth", name: "Spore Broth", category: "food", value: 60, heal: 20 },
+  { id: "seared_haunch", name: "Seared Haunch", category: "food", value: 70, heal: 35 },
+  { id: "field_stew", name: "Field Stew", category: "food", value: 85, heal: 55 },
 ] as const;
 
 const BY_ID: ReadonlyMap<string, Material> = new Map(MATERIALS.map((m) => [m.id, m]));
@@ -68,12 +83,61 @@ export function materialValue(id: string): number {
   return getMaterial(id).value;
 }
 
+// ---------------------------------------------------------------------------
+// Food (P6) — cooked from materials, eaten to restore health.
+//
+// Food are just `category: "food"` materials (reusing `player_materials` for
+// storage and `sell` for trade); what sets them apart is a `heal` amount and a
+// crafting `recipe` of OTHER material ingredients. The catalog above is the
+// source of truth for the items + their heal/value; `FOOD_RECIPES` below maps
+// each food id to the materials `craft` consumes to cook one.
+// ---------------------------------------------------------------------------
+
+/** Every food item (a `category: "food"` material). */
+export const FOOD: readonly Material[] = MATERIALS.filter((m) => m.category === "food");
+
+/** Valid food ids. */
+export const FOOD_IDS: readonly string[] = FOOD.map((m) => m.id);
+
+/** Whether `id` is a known food id (an edible, craftable material). */
+export function isFoodId(id: string): boolean {
+  return BY_ID.get(id)?.category === "food";
+}
+
 /**
- * Materials that turn up when SCAVENGING (everything except animal parts, which
- * only come from kills): flora, unusual minerals, and rare relics.
+ * Hit points a food restores when eaten. Throws on an unknown id; returns 0 for
+ * a real-but-inedible material (no `heal`), so the `eat` handler can reject it.
+ */
+export function healOf(id: string): number {
+  return getMaterial(id).heal ?? 0;
+}
+
+/**
+ * Cooking recipes: food id -> { ingredientMaterialId: qty }. A flora meal, an
+ * animal-product meal, and a mixed one. Every ingredient id MUST be a real
+ * material (guarded in tests). Mirrors `recipeOf` in `upgrades.ts`; `craft`
+ * consumes these from `player_materials` and yields one of the food.
+ */
+export const FOOD_RECIPES: Readonly<Record<string, Record<string, number>>> = {
+  spore_broth: { luminous_spores: 3 },
+  seared_haunch: { scaled_hide: 2 },
+  field_stew: { luminous_spores: 2, scaled_hide: 1 },
+};
+
+/** The cooking recipe (materialId -> qty) for a food. Throws on unknown food id. */
+export function foodRecipeOf(id: string): Record<string, number> {
+  const recipe = FOOD_RECIPES[id];
+  if (!recipe) throw new Error(`unknown food id: ${id}`);
+  return recipe;
+}
+
+/**
+ * Materials that turn up when SCAVENGING: flora, unusual minerals, and rare
+ * relics. Excludes animal parts (those only come from kills) AND food (which is
+ * cooked, never found).
  */
 export const SCAVENGEABLE: readonly Material[] = MATERIALS.filter(
-  (m) => m.category !== "animal",
+  (m) => m.category !== "animal" && m.category !== "food",
 );
 
 /** Probability a scavenge turns up a (high-value) relic rather than a common find. */

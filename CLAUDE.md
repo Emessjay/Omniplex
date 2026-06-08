@@ -615,3 +615,39 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **For P6 (food)**: animal/flora materials become healing items there. P9's
   market-supply ideas may extend material selling. Combat is one-creature-at-a-
   time; no flee-into-new-encounter chains.
+
+### Load-bearing decisions from `food`
+
+- **Food are materials** with `category: "food"` (`src/lib/game/materials.ts`) —
+  no new table; they reuse `player_materials` storage, the `sell <material>`
+  path, and `getPlayerMaterials`/`addPlayerMaterial` exactly like every other
+  material. What sets food apart: an optional **`heal`** field on `Material`
+  (HP restored by `eat`; present + `> 0` only on food) and a **cooking recipe**.
+  Helpers: `FOOD`/`FOOD_IDS`/`isFoodId`/`healOf(id)` (0 for inedible) +
+  `FOOD_RECIPES`/`foodRecipeOf(id)` (food id → `{ materialId: qty }` of OTHER
+  materials; throws on unknown). Food carry a real `value` so they're sellable
+  too, but the point is `heal`. **`SCAVENGEABLE` now excludes `food`** (alongside
+  `animal`) — cooked food is crafted, never found/dropped.
+- **Cooking via `craft`** (no new verb): `handleCraft` branches up front —
+  `isFoodId` → `handleCookFood` (consume MATERIAL ingredients from
+  `player_materials`, then grant one food), else the existing upgrade path
+  (consume MINED resources from cargo). Validation reuses the pure `canCraft(have,
+  recipe)`; consumption is atomic via `add_player_material(-qty)`. `craft`'s
+  abbrev domain is `[...UPGRADE_IDS, ...FOOD_IDS]`. Cooking is **un-gated** by
+  embark state (matches `craft`).
+- **`eat <food>`** (`handleEat`, new `VERBS`+`USAGE` entry): validates ownership
+  + edibility (inedible material / unowned → clear error, no state change), reads
+  the freshest HP, then `setHealth(healValue(hp, healOf(food), MAX_HEALTH))` and
+  `add_player_material(-1)`. Refuses at full HP. **Un-gated** by embark state
+  (you take damage on foot, but a snack aboard is fine). Reports HP before→after.
+  Its abbrev domain = OWNED food ids (loaded in `loadArgDomainContext` like
+  `sell`/`mine`; `ArgDomainContext.eatCandidates`).
+- **Pure heal math** is `healValue(currentHp, healAmount, maxHp = MAX_HEALTH)` =
+  `min(maxHp, currentHp + max(0, healAmount))` in `rules.ts` — never overheals,
+  a non-positive heal can't reduce HP. Seeded contract: `food.test.ts`.
+- **Inventory display**: `InventoryView.materials[]` items gained an optional
+  `heal`; `renderInventory` shows `+N HP` and an `eat <id>` action for food
+  (alongside the existing `sell` action). **No migration** — food is pure catalog
+  + craft-extension + `eat`; `player_materials` already stores it.
+- **For later phases**: cooking stations / buildings are production-era (P7–P9);
+  this phase is catalog + `craft` branch + `eat` only.

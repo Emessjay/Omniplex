@@ -515,8 +515,11 @@ export function renderMap(
 
 export interface InventoryView {
   stacks: { resourceId: string; qty: number; price: number | null }[];
-  /** Owned materials (sellable, no cargo cost), with name + fixed sell value. */
-  materials?: { materialId: string; qty: number; name: string; value: number }[];
+  /**
+   * Owned materials (sellable, no cargo cost), with name + fixed sell value.
+   * Food materials also carry a `heal` (HP restored by `eat`).
+   */
+  materials?: { materialId: string; qty: number; name: string; value: number; heal?: number }[];
   cargoUsed: number;
   cargoCap: number;
   credits: number;
@@ -575,17 +578,29 @@ export function renderInventory(view: InventoryView): RenderFrame {
   if (materials.length > 0) {
     lines.push(line(text("Materials (sell while embarked):", "heading")));
     for (const m of materials) {
-      lines.push(
-        line([
-          text("  • ", "muted"),
-          text(`${m.name} ×${m.qty}  `, "default"),
-          text(`@ ${m.value}/u  `, "muted"),
-          action(`sell ${m.materialId}`, `sell ${m.materialId}`, {
+      const spans: RenderSpan[] = [
+        text("  • ", "muted"),
+        text(`${m.name} ×${m.qty}  `, "default"),
+        text(`@ ${m.value}/u  `, "muted"),
+      ];
+      // Food: show its heal and offer `eat` (works in either embark state).
+      if (m.heal && m.heal > 0) {
+        spans.push(text(`+${m.heal} HP  `, "accent"));
+        spans.push(
+          action(`eat ${m.materialId}`, `eat ${m.materialId}`, {
             style: "link",
-            title: `sell ${m.name}`,
+            title: `eat ${m.name}`,
           }),
-        ]),
+          text("  ", "muted"),
+        );
+      }
+      spans.push(
+        action(`sell ${m.materialId}`, `sell ${m.materialId}`, {
+          style: "link",
+          title: `sell ${m.name}`,
+        }),
       );
+      lines.push(line(spans));
     }
   }
   return frame(lines);

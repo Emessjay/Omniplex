@@ -49,6 +49,7 @@ import {
   creditsAfterDeath,
   combatRound,
   exploreOutcome,
+  healValue,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
@@ -65,6 +66,10 @@ import {
   getMaterial,
   materialValue,
   pickScavenge,
+  isFoodId,
+  FOOD_IDS,
+  foodRecipeOf,
+  healOf,
 } from "./materials";
 import {
   FLORA,
@@ -214,11 +219,14 @@ async function sellableHere(player: Player): Promise<string[]> {
 interface ArgDomainContext {
   mineCandidates: string[] | null;
   sellCandidates: string[] | null;
+  /** Owned food ids — the `eat` arg domain (you can only eat what you carry). */
+  eatCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   mineCandidates: null,
   sellCandidates: null,
+  eatCandidates: null,
 };
 
 /**
@@ -232,10 +240,15 @@ async function loadArgDomainContext(
   verb: string,
 ): Promise<ArgDomainContext> {
   if (verb === "mine") {
-    return { mineCandidates: await minableHere(player, seed), sellCandidates: null };
+    return { ...EMPTY_ARG_CONTEXT, mineCandidates: await minableHere(player, seed) };
   }
   if (verb === "sell") {
-    return { mineCandidates: null, sellCandidates: await sellableHere(player) };
+    return { ...EMPTY_ARG_CONTEXT, sellCandidates: await sellableHere(player) };
+  }
+  if (verb === "eat") {
+    const materials = await world.getPlayerMaterials(player.id);
+    const owned = materials.map((m) => m.materialId).filter(isFoodId);
+    return { ...EMPTY_ARG_CONTEXT, eatCandidates: owned };
   }
   return EMPTY_ARG_CONTEXT;
 }
@@ -254,7 +267,8 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
     argDomain: (verb, argIndex) => {
       if (verb === "mine" && argIndex === 0) return ctx.mineCandidates;
       if (verb === "sell" && argIndex === 0) return ctx.sellCandidates;
-      if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS];
+      if (verb === "eat" && argIndex === 0) return ctx.eatCandidates;
+      if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS, ...FOOD_IDS];
       if (verb === "buy" && argIndex === 0) {
         return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
       }
@@ -359,6 +373,8 @@ async function dispatchResolved(
       return handleUpgrades(player);
     case "craft":
       return handleCraft(player, args);
+    case "eat":
+      return handleEat(player, args);
     case "sell":
       return handleSell(player, args);
     case "buy":
@@ -381,6 +397,8 @@ function emptyDomainNote(verb: string): string {
       return "nothing minable here — try `scan` or `warp` somewhere else";
     case "sell":
       return "your hold is empty — `mine` something first";
+    case "eat":
+      return "no food on hand — `craft` a meal first";
     default:
       return "nothing available right now";
   }
@@ -1220,6 +1238,7 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
       qty: m.qty,
       name: getMaterial(m.materialId).name,
       value: materialValue(m.materialId),
+      heal: getMaterial(m.materialId).heal,
     })),
     cargoUsed,
     cargoCap: fresh.cargoCap,
@@ -1248,9 +1267,14 @@ async function handleUpgrades(player: Player): Promise<RenderFrame> {
 
 async function handleCraft(player: Player, args: string[]): Promise<RenderFrame> {
   const target = args[0]?.toLowerCase();
-  if (!target) return errorFrame("Usage: craft <upgrade>  (see `upgrades`)");
+  if (!target) return errorFrame("Usage: craft <thing>  (see `upgrades`; foods cook too)");
+
+  // Food cooks from MATERIAL ingredients (player_materials), upgrades from MINED
+  // resources (cargo) — distinct stores, so branch up front.
+  if (isFoodId(target)) return handleCookFood(player, target);
+
   if (!isUpgradeId(target)) {
-    return errorFrame(`Unknown upgrade "${target}". Try \`upgrades\` for the list.`);
+    return errorFrame(`Can't craft "${target}". Try \`upgrades\` for the list.`);
   }
 
   const upgrade = getUpgrade(target);
@@ -1286,6 +1310,97 @@ async function handleCraft(player: Player, args: string[]): Promise<RenderFrame>
       text(`Crafted ${upgrade.name}. `, "success"),
       text(`Consumed ${consumed}. `, "muted"),
       text(`You now own ${owned}.`, "accent"),
+    ]),
+  ]);
+}
+
+/**
+ * Cook one food from its material recipe (P6). Mirrors the upgrade-craft path
+ * but reads/consumes from `player_materials` (the harvested/looted goods) rather
+ * than the cargo hold: validate the recipe is fully covered with `canCraft`
+ * BEFORE touching state, then consume each ingredient atomically via the
+ * material RPC and grant one of the food. Cooking is allowed in either embark
+ * state (it's not gated). `foodId` is already validated by `handleCraft`.
+ */
+async function handleCookFood(player: Player, foodId: string): Promise<RenderFrame> {
+  const food = getMaterial(foodId);
+  const recipe = foodRecipeOf(foodId);
+
+  const stacks = await world.getPlayerMaterials(player.id);
+  const have: Record<string, number> = {};
+  for (const s of stacks) have[s.materialId] = s.qty;
+
+  if (!canCraft(have, recipe)) {
+    const missing = Object.entries(recipe)
+      .filter(([mid, qty]) => (have[mid] ?? 0) < qty)
+      .map(([mid, qty]) => `${getMaterial(mid).name} ${have[mid] ?? 0}/${qty}`);
+    return errorFrame(`Can't cook ${food.name} — short on ${missing.join(", ")}.`);
+  }
+
+  // Consume ingredients atomically, then grant the cooked food.
+  for (const [mid, qty] of Object.entries(recipe)) {
+    await world.addPlayerMaterial(player.id, mid, -qty);
+  }
+  const owned = await world.addPlayerMaterial(player.id, foodId, 1);
+
+  const consumed = Object.entries(recipe)
+    .map(([mid, qty]) => `${qty} ${getMaterial(mid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Cooked ${food.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`+${food.heal ?? 0} HP when eaten; you now hold ${owned}.`, "accent"),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// eat  (consume one food to restore health, capped at MAX_HEALTH)
+// ---------------------------------------------------------------------------
+
+/**
+ * `eat <food>` — consume one owned food and restore health by its `heal`, never
+ * overhealing past `MAX_HEALTH` (`healValue`). Validates ownership + edibility
+ * before mutating: an inedible material or one you don't carry errors with no
+ * state change. Allowed in either embark state (you take damage on foot, but a
+ * snack aboard ship is fine too). Reports HP before→after.
+ */
+async function handleEat(player: Player, args: string[]): Promise<RenderFrame> {
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: eat <food>  (see `inventory`)");
+  if (!isFoodId(target)) {
+    if (isMaterialId(target)) {
+      return errorFrame(`${getMaterial(target).name} isn't edible. \`eat\` a cooked food.`);
+    }
+    return errorFrame(`Unknown food "${target}". \`craft\` a meal first.`);
+  }
+
+  const food = getMaterial(target);
+  const stacks = await world.getPlayerMaterials(player.id);
+  const ownedNow = stacks.find((s) => s.materialId === target)?.qty ?? 0;
+  if (ownedNow <= 0) {
+    return errorFrame(`You don't have any ${food.name} — \`craft\` one first.`);
+  }
+
+  // Read the freshest HP (other actions may have changed it) and heal off that.
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const before = fresh.health;
+  if (before >= MAX_HEALTH) {
+    return errorFrame(`You're already at full health (${MAX_HEALTH}/${MAX_HEALTH}).`);
+  }
+
+  const heal = healOf(target);
+  const after = healValue(before, heal, MAX_HEALTH);
+  await world.addPlayerMaterial(player.id, target, -1);
+  await world.setHealth(player.id, after);
+
+  const remaining = ownedNow - 1;
+  return frame([
+    line([
+      text(`You eat the ${food.name}. `, "success"),
+      text(`HP ${before} → ${after}/${MAX_HEALTH}`, "accent"),
+      text(`  (+${after - before}). ${remaining} left.`, "muted"),
     ]),
   ]);
 }
