@@ -28,7 +28,10 @@ export const VERBS: string[] = [
   "land",
   "jump",
   "regions",
+  "disembark",
+  "embark",
   "mine",
+  "explore",
   "inventory",
   "upgrades",
   "craft",
@@ -96,11 +99,23 @@ export const USAGE: Record<string, UsageDescriptor> = {
     desc: "list regions of this planet to jump to",
     slots: [{ name: "page", optional: true, hint: "a page number (default 1)" }],
   },
+  disembark: {
+    desc: "step out of your ship onto the surface (needed to mine)",
+    slots: [],
+  },
+  embark: {
+    desc: "climb back aboard your ship (needed to trade & fly)",
+    slots: [],
+  },
   mine: {
-    desc: "harvest a resource from this planet",
+    desc: "harvest a resource from this region (must be on foot)",
     slots: [{ name: "resource" }],
   },
-  inventory: { desc: "show cargo, credits and fuel", slots: [] },
+  explore: {
+    desc: "search the surface for life and salvage (coming soon)",
+    slots: [],
+  },
+  inventory: { desc: "show cargo, credits, fuel and status", slots: [] },
   upgrades: {
     desc: "show installed ship upgrades + capabilities",
     slots: [],

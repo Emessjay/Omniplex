@@ -520,3 +520,43 @@ gotchas) accrete here as workers surface things worth persisting. See
   arm count. The fuel split, orbital mechanics, and galaxy jumps are LATER
   phases. The roadmap (survival, production, fuel, galaxy travel) builds on this
   six-tier model.
+
+### Load-bearing decisions from `survival-core`
+
+- **Embark state machine.** A player is either `embarked` (aboard ship) or
+  on foot in the current region. `players.embarked boolean not null default
+  true` + `players.health integer not null default 100 check (health >= 0)`
+  (migration `20260608090759_survival-core.sql`, forward-only/idempotent) carried
+  on `Player`/`PlayerRow` + `rowToPlayer`. New players spawn embarked at full HP.
+  `disembark` (embarked→on foot) and `embark` (on foot→aboard) toggle it via
+  `world.setEmbarked`; both are idempotent-friendly. `warp`/`land` do NOT change
+  embark state (you stay aboard to fly).
+- **Command gating by embark state** (`dispatchResolved` in `commands.ts`, two
+  `Set`s checked before the switch): `EMBARKED_ONLY = {buy, sell, warp, land}`
+  (the economy + ship travel; `buy fuel` is covered by `buy`) errors "You must
+  `embark` your ship first." when on foot; `DISEMBARKED_ONLY = {mine}` errors
+  "You must `disembark` onto the surface to mine." when aboard. Everything else
+  (`scan`/`map`/`inventory`/`upgrades`/`who`/`help`/`jump`/`regions`/`craft`) is
+  state-agnostic. **P5 `explore` joins `DISEMBARKED_ONLY`** (today it's a
+  coming-soon stub, `handleExplore`).
+- **Hazard damage model is PURE in `rules.ts`** (rolls passed in; handler supplies
+  `Math.random()`): `MAX_HEALTH=100`, `DEATH_GOLD_PENALTY=0.1`,
+  `HAZARD_DAMAGE_MAX=40`. `damageChance(hazard)=clamp01(hazard)` (chance an action
+  harms you; 0 at hazard 0, monotonic). `damageAmount(hazard, roll)=max(1,
+  round(HAZARD_DAMAGE_MAX·hazard·(0.5+0.5·roll)))` (magnitude; positive int for
+  hazard>0, monotonic in both args). `rollHazardDamage(hazard, chanceRoll,
+  magnitudeRoll)` = 0 if `chanceRoll >= damageChance` else `damageAmount`.
+  `creditsAfterDeath(c)=floor(c·0.9)` floored at 0. Seeded contract:
+  `survival-core.test.ts`.
+- **Damage applies AFTER a successful disembarked action** (this phase: `mine` —
+  the ore is granted first, then `rollHazardDamage(planet.hazard, …)` subtracts
+  from health). Hazard is PLANET-level (unchanged). On HP>0 after damage:
+  `world.setHealth`, report damage + remaining HP in `danger` style. On HP≤0:
+  **death sequence** — `addPlayerCredits(-(credits − creditsAfterDeath(credits)))`
+  (atomic credit RPC; never negative), then `world.setHealthAndEmbarked(id,
+  MAX_HEALTH, true)` (full HP, wake aboard, **location unchanged**), with a death
+  frame. P5 (flora/fauna/combat/scavenging) and P6 (food) build directly on
+  disembarked actions + this health model.
+- **`scan` and `inventory` show survival status** — an `HP n/100` readout (red
+  when ≤30%) + `aboard ship`/`on foot`, threaded through `ScanView`/
+  `InventoryView` (`render.ts`). Disembarked surfacing only; the rules stay pure.

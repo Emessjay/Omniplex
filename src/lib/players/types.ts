@@ -35,6 +35,16 @@ export interface Player {
   planet: number;
   /** Current region index within the planet; in `[0, planet.regionCount)`. */
   region: number;
+  /**
+   * Current hit points, in `[0, MAX_HEALTH]` (100). Reaching 0 triggers the
+   * death sequence (see `commands.ts`), which restores it to full.
+   */
+  health: number;
+  /**
+   * Survival state: `true` = aboard ship (trading & ship travel enabled),
+   * `false` = on foot in the current region (mining enabled, hazard can wound).
+   */
+  embarked: boolean;
   /** ISO timestamp the row was created. */
   createdAt: string;
 }
@@ -56,5 +66,7 @@ export interface PlayerRow {
   system: number;
   planet: number;
   region: number;
+  health: number;
+  embarked: boolean;
   created_at: string;
 }

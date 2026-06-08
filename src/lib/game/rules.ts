@@ -207,6 +207,85 @@ export function canLand(
 }
 
 // ---------------------------------------------------------------------------
+// Survival — the on-foot hazard model.
+//
+// Disembarked actions (mining; later: exploring/scavenging) happen on the
+// planet's surface, where its `hazard` can wound you. The danger has two
+// independent dials, BOTH rising with hazard: the *chance* an action harms you
+// at all, and the *amount* of damage when it does. The handler supplies real
+// randomness (two `Math.random()` rolls); these functions stay pure &
+// deterministic by taking the rolls as parameters. Health is integer hit points
+// in `[0, MAX_HEALTH]`; hitting 0 triggers the death sequence in `commands.ts`.
+// ---------------------------------------------------------------------------
+
+/** Maximum (and starting) hit points. */
+export const MAX_HEALTH = 100;
+
+/** Fraction of credits lost on death: `floor(credits * (1 - this))` survives. */
+export const DEATH_GOLD_PENALTY = 0.1;
+
+/**
+ * The most damage a single disembarked action can deal, on a maximally hostile
+ * world (hazard 1.0) with the worst magnitude roll. At MAX_HEALTH 100 this means
+ * a savage world kills in a handful of mines, while a calm one is survivable.
+ */
+export const HAZARD_DAMAGE_MAX = 40;
+
+/** Clamp a 0..1 quantity into `[0, 1]` (NaN-safe → 0). */
+function clamp01(x: number): number {
+  if (!(x > 0)) return 0;
+  return x < 1 ? x : 1;
+}
+
+/**
+ * Probability in `[0, 1]` that a disembarked action harms you. Rises with
+ * hazard — directly proportional, so a calm world (hazard 0) is perfectly safe
+ * and a maximally hostile one (hazard 1) always bites. Monotonically
+ * non-decreasing in hazard.
+ */
+export function damageChance(hazard: number): number {
+  return clamp01(hazard);
+}
+
+/**
+ * Damage dealt by a HARMFUL disembarked action. Scales with hazard (the savage
+ * danger) and with `roll` ∈ [0,1) for per-hit variability: the magnitude spans
+ * roughly half-to-full of `HAZARD_DAMAGE_MAX * hazard`. A positive integer for
+ * hazard > 0, monotonically non-decreasing in BOTH hazard and roll. Pure — the
+ * caller supplies `roll`.
+ */
+export function damageAmount(hazard: number, roll: number): number {
+  const h = clamp01(hazard);
+  const variability = 0.5 + 0.5 * clamp01(roll); // [0.5, 1.0], non-decreasing in roll
+  const raw = HAZARD_DAMAGE_MAX * h * variability;
+  if (h <= 0) return 0;
+  return Math.max(1, Math.round(raw));
+}
+
+/**
+ * One disembarked-action hazard roll. `chanceRoll` / `magnitudeRoll` ∈ [0,1) are
+ * supplied by the caller (the handler uses `Math.random()`; tests pass fixed
+ * values). Returns the damage taken: 0 when `chanceRoll >= damageChance(hazard)`
+ * (the action was harmless this time), else `damageAmount(hazard, magnitudeRoll)`.
+ */
+export function rollHazardDamage(
+  hazard: number,
+  chanceRoll: number,
+  magnitudeRoll: number,
+): number {
+  if (chanceRoll >= damageChance(hazard)) return 0;
+  return damageAmount(hazard, magnitudeRoll);
+}
+
+/**
+ * Credits remaining after death: `floor(credits * (1 - DEATH_GOLD_PENALTY))`,
+ * never negative. The difference from the prior balance is what was lost.
+ */
+export function creditsAfterDeath(credits: number): number {
+  return Math.max(0, Math.floor(Math.max(0, credits) * (1 - DEATH_GOLD_PENALTY)));
+}
+
+// ---------------------------------------------------------------------------
 // Navigation.
 // ---------------------------------------------------------------------------
 

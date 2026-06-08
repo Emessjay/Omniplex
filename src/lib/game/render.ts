@@ -192,6 +192,12 @@ export interface ScanView {
   requiredUpgrade?: string | null;
   /** Whether the player currently satisfies `requiredUpgrade`. */
   hasRequiredUpgrade?: boolean;
+  /** Current hit points. */
+  health: number;
+  /** Maximum hit points (for the `HP n/max` readout). */
+  maxHealth: number;
+  /** True = aboard ship; false = on foot in this region. */
+  embarked: boolean;
 }
 
 /**
@@ -215,6 +221,19 @@ export function renderScan(view: ScanView): RenderFrame {
   } else if (view.discovererNote) {
     lines.push(line(text(view.discovererNote, "muted")));
   }
+
+  // Survival status: health + whether you're aboard the ship or on foot.
+  const lowHealth = view.health <= view.maxHealth * 0.3;
+  lines.push(
+    line([
+      text("HP ", "muted"),
+      text(`${view.health}/${view.maxHealth}`, lowHealth ? "danger" : "default"),
+      text("   ", "muted"),
+      view.embarked
+        ? text("aboard ship", "accent")
+        : text("on foot", "warning"),
+    ]),
+  );
 
   // Current region: which region of how many, and its biome.
   lines.push(
@@ -467,16 +486,26 @@ export interface InventoryView {
   cargoCap: number;
   credits: number;
   fuel: number;
+  health: number;
+  maxHealth: number;
+  embarked: boolean;
 }
 
 export function renderInventory(view: InventoryView): RenderFrame {
-  const { stacks, cargoUsed, cargoCap, credits, fuel } = view;
+  const { stacks, cargoUsed, cargoCap, credits, fuel, health, maxHealth, embarked } = view;
+  const lowHealth = health <= maxHealth * 0.3;
   const lines: RenderLine[] = [
     line([
       text("Cargo ", "heading"),
       text(`${cargoUsed}/${cargoCap}`, cargoUsed >= cargoCap ? "warning" : "default"),
       text(`   credits ${credits}`, "accent"),
       text(`   fuel ${fuel}`, "default"),
+    ]),
+    line([
+      text("HP ", "muted"),
+      text(`${health}/${maxHealth}`, lowHealth ? "danger" : "default"),
+      text("   ", "muted"),
+      embarked ? text("aboard ship", "accent") : text("on foot", "warning"),
     ]),
   ];
   if (stacks.length === 0) {

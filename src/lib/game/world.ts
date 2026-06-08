@@ -461,6 +461,49 @@ export async function setFuel(playerId: string, fuel: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Survival state (health + embark). Health changes are read-compute-write on a
+// single player's sequential commands (safe; same model as fuel). Death's
+// credit penalty goes through the atomic `add_player_credits` RPC, not here.
+// ---------------------------------------------------------------------------
+
+/** Set the player's embark state (true = aboard ship, false = on foot). */
+export async function setEmbarked(playerId: string, embarked: boolean): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ embarked })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/** Set the player's current health (the column CHECK enforces health ≥ 0). */
+export async function setHealth(playerId: string, health: number): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ health })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
+ * Set health and embark state together (the death sequence: full health, back
+ * aboard the ship). Location is left untouched — you wake where you fell.
+ */
+export async function setHealthAndEmbarked(
+  playerId: string,
+  health: number,
+  embarked: boolean,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ health, embarked })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Leaderboards (`who`). Reads public-safe data only.
 // ---------------------------------------------------------------------------
 

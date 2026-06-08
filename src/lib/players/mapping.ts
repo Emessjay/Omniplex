@@ -20,6 +20,8 @@ export function rowToPlayer(row: PlayerRow): Player {
     system: row.system,
     planet: row.planet,
     region: row.region,
+    health: row.health,
+    embarked: row.embarked,
     createdAt: row.created_at,
   };
 }

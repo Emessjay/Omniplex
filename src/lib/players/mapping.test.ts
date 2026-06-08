@@ -16,6 +16,8 @@ describe("rowToPlayer", () => {
     system: 0,
     planet: 0,
     region: 0,
+    health: 100,
+    embarked: true,
     created_at: "2026-06-07T00:00:00.000Z",
   };
 
@@ -33,6 +35,8 @@ describe("rowToPlayer", () => {
       system: 0,
       planet: 0,
       region: 0,
+      health: 100,
+      embarked: true,
       createdAt: "2026-06-07T00:00:00.000Z",
     });
   });

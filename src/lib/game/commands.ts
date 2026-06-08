@@ -45,6 +45,9 @@ import {
   canCraft,
   canLand,
   landingRequirement,
+  rollHazardDamage,
+  creditsAfterDeath,
+  MAX_HEALTH,
   DEPLETION_PER_UNIT,
   FUEL_PRICE_PER_UNIT,
 } from "./rules";
@@ -130,6 +133,9 @@ async function regionScanFrame(
     justDiscovered,
     requiredUpgrade,
     hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
+    health: player.health,
+    maxHealth: MAX_HEALTH,
+    embarked: player.embarked,
   });
 }
 
@@ -244,6 +250,19 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   return result;
 }
 
+/**
+ * Commands that require being ABOARD the ship: the economy and ship travel.
+ * Attempting them on foot is blocked with a message naming the fix (`embark`).
+ */
+const EMBARKED_ONLY = new Set(["buy", "sell", "warp", "land"]);
+
+/**
+ * Commands that require being ON FOOT in the region: surface work. Attempting
+ * them from the ship is blocked with a message naming the fix (`disembark`).
+ * (Exploration joins this set in P5; today only mining is gated this way.)
+ */
+const DISEMBARKED_ONLY = new Set(["mine"]);
+
 /** Dispatch an already-resolved (canonical verb, expanded args) command. */
 async function dispatchResolved(
   player: Player,
@@ -251,6 +270,15 @@ async function dispatchResolved(
   verb: string,
   args: string[],
 ): Promise<RenderFrame> {
+  // Embark-state gating: the economy/flying need the ship; mining needs to be
+  // on the surface. Each error names the command that fixes the state.
+  if (EMBARKED_ONLY.has(verb) && !player.embarked) {
+    return errorFrame("You must `embark` your ship first.");
+  }
+  if (DISEMBARKED_ONLY.has(verb) && player.embarked) {
+    return errorFrame("You must `disembark` onto the surface to mine.");
+  }
+
   switch (verb) {
     case "help":
       return handleHelp(player, seed, args);
@@ -267,8 +295,14 @@ async function dispatchResolved(
       return handleJump(player, seed, args);
     case "regions":
       return handleRegions(player, seed, args);
+    case "disembark":
+      return handleDisembark(player, seed);
+    case "embark":
+      return handleEmbark(player);
     case "mine":
       return handleMine(player, seed, args);
+    case "explore":
+      return handleExplore();
     case "inventory":
       return handleInventory(player);
     case "upgrades":
@@ -679,7 +713,57 @@ async function handleLand(
 }
 
 // ---------------------------------------------------------------------------
-// mine
+// disembark / embark — toggle the on-foot survival state.
+// ---------------------------------------------------------------------------
+
+/**
+ * `disembark` — step out of the ship onto the current region's surface, where
+ * mining is possible (and the planet's hazard can wound you). Idempotent-
+ * friendly when already on foot. Briefly describes the region you step into.
+ */
+async function handleDisembark(player: Player, seed: string): Promise<RenderFrame> {
+  if (!player.embarked) {
+    return frame([line(text("You're already on foot on the surface.", "muted"))]);
+  }
+  await world.setEmbarked(player.id, false);
+
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  const region = regionAt(seed, coord, player.region);
+  const hazardPct = Math.round(planet.hazard * 100);
+  return frame([
+    line([
+      text("You disembark onto the surface — ", "success"),
+      text(`${region.biome}`, "accent"),
+      text(` of ${planet.name}.`, "default"),
+    ]),
+    line([
+      text(`Watch the hazard (${hazardPct}%). `, hazardPct >= 60 ? "danger" : "muted"),
+      text(`HP ${player.health}/${MAX_HEALTH}. `, "default"),
+      text("`mine` to work the deposits; `embark` to return to your ship.", "muted"),
+    ]),
+  ]);
+}
+
+/**
+ * `embark` — climb back aboard the ship, re-enabling the economy and ship
+ * travel. Idempotent-friendly when already aboard.
+ */
+async function handleEmbark(player: Player): Promise<RenderFrame> {
+  if (player.embarked) {
+    return frame([line(text("You're already aboard your ship.", "muted"))]);
+  }
+  await world.setEmbarked(player.id, true);
+  return frame([
+    line([
+      text("You climb back aboard your ship. ", "success"),
+      text("Trading and warp drives are online.", "muted"),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// mine  (disembarked-only; the surface hazard can wound or kill you)
 // ---------------------------------------------------------------------------
 
 async function handleMine(
@@ -733,12 +817,67 @@ async function handleMine(
 
   const res = getResource(resourceId);
   const remaining = player.cargoCap - (used + yield_);
+  const mineLine = line([
+    text(`Mined ${yield_} `, "success"),
+    text(`${res.name}. `, "default"),
+    text(`Cargo ${used + yield_}/${player.cargoCap} (${remaining} free).`, "muted"),
+  ]);
+
+  // Surface hazard: a successful mine exposes you to harm. Two real rolls feed
+  // the pure `rollHazardDamage`; the result is subtracted from health (floored
+  // at 0 by the death branch). The ore is yours either way — you struck it
+  // before the hazard hit.
+  const damage = rollHazardDamage(planet.hazard, Math.random(), Math.random());
+  if (damage <= 0) {
+    return frame([mineLine]);
+  }
+
+  const hazardPct = Math.round(planet.hazard * 100);
+  const newHealth = player.health - damage;
+  if (newHealth > 0) {
+    await world.setHealth(player.id, newHealth);
+    return frame([
+      mineLine,
+      line(
+        text(
+          `${planet.name} wounds you for ${damage} (hazard ${hazardPct}%). HP ${newHealth}/${MAX_HEALTH}.`,
+          "danger",
+        ),
+      ),
+    ]);
+  }
+
+  // Death: lose 10% of credits (atomic delta via the credits RPC), restore
+  // health, and wake aboard the ship (location unchanged). Balances never go
+  // negative — `creditsAfterDeath` floors at 0.
+  const after = creditsAfterDeath(player.credits);
+  const lost = player.credits - after;
+  if (lost > 0) await world.addPlayerCredits(player.id, -lost);
+  await world.setHealthAndEmbarked(player.id, MAX_HEALTH, true);
   return frame([
-    line([
-      text(`Mined ${yield_} `, "success"),
-      text(`${res.name}. `, "default"),
-      text(`Cargo ${used + yield_}/${player.cargoCap} (${remaining} free).`, "muted"),
-    ]),
+    mineLine,
+    line(
+      text(
+        `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
+        "danger",
+      ),
+    ),
+    line(
+      text(
+        `Lost ${lost} cr (balance ${after}). HP restored to ${MAX_HEALTH}.`,
+        "muted",
+      ),
+    ),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// explore  (P5 stub — surface scavenging/flora/fauna arrive next phase)
+// ---------------------------------------------------------------------------
+
+function handleExplore(): RenderFrame {
+  return frame([
+    line(text("Surface exploration is coming soon.", "muted")),
   ]);
 }
 
@@ -763,6 +902,9 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
     cargoCap: fresh.cargoCap,
     credits: fresh.credits,
     fuel: fresh.fuel,
+    health: fresh.health,
+    maxHealth: MAX_HEALTH,
+    embarked: fresh.embarked,
   });
 }
 
