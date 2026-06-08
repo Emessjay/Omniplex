@@ -57,6 +57,14 @@ export interface UsageDescriptor {
   desc: string;
   /** Ordered argument slots; empty for no-argument commands. */
   slots: UsageSlot[];
+  /**
+   * True for a command that is merely another spelling of an existing
+   * capability (e.g. `look` → `scan`). Aliases stay in `VERBS` (so they
+   * resolve/abbreviate) and keep a `USAGE` entry (so `help <alias>` works), but
+   * the no-arg `help` command list SKIPS them so the same capability isn't
+   * listed twice as if distinct. See `renderHelp`.
+   */
+  alias?: boolean;
 }
 
 /**
@@ -66,7 +74,7 @@ export interface UsageDescriptor {
  */
 export const USAGE: Record<string, UsageDescriptor> = {
   scan: { desc: "describe the planet you're on", slots: [] },
-  look: { desc: "alias for scan", slots: [] },
+  look: { desc: "alias for scan", slots: [], alias: true },
   map: { desc: "list nearby systems to warp to", slots: [] },
   warp: {
     desc: "travel to another system (burns fuel)",

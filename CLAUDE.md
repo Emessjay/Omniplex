@@ -414,6 +414,23 @@ gotchas) accrete here as workers surface things worth persisting. See
   `schema_migrations`, so it runs EXACTLY ONCE — it will not clobber
   organically-moved prices on later deploys.
 
+### Load-bearing decisions from `help-parity`
+
+- **The no-arg `help` command list is GENERATED from the single registry**
+  (`VERBS` + `USAGE` in `usage.ts`), not a hardcoded array — `renderHelp()`
+  (`render.ts`) iterates `VERBS` (skipping aliases) and renders
+  `usageLine(verb)` + `USAGE[verb].desc` per command. So a new command appears
+  in `help` automatically once it's in `USAGE`/`VERBS`; there is NO second
+  command list to forget it in. Display order = `VERBS` order.
+- **Aliases carry `alias: true`** in their `USAGE` descriptor (today: `look` →
+  `scan`). Aliases stay in `VERBS` (so they abbreviate/resolve) and keep a
+  `USAGE` entry (so `help <alias>` works), but `renderHelp` SKIPS them so the
+  same capability isn't listed twice. Mark any future synonym this way rather
+  than special-casing it in the renderer.
+- **Parity is locked** in `help-args.test.ts`: the verbs `help` links to ===
+  `VERBS` minus aliases (both directions), and `USAGE` keys === `VERBS` (both
+  directions). Registering a command in only one place fails the suite.
+
 ### Load-bearing decisions from `planet-regions`
 
 - **A planet is no longer a single place** — it has MANY regions, each with its

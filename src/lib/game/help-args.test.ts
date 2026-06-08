@@ -1,6 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { VERBS, USAGE, usageLine } from "@/lib/game/usage";
 import { resolveToken } from "@/lib/game/resolve";
+import { renderHelp } from "@/lib/game/render";
+
+/** The verbs `help` should SKIP (aliases of another capability, e.g. `look`). */
+const ALIASES = VERBS.filter((v) => USAGE[v]?.alias);
+
+/** The set of verbs the no-arg `help` list links to (one action token per command). */
+function helpListedVerbs(): string[] {
+  const out: string[] = [];
+  for (const ln of renderHelp().lines) {
+    for (const span of ln) {
+      if (span.kind === "action") out.push(span.command);
+    }
+  }
+  return out;
+}
 
 /**
  * Pure guardrails for `help <command>`. The CONTEXTUAL argument enumerations
@@ -20,6 +35,10 @@ describe("help usage descriptors (AC#6)", () => {
     for (const verb of Object.keys(USAGE)) {
       expect(VERBS, `USAGE has stray verb "${verb}"`).toContain(verb);
     }
+  });
+
+  it("USAGE keys and VERBS are the same set, both ways (registry can't drift)", () => {
+    expect([...Object.keys(USAGE)].sort()).toEqual([...VERBS].sort());
   });
 
   it("gives every slot a non-empty placeholder name", () => {
@@ -59,5 +78,37 @@ describe("help command-arg resolves abbreviations (AC#6)", () => {
       reason: "none",
       matches: [],
     });
+  });
+});
+
+/**
+ * The no-arg `help` list is GENERATED from the registry (`VERBS`/`USAGE`), so it
+ * can never drift from what the dispatcher accepts. This locks that in BOTH
+ * directions: every non-alias registry command is listed, and `help` lists
+ * nothing outside the registry. Adding a command to the registry without it
+ * appearing in `help` (or vice-versa) fails here. Regression guard for the
+ * `jump`/`regions` drift that motivated this change.
+ */
+describe("no-arg help is in parity with the command registry", () => {
+  it("lists exactly the dispatchable (non-alias) commands", () => {
+    const listed = helpListedVerbs();
+    const expected = VERBS.filter((v) => !ALIASES.includes(v));
+    expect([...listed].sort()).toEqual([...expected].sort());
+  });
+
+  it("lists nothing outside the registry", () => {
+    for (const verb of helpListedVerbs()) {
+      expect(VERBS, `help lists "${verb}" which is not a registered verb`).toContain(verb);
+    }
+  });
+
+  it("includes jump and regions (the commands that previously drifted)", () => {
+    const listed = helpListedVerbs();
+    expect(listed).toContain("jump");
+    expect(listed).toContain("regions");
+  });
+
+  it("does not list aliases (look is folded into scan)", () => {
+    expect(helpListedVerbs()).not.toContain("look");
   });
 });

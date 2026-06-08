@@ -13,6 +13,7 @@ import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { effectiveAbundance, fuelCost, FREEZING_C, BOILING_C } from "./rules";
 import { UPGRADES, getUpgrade } from "./upgrades";
+import { VERBS, USAGE, usageLine } from "./usage";
 
 /** Human description of what owning an upgrade lets you do (UI text only). */
 function capabilityOf(upgradeId: string): string {
@@ -35,31 +36,29 @@ export function noticeFrame(message: string): RenderFrame {
   return frame([line(text(message, "muted"))]);
 }
 
-/** The MVP command list, each a clickable action. */
+/**
+ * The full command list, GENERATED from the single command registry
+ * (`VERBS` + `USAGE`) so it can never drift from what the dispatcher actually
+ * accepts: every dispatchable verb appears here automatically, and removing one
+ * removes its help line. There is intentionally no hardcoded command array.
+ *
+ * Order follows `VERBS` (the abbreviation vocabulary), which is also the only
+ * place a command's display position is recorded — there's no second order list
+ * to forget a command in. Aliases (e.g. `look` → `scan`) are skipped so the same
+ * capability isn't listed twice; they still resolve and have their own
+ * `help <alias>`. Each line shows the canonical `usageLine(verb)` as a clickable
+ * token plus the verb's one-line `desc`.
+ */
 export function renderHelp(): RenderFrame {
-  const cmds: [string, string][] = [
-    ["scan", "describe the planet you're on"],
-    ["map", "list nearby systems to warp to"],
-    ["warp <sector> <system>", "travel to another system (burns fuel)"],
-    ["land <i>", "move to another planet in this system"],
-    ["mine <resource>", "harvest a resource from this planet"],
-    ["inventory", "show cargo, credits and fuel"],
-    ["upgrades", "show installed ship upgrades + capabilities"],
-    ["craft <upgrade>", "synthesize an upgrade from mined components"],
-    ["sell <resource> | sell all", "sell cargo at the global market"],
-    ["buy fuel [n]", "refuel for credits"],
-    ["buy <resource> [qty]", "buy minerals at 1.5× price (pushes price up)"],
-    ["buy <upgrade> | sell <upgrade>", "trade ship upgrades (1.5× / sell value)"],
-    ["who", "see the shared-world leaderboards"],
-  ];
+  const verbs = VERBS.filter((verb) => !USAGE[verb]?.alias);
   return frame([
     line(text("Omniplex — commands", "heading")),
-    ...cmds.map(([cmd, desc]) => {
-      const verb = cmd.split(" ")[0]!;
+    ...verbs.map((verb) => {
+      const u = USAGE[verb]!;
       return line([
         text("  ", "muted"),
-        action(cmd, verb, { title: `run "${verb}"` }),
-        text("  — " + desc, "muted"),
+        action(usageLine(verb), verb, { title: `run "${verb}"` }),
+        text("  — " + u.desc, "muted"),
       ]);
     }),
     line(text("Click any blue token, or type a command and press Enter.", "muted")),
