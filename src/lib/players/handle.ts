@@ -1,26 +1,63 @@
 /**
- * Handle derivation + uniqueness — pure, unit-tested helpers.
+ * Handle generation + uniqueness — pure, unit-tested helpers.
  *
- * A new player's handle starts from the email local-part (the bit before the
- * `@`), sanitized to a terminal-friendly slug. If that handle is already
- * taken, it's suffixed deterministically (`name`, `name-2`, `name-3`, …) so
- * the result is stable given the same inputs and never collides with an
- * existing handle.
+ * A new player's handle is a NON-IDENTIFYING generated callsign: a space-y
+ * word from a built-in list plus a short random suffix (e.g. `nomad-7f3`).
+ * Handles are PUBLIC (leaderboard / `who` / bases), so they must never be
+ * derived from the player's email — doing that would leak real names. If a
+ * generated callsign is already taken, `uniqueHandle` suffixes it
+ * (`name`, `name-2`, …) and the bootstrap loop also regenerates on collision.
  */
 
 /**
- * Derive a base handle slug from an email address. Lowercases the local-part
- * and collapses any run of non-alphanumeric characters into a single dash,
- * trimming leading/trailing dashes. Falls back to `"player"` if nothing
- * usable remains (e.g. an all-symbol local-part).
+ * Built-in pool of evocative, non-identifying callsign words. Kept lowercase
+ * and alphanumeric so the result is already a terminal-friendly slug.
  */
-export function deriveHandleBase(email: string): string {
-  const local = email.split("@")[0] ?? "";
-  const slug = local
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "player";
+export const CALLSIGN_WORDS: readonly string[] = [
+  "nomad",
+  "drifter",
+  "ranger",
+  "comet",
+  "vega",
+  "orion",
+  "nova",
+  "pulsar",
+  "quasar",
+  "rover",
+  "voyager",
+  "falcon",
+  "specter",
+  "horizon",
+  "zenith",
+  "aurora",
+  "corsair",
+  "wanderer",
+  "phantom",
+  "nebula",
+];
+
+/** Characters used in the random callsign suffix (lowercase alphanumeric). */
+const SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+/** Length of the random suffix appended to a callsign word. */
+const SUFFIX_LENGTH = 3;
+
+/**
+ * Generate a non-identifying callsign handle: a random word from
+ * `CALLSIGN_WORDS` plus a short random suffix, joined by a dash
+ * (e.g. `"comet-7f3"`). The result is a terminal-friendly slug and is
+ * derived ONLY from `rng` — never from any player-identifying input.
+ *
+ * `rng` defaults to `Math.random` (fine here — this runs in a request
+ * handler, not the deterministic universe gen); it is injectable so tests
+ * can drive it deterministically.
+ */
+export function generateCallsign(rng: () => number = Math.random): string {
+  const word = CALLSIGN_WORDS[Math.floor(rng() * CALLSIGN_WORDS.length)];
+  let suffix = "";
+  for (let i = 0; i < SUFFIX_LENGTH; i += 1) {
+    suffix += SUFFIX_ALPHABET[Math.floor(rng() * SUFFIX_ALPHABET.length)];
+  }
+  return `${word}-${suffix}`;
 }
 
 /**
