@@ -27,6 +27,7 @@ import {
 import type { RenderFrame } from "@/lib/terminal/types";
 import { frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
+import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
 import { getWorldSeed } from "./seed";
 import {
   effectiveAbundance,
@@ -59,13 +60,98 @@ function locOf(player: Player): PlanetCoord {
   return { sector: player.sector, system: player.system, planet: player.planet };
 }
 
-export async function dispatch(player: Player, input: string): Promise<RenderFrame> {
-  const { verb, args } = parseCommand(input);
-  const seed = getWorldSeed();
+/**
+ * Command vocabulary for prefix abbreviation. The canonical verbs the
+ * dispatcher switch understands (plus the `look` alias, which is a distinct
+ * word; `inv` is omitted because it already resolves as a prefix of
+ * `inventory`). Typing a unique prefix of any of these expands to the full
+ * verb before dispatch.
+ */
+const VERBS = [
+  "scan",
+  "look",
+  "map",
+  "warp",
+  "land",
+  "mine",
+  "inventory",
+  "sell",
+  "buy",
+  "who",
+  "help",
+];
 
+/**
+ * The resource ids minable on the current planet right now — present deposits
+ * whose effective (post-depletion) abundance is still > 0. These are the
+ * candidate set for `mine`'s argument.
+ */
+async function minableHere(player: Player, seed: string): Promise<string[]> {
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  const depletionMap = await world.getDepletionMap(planetKey(coord));
+  return planet.deposits
+    .filter((d) => effectiveAbundance(d.abundance, depletionMap[d.resourceId] ?? 0) > 0)
+    .map((d) => d.resourceId);
+}
+
+/** Sellable arg candidates: resource ids carried in the hold, plus `all`. */
+async function sellableHere(player: Player): Promise<string[]> {
+  const stacks = await world.getInventory(player.id);
+  return [...stacks.map((s) => s.resourceId), "all"];
+}
+
+export async function dispatch(player: Player, input: string): Promise<RenderFrame> {
+  const seed = getWorldSeed();
+  const { verb: rawVerb } = parseCommand(input);
+  if (rawVerb === "") {
+    return frame([line(text("Type `help` for commands.", "muted"))]);
+  }
+
+  // Resolve the verb first so we know which contextual candidate sets to fetch
+  // for argument resolution (the candidate sets come from authoritative state).
+  const verbRes = resolveToken(rawVerb, VERBS);
+  let mineCandidates: string[] | null = null;
+  let sellCandidates: string[] | null = null;
+  if (verbRes.ok && verbRes.value === "mine") {
+    mineCandidates = await minableHere(player, seed);
+  } else if (verbRes.ok && verbRes.value === "sell") {
+    sellCandidates = await sellableHere(player);
+  }
+
+  const spec: ResolveLineSpec = {
+    verbs: VERBS,
+    argDomain: (verb, argIndex) => {
+      if (verb === "mine" && argIndex === 0) return mineCandidates;
+      if (verb === "sell" && argIndex === 0) return sellCandidates;
+      if (verb === "buy" && argIndex === 0) return ["fuel"];
+      return null; // opaque: warp coords, land index, buy quantity, …
+    },
+  };
+
+  const resolved = resolveCommandLine(input, spec);
+  if (!resolved.ok) return errorFrame(resolved.error);
+
+  const { verb, args, canonical } = resolved;
+  const result = await dispatchResolved(player, seed, verb, args);
+
+  // Echo the expanded form when abbreviation changed what was typed, so the
+  // player learns the canonical command.
+  const normalized = input.trim().replace(/\s+/g, " ").toLowerCase();
+  if (canonical !== normalized) {
+    return frame([line(text(`» ${canonical}`, "muted")), ...result.lines]);
+  }
+  return result;
+}
+
+/** Dispatch an already-resolved (canonical verb, expanded args) command. */
+async function dispatchResolved(
+  player: Player,
+  seed: string,
+  verb: string,
+  args: string[],
+): Promise<RenderFrame> {
   switch (verb) {
-    case "":
-      return frame([line(text("Type `help` for commands.", "muted"))]);
     case "help":
       return renderHelp();
     case "scan":
@@ -80,7 +166,6 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
     case "mine":
       return handleMine(player, seed, args);
     case "inventory":
-    case "inv":
       return handleInventory(player);
     case "sell":
       return handleSell(player, args);

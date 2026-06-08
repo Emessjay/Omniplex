@@ -7,7 +7,7 @@ import type { NextRequest } from "next/server";
  */
 export function publicOrigin(request: NextRequest): string {
   const proto =
-    request.headers.get("x-forwarded-proto")?.split(",")[0].trim() ||
+    request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
     new URL(request.url).protocol.replace(/:$/, "");
   const host =
     request.headers.get("x-forwarded-host") ||

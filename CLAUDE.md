@@ -221,3 +221,36 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **UI**: `LoginScreen` takes a `devLoginAvailable` boolean (only that boolean
   crosses to the client, never the flag); `page.tsx` passes
   `isDevLoginEnabled()`. The real magic-link flow is unchanged.
+
+### Load-bearing decisions from `command-abbrev`
+
+- **Prefix abbreviation** lets players type a unique *prefix* of a command verb
+  or of an enumerable argument: `mi t` → `mine titanium`, `sc` → `scan`,
+  `sel a` → `sell all`. Resolution is **server-authoritative** (the pipeline
+  already knows the valid sets) and happens before dispatch.
+- **Pure core** is `src/lib/game/resolve.ts` (no IO; the dispatcher supplies
+  candidate sets from state). Two functions:
+  - `resolveToken(fragment, candidates) → TokenResolution` — exact match wins
+    outright (even when it also prefixes another candidate); else a single
+    prefix match resolves; >1 ⇒ `{ok:false, reason:"ambiguous", matches}` (sorted);
+    0 ⇒ `{ok:false, reason:"none"}`. Case-insensitive; returns canonical spelling.
+  - `resolveCommandLine(input, spec) → LineResolution` — parses via
+    `parseCommand`, resolves the verb against `spec.verbs`, then each arg via
+    `spec.argDomain(verb, argIndex, priorArgs)`. Returns `{ok:true, verb, args,
+    canonical}` or `{ok:false, error}` (human-readable, names candidates on
+    ambiguity). Blank input ⇒ the empty verb (dispatcher no-op).
+- **`argDomain` contract**: return the candidate `string[]` for a *resolvable*
+  argument position, or **`null`** for an **opaque** position (free-form /
+  numeric — passed through verbatim, never prefix-matched). Ambiguity / no-match
+  **never silently picks one** — it always surfaces the choice as an error.
+- **Resolvable positions today** (wired in `commands.ts` `dispatch`): `mine`
+  arg 0 = resource ids with non-depleted deposits on the current planet; `sell`
+  arg 0 = inventory resource ids + the literal `all`; `buy` arg 0 = `["fuel"]`.
+  `warp`/`land` args (and `buy`'s quantity) are **opaque**. New verticals plug
+  their arg domains into the same `argDomain` switch.
+- **Verb vocabulary** is the `VERBS` array in `commands.ts` (canonical verbs +
+  the `look` alias; `inv` is omitted since it resolves as a prefix of
+  `inventory`). `dispatch` resolves the line, renders `error` as an error frame
+  on failure, otherwise dispatches the canonical verb/args via
+  `dispatchResolved` and prepends a muted `» <canonical>` echo line whenever
+  abbreviation expanded the typed input (so players learn the full form).
