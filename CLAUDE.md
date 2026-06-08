@@ -173,3 +173,30 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **Terminal greeting**: `<Terminal>` takes an optional `player` prop and
   shows a personalized boot banner. The `submitCommand` seam and
   `RenderFrame` types are unchanged — still the single attach point.
+
+### Load-bearing decisions from `deploy-harden`
+
+- **Migration runner**: `scripts/db-migrate.sh` applies every
+  `supabase/migrations/*.sql` in filename order to the DB named by
+  `DATABASE_URL` (Supabase → Project Settings → Database), via `psql` (no
+  Supabase CLI dependency). It tracks applied files in
+  `public.schema_migrations` (created at runtime with `if not exists`, NOT a
+  landed migration) and applies each file + its tracking insert in one
+  transaction, so a failed migration rolls back and is retried. Idempotent;
+  safe to re-run. `--dry-run` previews.
+- **Health check**: `GET /api/health` (`src/app/api/health/route.ts`) ALWAYS
+  returns HTTP 200 with `{ status, supabase: "configured"|"unconfigured",
+  missingEnv }` — never 500, never leaks secret values (names only). Wired
+  into `railway.json` as `healthcheckPath`. Uses `force-dynamic` so env is
+  read per-request.
+- **Runtime env validation**: `src/lib/env.ts` — `REQUIRED_SERVER_ENV` is the
+  canonical required-vars list (`NEXT_PUBLIC_SUPABASE_URL`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `WORLD_SEED`).
+  `checkServerEnv()` is pure/non-throwing (used by the health route);
+  `assertServerEnv()` throws on a real request path only. NEVER call these at
+  import/build time — the build/test-without-secrets invariant must hold.
+- **Node pinned to 22** via `engines.node` (`package.json`) + `.node-version`
+  / `.nvmrc` for reproducible Nixpacks builds.
+- **Deploy runbook** is [`DEPLOY.md`](DEPLOY.md) (linked from `README.md`);
+  it owns the Railway + Supabase setup, including the Supabase Auth redirect
+  allowlist gotcha for magic-link login.

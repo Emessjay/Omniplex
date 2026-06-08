@@ -78,28 +78,33 @@ creates the MVP mutable-state tables (`players`, `inventory`, `resources`,
 catalog/leaderboard rows; per-player read for own rows; all writes via the
 service role), and seeds the resource catalog + a global market.
 
-Apply it with the Supabase CLI:
+Apply it with the bundled, psql-based migration runner (no Supabase CLI
+required) — it tracks applied files in `public.schema_migrations` and is safe
+to re-run:
 
 ```bash
-supabase db push         # against a linked project
-# or, locally:
-supabase start && supabase db reset
+export DATABASE_URL='postgresql://postgres:PASSWORD@db.<ref>.supabase.co:5432/postgres'
+scripts/db-migrate.sh            # apply pending migrations
+scripts/db-migrate.sh --dry-run  # preview without applying
+scripts/db-migrate.sh --help     # full usage
 ```
+
+The connection string comes from Supabase → Project Settings → Database. A
+manual SQL-editor fallback (and full context) is in [`DEPLOY.md`](DEPLOY.md).
 
 ## Deploying to Railway + Supabase
 
-1. **Supabase**: create a project. Run the migration(s) in
-   `supabase/migrations/` against it (`supabase link` + `supabase db push`,
-   or paste into the SQL editor). Note the project URL, anon key, and
-   service-role key.
-2. **Railway**: create a service from this repo. Railway reads
-   [`railway.json`](railway.json):
-   - **Build:** `npm run build` (Nixpacks)
-   - **Start:** `npm run start -- -p ${PORT}` (Railway injects `$PORT`)
-3. **Set env vars** on the Railway service:
-   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-   `SUPABASE_SERVICE_ROLE_KEY`, `WORLD_SEED`.
-4. Deploy. (This scaffold is config-only — nothing is auto-deployed.)
+See **[`DEPLOY.md`](DEPLOY.md)** for the complete, numbered runbook: creating
+the Supabase project and finding each credential, applying migrations,
+configuring Supabase Auth redirect URLs (a real magic-link gotcha), the full
+Railway setup with every env var, the `/api/health` health check, and
+`WORLD_SEED` guidance.
+
+A health check lives at `GET /api/health` — it returns `200` with
+`{ "status": "ok", "supabase": "configured" | "unconfigured" }` and is wired
+into `railway.json` as the deploy `healthcheckPath`. The Node major is pinned
+(Node 22) via `engines.node` and `.node-version` / `.nvmrc` for reproducible
+Nixpacks builds.
 
 ## Project layout
 
