@@ -10,7 +10,9 @@ describe("rowToPlayer", () => {
     credits: 1000,
     fuel: 100,
     cargo_cap: 50,
-    sector: 0,
+    galaxy: 0,
+    arm: 0,
+    cluster: 0,
     system: 0,
     planet: 0,
     region: 0,
@@ -25,7 +27,9 @@ describe("rowToPlayer", () => {
       credits: 1000,
       fuel: 100,
       cargoCap: 50,
-      sector: 0,
+      galaxy: 0,
+      arm: 0,
+      cluster: 0,
       system: 0,
       planet: 0,
       region: 0,
@@ -36,13 +40,20 @@ describe("rowToPlayer", () => {
   it("preserves non-default location coordinates", () => {
     const moved = rowToPlayer({
       ...row,
-      sector: 3,
+      galaxy: 0,
+      arm: 7,
+      cluster: 3,
       system: 12,
       planet: 4,
       region: 4096,
     });
-    expect([moved.sector, moved.system, moved.planet, moved.region]).toEqual([
-      3, 12, 4, 4096,
-    ]);
+    expect([
+      moved.galaxy,
+      moved.arm,
+      moved.cluster,
+      moved.system,
+      moved.planet,
+      moved.region,
+    ]).toEqual([0, 7, 3, 12, 4, 4096]);
   });
 });

@@ -20,12 +20,12 @@ import type { SystemCoord, PlanetCoord, Planet, Region } from "@/lib/universe";
 
 const SEED = "omniplex-test-seed";
 
-// Deterministic sample of systems across several sectors/systems.
+// Deterministic sample of systems across several clusters/systems.
 function sampleSystems(seed: string): ReturnType<typeof systemAt>[] {
   const out = [];
-  for (let sector = 0; sector < 4; sector++) {
+  for (let cluster = 0; cluster < 4; cluster++) {
     for (let system = 0; system < 30; system++) {
-      out.push(systemAt(seed, { sector, system }));
+      out.push(systemAt(seed, { galaxy: 0, arm: 0, cluster, system }));
     }
   }
   return out;
@@ -74,27 +74,27 @@ describe("resource catalog (AC#6)", () => {
 
 describe("determinism & purity (AC#1)", () => {
   it("systemAt is deterministic across calls", () => {
-    const c: SystemCoord = { sector: 2, system: 7 };
+    const c: SystemCoord = { galaxy: 0, arm: 0, cluster: 2, system: 7 };
     expect(systemAt(SEED, c)).toStrictEqual(systemAt(SEED, c));
   });
 
   it("planetAt is deterministic across calls", () => {
-    const c: PlanetCoord = { sector: 1, system: 4, planet: 0 };
+    const c: PlanetCoord = { galaxy: 0, arm: 0, cluster: 1, system: 4, planet: 0 };
     expect(planetAt(SEED, c)).toStrictEqual(planetAt(SEED, c));
   });
 
   it("different seeds produce different universes for at least some coords", () => {
     let differ = 0;
     for (let system = 0; system < 20; system++) {
-      const a = systemAt("seed-A", { sector: 0, system });
-      const b = systemAt("seed-B", { sector: 0, system });
+      const a = systemAt("seed-A", { galaxy: 0, arm: 0, cluster: 0, system });
+      const b = systemAt("seed-B", { galaxy: 0, arm: 0, cluster: 0, system });
       if (JSON.stringify(a) !== JSON.stringify(b)) differ++;
     }
     expect(differ).toBeGreaterThan(10);
   });
 
   it("planetAt agrees with the system's planet list", () => {
-    const c: SystemCoord = { sector: 3, system: 9 };
+    const c: SystemCoord = { galaxy: 0, arm: 0, cluster: 3, system: 9 };
     const sys = systemAt(SEED, c);
     for (let p = 0; p < sys.planetCount; p++) {
       expect(planetAt(SEED, { ...c, planet: p })).toStrictEqual(sys.planets[p]);
@@ -286,24 +286,25 @@ describe("hazard scales with temperature extremity", () => {
 
 describe("location keys round-trip (AC#7)", () => {
   it("systemKey/planetKey parse back to the coord", () => {
-    const sc: SystemCoord = { sector: 5, system: 12 };
-    const pc: PlanetCoord = { sector: 5, system: 12, planet: 3 };
-    expect(systemKey(sc)).toBe("5:12");
-    expect(planetKey(pc)).toBe("5:12:3");
+    const sc: SystemCoord = { galaxy: 0, arm: 1, cluster: 5, system: 12 };
+    const pc: PlanetCoord = { galaxy: 0, arm: 1, cluster: 5, system: 12, planet: 3 };
+    expect(systemKey(sc)).toBe("0:1:5:12");
+    expect(planetKey(pc)).toBe("0:1:5:12:3");
     expect(parseLocationKey(systemKey(sc))).toStrictEqual(sc);
     expect(parseLocationKey(planetKey(pc))).toStrictEqual(pc);
   });
 });
 
 describe("navigation (AC#8)", () => {
-  const a: SystemCoord = { sector: 0, system: 0 };
-  const b: SystemCoord = { sector: 0, system: 5 };
-  const c: SystemCoord = { sector: 2, system: 1 };
+  const ARM_COUNT = 12;
+  const a: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system: 0 };
+  const b: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system: 5 };
+  const c: SystemCoord = { galaxy: 0, arm: 2, cluster: 2, system: 1 };
 
   it("warpDistance is zero to self, symmetric, positive between distinct", () => {
-    expect(warpDistance(a, a)).toBe(0);
-    expect(warpDistance(a, b)).toBeGreaterThan(0);
-    expect(warpDistance(a, b)).toBe(warpDistance(b, a));
-    expect(warpDistance(a, c)).toBeGreaterThan(0);
+    expect(warpDistance(a, a, ARM_COUNT)).toBe(0);
+    expect(warpDistance(a, b, ARM_COUNT)).toBeGreaterThan(0);
+    expect(warpDistance(a, b, ARM_COUNT)).toBe(warpDistance(b, a, ARM_COUNT));
+    expect(warpDistance(a, c, ARM_COUNT)).toBeGreaterThan(0);
   });
 });

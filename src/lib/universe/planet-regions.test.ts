@@ -11,16 +11,16 @@ import {
   PALETTE_MIN,
   PALETTE_MAX,
 } from "@/lib/universe";
-import type { PlanetCoord, RegionCoord, Region } from "@/lib/universe";
+import type { PlanetCoord, RegionCoord } from "@/lib/universe";
 
 const SEED = "omniplex-regions-test";
 
 function samplePlanets(seed: string) {
   const out = [];
-  for (let sector = 0; sector < 4; sector++) {
+  for (let cluster = 0; cluster < 4; cluster++) {
     for (let system = 0; system < 25; system++) {
       // planet 0 of each sampled system is plenty.
-      out.push(planetAt(seed, { sector, system, planet: 0 }));
+      out.push(planetAt(seed, { galaxy: 0, arm: 0, cluster, system, planet: 0 }));
     }
   }
   return out;
@@ -62,11 +62,11 @@ describe("planet biome palette + region count (AC#1)", () => {
 
 describe("determinism (AC#1, AC#2)", () => {
   it("planetAt is deterministic", () => {
-    const c: PlanetCoord = { sector: 2, system: 7, planet: 0 };
+    const c: PlanetCoord = { galaxy: 0, arm: 0, cluster: 2, system: 7, planet: 0 };
     expect(planetAt(SEED, c)).toStrictEqual(planetAt(SEED, c));
   });
   it("regionAt is deterministic", () => {
-    const c: PlanetCoord = { sector: 1, system: 4, planet: 0 };
+    const c: PlanetCoord = { galaxy: 0, arm: 0, cluster: 1, system: 4, planet: 0 };
     expect(regionAt(SEED, c, 17)).toStrictEqual(regionAt(SEED, c, 17));
   });
 });
@@ -117,16 +117,30 @@ describe("regions draw biome from the planet palette + valid deposits (AC#2)", (
 });
 
 describe("region location keys (AC#3)", () => {
-  it("regionKey round-trips as a 4-segment key", () => {
-    const rc: RegionCoord = { sector: 5, system: 12, planet: 3, region: 9001 };
-    expect(regionKey(rc)).toBe("5:12:3:9001");
+  it("regionKey round-trips as a 6-segment key", () => {
+    const rc: RegionCoord = {
+      galaxy: 2,
+      arm: 4,
+      cluster: 5,
+      system: 12,
+      planet: 3,
+      region: 9001,
+    };
+    expect(regionKey(rc)).toBe("2:4:5:12:3:9001");
     expect(parseLocationKey(regionKey(rc))).toStrictEqual(rc);
   });
 
-  it("2- and 3-segment keys still parse (no regression)", () => {
-    expect(parseLocationKey("5:12")).toStrictEqual({ sector: 5, system: 12 });
-    expect(parseLocationKey("5:12:3")).toStrictEqual({
-      sector: 5,
+  it("4- and 5-segment keys still parse (system / planet)", () => {
+    expect(parseLocationKey("2:4:5:12")).toStrictEqual({
+      galaxy: 2,
+      arm: 4,
+      cluster: 5,
+      system: 12,
+    });
+    expect(parseLocationKey("2:4:5:12:3")).toStrictEqual({
+      galaxy: 2,
+      arm: 4,
+      cluster: 5,
       system: 12,
       planet: 3,
     });

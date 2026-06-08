@@ -40,7 +40,7 @@ export const VERBS: string[] = [
 
 /** One ordered argument position of a command. */
 export interface UsageSlot {
-  /** Placeholder label, e.g. `resource`, `sector`, `qty`. */
+  /** Placeholder label, e.g. `resource`, `cluster`, `qty`. */
   name: string;
   /** True when the argument may be omitted (rendered as `[name]`). */
   optional?: boolean;
@@ -77,9 +77,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
   look: { desc: "alias for scan", slots: [], alias: true },
   map: { desc: "list nearby systems to warp to", slots: [] },
   warp: {
-    desc: "travel to another system (burns fuel)",
+    desc: "travel to another system in this galaxy (burns fuel)",
     slots: [
-      { name: "sector", hint: "see `map` for destinations" },
+      { name: "arm", hint: "an arm # (wraps around the galaxy); see `map`" },
+      { name: "cluster", hint: "see `map` for destinations" },
       { name: "system", hint: "see `map` for destinations" },
     ],
   },

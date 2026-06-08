@@ -15,6 +15,7 @@ import "server-only";
  */
 import type { Player } from "@/lib/players/types";
 import {
+  galaxyAt,
   planetAt,
   regionAt,
   systemAt,
@@ -79,7 +80,23 @@ function toInt(token: string | undefined): number | null {
 }
 
 function locOf(player: Player): PlanetCoord {
-  return { sector: player.sector, system: player.system, planet: player.planet };
+  return {
+    galaxy: player.galaxy,
+    arm: player.arm,
+    cluster: player.cluster,
+    system: player.system,
+    planet: player.planet,
+  };
+}
+
+/** The player's current system coordinate (location minus planet/region). */
+function systemOf(player: Player): SystemCoord {
+  return {
+    galaxy: player.galaxy,
+    arm: player.arm,
+    cluster: player.cluster,
+    system: player.system,
+  };
 }
 
 /**
@@ -490,35 +507,64 @@ function handleRegions(player: Player, seed: string, args: string[]): RenderFram
 // map
 // ---------------------------------------------------------------------------
 
-/** Candidate system offsets around the current system, nearest-first after sort. */
-function neighborCandidates(current: SystemCoord): SystemCoord[] {
+/**
+ * Candidate system offsets around the current system, spanning the three
+ * in-galaxy tiers (arm / cluster / system). Arm and cluster indices never go
+ * negative (cluster ≥ 0, and arm is normalized into `[0, armCount)` since the
+ * ring wraps); system is clamped at 0. Galaxy is fixed (no inter-galaxy travel
+ * this phase).
+ */
+function neighborCandidates(current: SystemCoord, armCount: number): SystemCoord[] {
   const out: SystemCoord[] = [];
-  for (let ds = -1; ds <= 1; ds++) {
-    for (let dsys = -3; dsys <= 3; dsys++) {
-      if (ds === 0 && dsys === 0) continue;
-      out.push({ sector: current.sector + ds, system: current.system + dsys });
+  const seen = new Set<string>();
+  for (let da = -1; da <= 1; da++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      for (let dsys = -3; dsys <= 3; dsys++) {
+        if (da === 0 && dc === 0 && dsys === 0) continue;
+        const cluster = current.cluster + dc;
+        const system = current.system + dsys;
+        if (cluster < 0 || system < 0) continue;
+        // Arm wraps around the ring and is canonicalized into [0, armCount).
+        const arm = ((current.arm + da) % armCount + armCount) % armCount;
+        const coord: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
+        const key = systemKey(coord);
+        if (key === systemKey(current) || seen.has(key)) continue;
+        seen.add(key);
+        out.push(coord);
+      }
     }
   }
   return out;
 }
 
 async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
-  const current: SystemCoord = { sector: player.sector, system: player.system };
+  const current = systemOf(player);
+  const galaxy = galaxyAt(seed, current.galaxy);
   const discovered = await world.discoveredSystemKeys();
-  const neighbors: MapNeighbor[] = neighborCandidates(current)
+  const neighbors: MapNeighbor[] = neighborCandidates(current, galaxy.armCount)
     .map((coord) => {
       const sys = systemAt(seed, coord);
       return {
-        sector: coord.sector,
+        arm: coord.arm,
+        cluster: coord.cluster,
         system: coord.system,
         name: sys.name,
-        distance: warpDistance(current, coord),
+        distance: warpDistance(current, coord, galaxy.armCount),
         discovered: discovered.has(systemKey(coord)),
       };
     })
     .sort((a, b) => a.distance - b.distance)
     .slice(0, 8);
-  return renderMap(neighbors, player.fuel);
+  return renderMap(neighbors, player.fuel, {
+    galaxyName: galaxy.name,
+    armCount: galaxy.armCount,
+    galaxy: current.galaxy,
+    arm: current.arm,
+    cluster: current.cluster,
+    system: current.system,
+    planet: player.planet,
+    region: player.region,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -530,18 +576,32 @@ async function handleWarp(
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
-  const sector = toInt(args[0]);
-  const system = toInt(args[1]);
-  if (sector === null || system === null) {
-    return errorFrame("Usage: warp <sector> <system>  (e.g. warp 0 1)");
+  const armArg = toInt(args[0]);
+  const cluster = toInt(args[1]);
+  const system = toInt(args[2]);
+  if (armArg === null || cluster === null || system === null) {
+    return errorFrame("Usage: warp <arm> <cluster> <system>  (e.g. warp 0 0 1)");
   }
-  const current: SystemCoord = { sector: player.sector, system: player.system };
-  const dest: SystemCoord = { sector, system };
-  if (dest.sector === current.sector && dest.system === current.system) {
+  if (cluster < 0 || system < 0) {
+    return errorFrame("Cluster and system must be 0 or greater.");
+  }
+
+  const current = systemOf(player);
+  // Arm is taken modulo the CURRENT galaxy's arm count — it's a ring, so e.g.
+  // `warp 13 …` in a 12-arm galaxy lands on arm 1. Negative inputs wrap too.
+  const { armCount } = galaxyAt(seed, current.galaxy);
+  const arm = ((armArg % armCount) + armCount) % armCount;
+  // Galaxy is unchanged this phase (inter-galaxy travel is later).
+  const dest: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
+  if (
+    dest.arm === current.arm &&
+    dest.cluster === current.cluster &&
+    dest.system === current.system
+  ) {
     return errorFrame("You're already in that system. Try `map` for neighbors.");
   }
 
-  const distance = warpDistance(current, dest);
+  const distance = warpDistance(current, dest, armCount);
   const cost = fuelCost(distance);
   if (cost > player.fuel) {
     return errorFrame(
@@ -551,7 +611,9 @@ async function handleWarp(
 
   const newFuel = player.fuel - cost;
   await world.setFuelAndLocation(player.id, newFuel, {
-    sector: dest.sector,
+    galaxy: dest.galaxy,
+    arm: dest.arm,
+    cluster: dest.cluster,
     system: dest.system,
     planet: 0,
   });
@@ -583,18 +645,14 @@ async function handleLand(
   const idx = toInt(args[0]);
   if (idx === null) return errorFrame("Usage: land <planet index>  (see `scan`)");
 
-  const system = systemAt(seed, { sector: player.sector, system: player.system });
+  const system = systemAt(seed, systemOf(player));
   if (idx < 0 || idx >= system.planetCount) {
     return errorFrame(
       `No planet ${idx} here — this system has ${system.planetCount} (0–${system.planetCount - 1}).`,
     );
   }
 
-  const coord: PlanetCoord = {
-    sector: player.sector,
-    system: player.system,
-    planet: idx,
-  };
+  const coord: PlanetCoord = { ...systemOf(player), planet: idx };
   const planet = planetAt(seed, coord);
 
   // Landing gate: a hostile surface needs the matching upgrade. No move, no

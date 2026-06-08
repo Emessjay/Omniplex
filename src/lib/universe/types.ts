@@ -60,23 +60,55 @@ export const REGION_COUNT_MAX = 100_000;
 export const PALETTE_MIN = 2;
 export const PALETTE_MAX = 4;
 
-/** Integer galaxy address of a star system (matches the `players` columns). */
+/**
+ * Per-galaxy spiral-arm count bounds. A galaxy's `armCount` is rolled uniformly
+ * in `[ARM_COUNT_MIN, ARM_COUNT_MAX]` (deterministic per galaxy), and arm
+ * indices are canonical modulo that count — warping to arm `armCount` lands on
+ * arm 0, and arm distance wraps symmetrically around the ring.
+ */
+export const ARM_COUNT_MIN = 2;
+export const ARM_COUNT_MAX = 16;
+
+/**
+ * Integer six-tier address of a star system, matching the `players` columns
+ * (`galaxy`, `arm`, `cluster`, `system`). The hierarchy is
+ * `galaxy → arm → cluster → system → planet → region`:
+ *  - `galaxy`  ≥ 0, UNBOUNDED (effectively infinite outward). Inter-galaxy
+ *    travel is a later phase; for now everyone is in galaxy 0.
+ *  - `arm`     a RING within the galaxy, canonical in `[0, armCount)`; indices
+ *    wrap modulo the galaxy's `armCount` (see `galaxyAt`).
+ *  - `cluster` ≥ 0, index of a cluster within an arm (was `sector`).
+ *  - `system`  ≥ 0, index of a system within a cluster.
+ */
 export interface SystemCoord {
-  readonly sector: number;
+  readonly galaxy: number;
+  readonly arm: number;
+  readonly cluster: number;
   readonly system: number;
 }
 
-/** Integer galaxy address of a planet; `planet` is its 0-based index. */
+/** Integer six-tier address of a planet; `planet` is its 0-based index. */
 export interface PlanetCoord extends SystemCoord {
   readonly planet: number;
 }
 
 /**
- * Integer galaxy address of a region within a planet; `region` is its 0-based
- * index in `[0, planet.regionCount)`. The full four-integer location key.
+ * Integer six-tier address of a region within a planet; `region` is its 0-based
+ * index in `[0, planet.regionCount)`. The full six-integer location key.
  */
 export interface RegionCoord extends PlanetCoord {
   readonly region: number;
+}
+
+/**
+ * A deterministically-generated galaxy: its index, a flavor name, and the
+ * number of spiral arms it has (`[ARM_COUNT_MIN, ARM_COUNT_MAX]`). Different
+ * galaxies have different arm counts, so arm-wrap distance is galaxy-relative.
+ */
+export interface Galaxy {
+  readonly index: number;
+  readonly name: string;
+  readonly armCount: number;
 }
 
 /** A resource deposit on a planet: which resource and how rich (0..1). */

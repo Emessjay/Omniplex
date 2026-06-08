@@ -19,6 +19,8 @@ export {
   REGION_COUNT_MAX,
   PALETTE_MIN,
   PALETTE_MAX,
+  ARM_COUNT_MIN,
+  ARM_COUNT_MAX,
 } from "./types";
 export type {
   Biome,
@@ -31,9 +33,11 @@ export type {
   Planet,
   Region,
   StarSystem,
+  Galaxy,
 } from "./types";
 
 export {
+  galaxyAt,
   systemAt,
   planetAt,
   regionAt,
@@ -42,4 +46,7 @@ export {
   regionKey,
   parseLocationKey,
   warpDistance,
+  ARM_SPAN,
+  CLUSTER_SPAN,
+  SYSTEM_SPAN,
 } from "./gen";

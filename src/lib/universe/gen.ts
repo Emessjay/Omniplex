@@ -15,6 +15,8 @@
  */
 
 import {
+  ARM_COUNT_MAX,
+  ARM_COUNT_MIN,
   ATMOSPHERES,
   BIOMES,
   MAX_PLANETS,
@@ -25,6 +27,7 @@ import {
   STAR_CLASSES,
   type Atmosphere,
   type Biome,
+  type Galaxy,
   type Planet,
   type PlanetCoord,
   type Region,
@@ -50,25 +53,30 @@ import {
 // must not drift.
 // ---------------------------------------------------------------------------
 
-/** `"<sector>:<system>"` */
+/** `"<galaxy>:<arm>:<cluster>:<system>"` (4 segments). */
 export function systemKey(coord: SystemCoord): string {
-  return `${coord.sector}:${coord.system}`;
+  return `${coord.galaxy}:${coord.arm}:${coord.cluster}:${coord.system}`;
 }
 
-/** `"<sector>:<system>:<planet>"` */
+/** `"<galaxy>:<arm>:<cluster>:<system>:<planet>"` (5 segments). */
 export function planetKey(coord: PlanetCoord): string {
-  return `${coord.sector}:${coord.system}:${coord.planet}`;
-}
-
-/** `"<sector>:<system>:<planet>:<region>"` — the per-region depletion key. */
-export function regionKey(coord: RegionCoord): string {
-  return `${coord.sector}:${coord.system}:${coord.planet}:${coord.region}`;
+  return `${systemKey(coord)}:${coord.planet}`;
 }
 
 /**
- * Parse a system / planet / region key back into its coord object. Two
- * segments → `SystemCoord`; three → `PlanetCoord`; four → `RegionCoord`.
- * Throws on malformed input.
+ * `"<galaxy>:<arm>:<cluster>:<system>:<planet>:<region>"` (6 segments) — the
+ * per-region depletion key.
+ */
+export function regionKey(coord: RegionCoord): string {
+  return `${planetKey(coord)}:${coord.region}`;
+}
+
+/**
+ * Parse a system / planet / region key back into its coord object. Four
+ * segments → `SystemCoord`; five → `PlanetCoord`; six → `RegionCoord`. Old
+ * 2/3/4-segment keys were migrated to the galaxy-0/arm-0 prefix form by the
+ * `addressing-overhaul` migration, so only 4/5/6 are valid now. Throws on
+ * malformed input.
  */
 export function parseLocationKey(
   key: string,
@@ -81,18 +89,26 @@ export function parseLocationKey(
     }
     return n;
   });
-  if (nums.length === 2) {
-    return { sector: nums[0]!, system: nums[1]! };
-  }
-  if (nums.length === 3) {
-    return { sector: nums[0]!, system: nums[1]!, planet: nums[2]! };
-  }
   if (nums.length === 4) {
+    return { galaxy: nums[0]!, arm: nums[1]!, cluster: nums[2]!, system: nums[3]! };
+  }
+  if (nums.length === 5) {
     return {
-      sector: nums[0]!,
-      system: nums[1]!,
-      planet: nums[2]!,
-      region: nums[3]!,
+      galaxy: nums[0]!,
+      arm: nums[1]!,
+      cluster: nums[2]!,
+      system: nums[3]!,
+      planet: nums[4]!,
+    };
+  }
+  if (nums.length === 6) {
+    return {
+      galaxy: nums[0]!,
+      arm: nums[1]!,
+      cluster: nums[2]!,
+      system: nums[3]!,
+      planet: nums[4]!,
+      region: nums[5]!,
     };
   }
   throw new Error(`invalid location key: ${key}`);
@@ -102,19 +118,70 @@ export function parseLocationKey(
 // Navigation (AC#8).
 // ---------------------------------------------------------------------------
 
-/** Galaxy-space distance between sectors, so cross-sector jumps cost more. */
-const SECTOR_SPAN = 100;
+/**
+ * Tier weights for `warpDistance`: arm ≫ cluster ≫ system, so crossing an arm
+ * is a long haul, a cluster hop is moderate, and a neighboring-system hop is
+ * cheap. Exported so callers/tests can reason about the metric.
+ */
+export const ARM_SPAN = 100;
+export const CLUSTER_SPAN = 10;
+export const SYSTEM_SPAN = 1;
 
 /**
- * Distance between two systems. 0 to self, symmetric, positive between
- * distinct systems. Euclidean over (sector·SECTOR_SPAN, system) so a hop to a
- * neighboring system is cheap and a sector change is a long haul. Fuel-cost
- * scaling off this is `command-core`'s concern.
+ * Distance between two systems within the SAME galaxy (0 to self, symmetric,
+ * positive between distinct same-galaxy coords). A weighted sum over the tiers
+ * with arm-ring wrapping: the arm term is `min(|Δarm|, armCount − |Δarm|)`, so
+ * in a 12-arm galaxy a difference of 5 and a difference of 7 are the same
+ * distance (the ring is symmetric). Different galaxies return `Infinity` —
+ * inter-galaxy travel is NOT a warp (handled in a later, condensate-gated
+ * phase). Callers supply `armCount` from `galaxyAt(coord.galaxy).armCount`.
+ * Fuel-cost scaling off this is `command-core`'s concern.
  */
-export function warpDistance(a: SystemCoord, b: SystemCoord): number {
-  const dx = (a.sector - b.sector) * SECTOR_SPAN;
-  const dy = a.system - b.system;
-  return Math.sqrt(dx * dx + dy * dy);
+export function warpDistance(
+  a: SystemCoord,
+  b: SystemCoord,
+  armCount: number,
+): number {
+  if (a.galaxy !== b.galaxy) return Infinity;
+  const rawArm = Math.abs(a.arm - b.arm);
+  const armRing = Math.min(rawArm, armCount - rawArm);
+  return (
+    armRing * ARM_SPAN +
+    Math.abs(a.cluster - b.cluster) * CLUSTER_SPAN +
+    Math.abs(a.system - b.system) * SYSTEM_SPAN
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Galaxies. A galaxy is a deterministic function of its index: a flavor name
+// and an arm count. The arm count varies per galaxy and bounds the arm ring
+// for `warpDistance` / arm-wrapping in `warp`.
+// ---------------------------------------------------------------------------
+
+/** Flavor galaxy-name fragments (purely cosmetic). */
+const GALAXY_NAMES = [
+  "Andromeda",
+  "Whirlpool",
+  "Pinwheel",
+  "Sombrero",
+  "Triangulum",
+  "Cartwheel",
+  "Sunflower",
+  "Cigar",
+  "Tadpole",
+  "Hoag",
+] as const;
+
+/**
+ * The galaxy at `galaxy` (an unbounded index ≥ 0). Pure & deterministic: same
+ * seed + index ⇒ identical `{ index, name, armCount }`. `armCount` is rolled
+ * uniformly in `[ARM_COUNT_MIN, ARM_COUNT_MAX]`, so different galaxies differ.
+ */
+export function galaxyAt(seed: string, galaxy: number): Galaxy {
+  const rng = makeRng(seed, "galaxy", galaxy);
+  const name = `${pick(rng, GALAXY_NAMES)}-${randInt(rng, 1, 9999)}`;
+  const armCount = randInt(rng, ARM_COUNT_MIN, ARM_COUNT_MAX);
+  return { index: galaxy, name, armCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +412,15 @@ function generatePlanet(
   sysName: string,
   starClass: StarClass,
 ): Planet {
-  const rng = makeRng(seed, "planet", coord.sector, coord.system, coord.planet);
+  const rng = makeRng(
+    seed,
+    "planet",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+  );
 
   const biomePalette = biomePaletteFor(rng);
   const atmosphere = atmosphereFor(rng);
@@ -374,7 +449,14 @@ function generatePlanet(
  * full list of planets (each planet's `coord.planet` equals its index).
  */
 export function systemAt(seed: string, coord: SystemCoord): StarSystem {
-  const rng = makeRng(seed, "system", coord.sector, coord.system);
+  const rng = makeRng(
+    seed,
+    "system",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+  );
 
   const name = systemName(rng);
   const starClass = starClassFor(rng);
@@ -396,7 +478,14 @@ export function systemAt(seed: string, coord: SystemCoord): StarSystem {
  * requested planet, so it agrees exactly with the system's planet list.
  */
 export function planetAt(seed: string, coord: PlanetCoord): Planet {
-  const sysRng = makeRng(seed, "system", coord.sector, coord.system);
+  const sysRng = makeRng(
+    seed,
+    "system",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+  );
   const name = systemName(sysRng);
   const starClass = starClassFor(sysRng);
   return generatePlanet(seed, coord, name, starClass);
@@ -421,7 +510,9 @@ export function regionAt(
   const rng = makeRng(
     seed,
     "region",
-    planetCoord.sector,
+    planetCoord.galaxy,
+    planetCoord.arm,
+    planetCoord.cluster,
     planetCoord.system,
     planetCoord.planet,
     regionIndex,
@@ -435,12 +526,7 @@ export function regionAt(
   }));
 
   return {
-    coord: {
-      sector: planetCoord.sector,
-      system: planetCoord.system,
-      planet: planetCoord.planet,
-      region: regionIndex,
-    },
+    coord: { ...planetCoord, region: regionIndex },
     biome,
     deposits,
   };

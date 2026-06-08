@@ -88,7 +88,7 @@ export interface CommandHelpGroup {
 
 /** One argument slot's resolved help info (built by the `help` handler). */
 export interface CommandHelpSlotView {
-  /** Placeholder label, e.g. `resource`, `sector`, `qty`. */
+  /** Placeholder label, e.g. `resource`, `cluster`, `qty`. */
   name: string;
   optional: boolean;
   /** Opaque position: show `<name>` + this hint (no enumeration). */
@@ -394,20 +394,50 @@ export function renderRegions(view: RegionsView): RenderFrame {
 }
 
 export interface MapNeighbor {
-  sector: number;
+  arm: number;
+  cluster: number;
   system: number;
   name: string;
   distance: number;
   discovered: boolean;
 }
 
-/** Nearby-systems map: each row a warp action + fuel cost. */
-export function renderMap(neighbors: MapNeighbor[], currentFuel: number): RenderFrame {
+/** The player's current six-tier location + galaxy context, shown atop `map`. */
+export interface MapLocation {
+  galaxyName: string;
+  armCount: number;
+  galaxy: number;
+  arm: number;
+  cluster: number;
+  system: number;
+  planet: number;
+  region: number;
+}
+
+/**
+ * Nearby-systems map: the player's full location (galaxy/arm/cluster/system/
+ * planet/region) and the galaxy's arm count, then each neighbor as a `warp <arm>
+ * <cluster> <system>` action + its fuel cost.
+ */
+export function renderMap(
+  neighbors: MapNeighbor[],
+  currentFuel: number,
+  loc: MapLocation,
+): RenderFrame {
   const lines: RenderLine[] = [
     line([
-      text("Nearby systems", "heading"),
-      text(`   (fuel: ${currentFuel})`, "muted"),
+      text(`Galaxy ${loc.galaxy} `, "heading"),
+      text(`${loc.galaxyName} `, "accent"),
+      text(`(${loc.armCount} arms)   fuel ${currentFuel}`, "muted"),
     ]),
+    line([
+      text("you are at  ", "muted"),
+      text(
+        `arm ${loc.arm} · cluster ${loc.cluster} · system ${loc.system} · planet ${loc.planet} · region ${loc.region}`,
+        "default",
+      ),
+    ]),
+    line(text("Nearby systems", "heading")),
   ];
   if (neighbors.length === 0) {
     lines.push(line(text("No charted neighbors in range.", "muted")));
@@ -418,11 +448,11 @@ export function renderMap(neighbors: MapNeighbor[], currentFuel: number): Render
     const affordable = cost <= currentFuel;
     lines.push(
       line([
-        action(n.name, `warp ${n.sector} ${n.system}`, {
+        action(n.name, `warp ${n.arm} ${n.cluster} ${n.system}`, {
           style: "link",
           title: `warp to ${n.name}`,
         }),
-        text(`  ${n.sector}:${n.system}`, "muted"),
+        text(`  ${n.arm}:${n.cluster}:${n.system}`, "muted"),
         text(`  fuel ${cost}`, affordable ? "default" : "danger"),
         text(n.discovered ? "  ✓ discovered" : "  • uncharted", "muted"),
       ]),

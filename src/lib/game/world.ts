@@ -405,14 +405,22 @@ export async function addPlayerCredits(
 export async function setFuelAndLocation(
   playerId: string,
   fuel: number,
-  loc: { sector: number; system: number; planet: number },
+  loc: {
+    galaxy: number;
+    arm: number;
+    cluster: number;
+    system: number;
+    planet: number;
+  },
 ): Promise<void> {
   const db = getServerClient();
   const { error } = await db
     .from("players")
     .update({
       fuel,
-      sector: loc.sector,
+      galaxy: loc.galaxy,
+      arm: loc.arm,
+      cluster: loc.cluster,
       system: loc.system,
       planet: loc.planet,
       region: 0,

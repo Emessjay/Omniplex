@@ -60,7 +60,7 @@ function bootFrame(player?: Player): RenderFrame {
       line([
         text("location: ", "muted"),
         text(
-          `sector ${player.sector} · system ${player.system} · planet ${player.planet}`,
+          `galaxy ${player.galaxy} · arm ${player.arm} · cluster ${player.cluster} · system ${player.system} · planet ${player.planet}`,
           "default",
         ),
         text("  (starting system)", "muted"),

@@ -22,8 +22,15 @@ export interface Player {
   fuel: number;
   /** Cargo capacity. */
   cargoCap: number;
-  /** Current location — galaxy coordinates. `(0,0,0,0)` is the start system. */
-  sector: number;
+  /**
+   * Current location — the six-tier coordinate
+   * (`galaxy → arm → cluster → system → planet → region`). `(0,0,0,0,0,0)` is
+   * the start location. `galaxy` is unbounded; `arm` is canonical in
+   * `[0, galaxyAt(galaxy).armCount)`.
+   */
+  galaxy: number;
+  arm: number;
+  cluster: number;
   system: number;
   planet: number;
   /** Current region index within the planet; in `[0, planet.regionCount)`. */
@@ -43,7 +50,9 @@ export interface PlayerRow {
   credits: number;
   fuel: number;
   cargo_cap: number;
-  sector: number;
+  galaxy: number;
+  arm: number;
+  cluster: number;
   system: number;
   planet: number;
   region: number;

@@ -50,7 +50,7 @@ describe("help usage descriptors (AC#6)", () => {
   it("renders usage strings with <required> and [optional] markers", () => {
     expect(usageLine("mine")).toBe("mine <resource>");
     expect(usageLine("buy")).toBe("buy <item> [qty]");
-    expect(usageLine("warp")).toBe("warp <sector> <system>");
+    expect(usageLine("warp")).toBe("warp <arm> <cluster> <system>");
     expect(usageLine("scan")).toBe("scan");
   });
 });

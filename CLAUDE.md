@@ -472,3 +472,51 @@ gotchas) accrete here as workers surface things worth persisting. See
   works the current region's deposits and depletes per `regionKey`; its abbrev
   domain is the current REGION's minable resources. All region-scan output is
   built by the shared `regionScanFrame` helper in `commands.ts`.
+
+### Load-bearing decisions from `addressing-overhaul`
+
+- **Spatial addressing is now a SIX-tier hierarchy**: `galaxy → arm → cluster →
+  system → planet → region`. `SystemCoord` (in `src/lib/universe/types.ts`) is
+  `{ galaxy, arm, cluster, system }`; `PlanetCoord` adds `planet`; `RegionCoord`
+  adds `region`. **`sector` was RENAMED to `cluster` everywhere** (code, schema,
+  keys). The start location is `(0,0,0,0,0,0)`. `galaxy` is UNBOUNDED (≥ 0,
+  effectively infinite outward — inter-galaxy travel is a LATER, condensate-gated
+  phase; everyone stays in galaxy 0 for now). `cluster`/`system` ≥ 0.
+- **`arm` is a RING within a galaxy**, canonical in `[0, armCount)`. Arm indices
+  WRAP modulo the galaxy's `armCount` (so `warp 13 …` in a 12-arm galaxy lands on
+  arm 1), and arm distance is symmetric around the ring.
+- **`galaxyAt(seed, galaxy) → { index, name, armCount }`** (`gen.ts`): pure &
+  deterministic; `armCount` is `randInt(ARM_COUNT_MIN, ARM_COUNT_MAX)` = `[2, 16]`
+  and VARIES per galaxy. Callers get a galaxy's `armCount` from here.
+- **Keys are 4/5/6-segment** (`gen.ts`): `systemKey` →
+  `"galaxy:arm:cluster:system"`, `planetKey` → +`:planet`, `regionKey` →
+  +`:region`. `parseLocationKey` returns `SystemCoord`/`PlanetCoord`/`RegionCoord`
+  for 4/5/6 segments (old 2/3/4-seg data was migrated, so it no longer parses
+  those). These remain the `world_deltas` (per-region, 6-seg) / `discoveries`
+  (per-planet, 5-seg) keys.
+- **`warpDistance(a, b, armCount)`** (`gen.ts`) now takes `armCount`: different
+  galaxies → `Infinity` (not a warp); same galaxy → a weighted sum
+  `armRing·ARM_SPAN + |Δcluster|·CLUSTER_SPAN + |Δsystem|·SYSTEM_SPAN` where
+  `armRing = min(|Δarm|, armCount − |Δarm|)` (symmetric wrap) and exported spans
+  satisfy `ARM_SPAN(100) ≫ CLUSTER_SPAN(10) ≫ SYSTEM_SPAN(1)`. 0-to-self,
+  symmetric, positive between distinct same-galaxy coords. `map`/`warp` supply
+  `armCount` via `galaxyAt(coord.galaxy).armCount`.
+- **All gen RNG streams seed with the full coord** (`makeRng(seed, "...", galaxy,
+  arm, cluster, system, …)`); the planet/region generation LOGIC (palette,
+  regionCount, deposits, hazard/temperature) is otherwise UNCHANGED — just keyed
+  richer, so different galaxy/arm ⇒ different worlds.
+- **`players` schema** (migration `20260608090000_addressing-overhaul.sql`,
+  forward-only): `sector` RENAMED to `cluster`; `galaxy`/`arm` ADDED (`integer
+  not null default 0`). The migration also (a) recreates the public `leaderboard`
+  view against the six-tier coords, and (b) prefixes existing
+  `world_deltas.location_key` / `discoveries.planet_key` with `0:0:` so prior
+  depletion/discoveries resolve under galaxy 0 / arm 0 (`markets='global'` left
+  alone). Runs exactly once. `Player`/`PlayerRow` + `rowToPlayer` carry
+  `galaxy`/`arm`/`cluster`.
+- **This phase is the SPATIAL MODEL ONLY** — the single `fuel` and
+  `fuelCost(warpDistance(...))` are unchanged. **`warp <arm> <cluster> <system>`**
+  warps within the current galaxy (arm taken mod `armCount`, galaxy fixed);
+  `map` lists arm/cluster/system neighbors + costs and shows the full location +
+  arm count. The fuel split, orbital mechanics, and galaxy jumps are LATER
+  phases. The roadmap (survival, production, fuel, galaxy travel) builds on this
+  six-tier model.
