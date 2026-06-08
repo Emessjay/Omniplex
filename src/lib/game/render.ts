@@ -66,6 +66,27 @@ export function renderHelp(): RenderFrame {
   ]);
 }
 
+/** One enumerated candidate for a resolvable slot. */
+export interface CommandHelpCandidate {
+  label: string;
+  /** The command a click submits, or `null` to render as plain text. */
+  command: string | null;
+  /** Optional annotation shown muted after the token, e.g. a price (`8cr`). */
+  annotation?: string;
+}
+
+/**
+ * A labeled group of candidates within one slot. A `null` label renders the
+ * group inline against the slot's `<placeholder>:` prefix (the single-category
+ * case — visually identical to a plain candidate line). A non-null label (e.g.
+ * `minerals`, `fuel`, `upgrades`) renders the group on its own `label:` line, so
+ * trade commands can separate categories.
+ */
+export interface CommandHelpGroup {
+  label: string | null;
+  candidates: CommandHelpCandidate[];
+}
+
 /** One argument slot's resolved help info (built by the `help` handler). */
 export interface CommandHelpSlotView {
   /** Placeholder label, e.g. `resource`, `sector`, `qty`. */
@@ -74,11 +95,11 @@ export interface CommandHelpSlotView {
   /** Opaque position: show `<name>` + this hint (no enumeration). */
   hint?: string;
   /**
-   * Resolvable position: the live candidates from `argDomain`. Each carries the
-   * command its click submits, or `null` when filling this slot alone wouldn't
-   * form a complete command (so it renders as plain text, not a link).
+   * Resolvable position: the live candidates from `argDomain`, partitioned into
+   * one or more labeled groups. A single `{ label: null }` group is the common
+   * case (mine/craft); trade commands split into category groups with prices.
    */
-  candidates?: { label: string; command: string | null }[];
+  groups?: CommandHelpGroup[];
   /** Resolvable but currently empty: a contextual note (e.g. "nothing minable here"). */
   emptyNote?: string;
 }
@@ -113,8 +134,9 @@ export function renderCommandHelp(view: CommandHelpView): RenderFrame {
 
   for (const slot of view.slots) {
     const placeholder = slot.optional ? `[${slot.name}]` : `<${slot.name}>`;
-    if (slot.candidates) {
-      if (slot.candidates.length === 0) {
+    if (slot.groups) {
+      const nonEmpty = slot.groups.filter((g) => g.candidates.length > 0);
+      if (nonEmpty.length === 0) {
         lines.push(
           line([
             text(`  ${placeholder}: `, "muted"),
@@ -122,16 +144,23 @@ export function renderCommandHelp(view: CommandHelpView): RenderFrame {
           ]),
         );
       } else {
-        const spans: RenderSpan[] = [text(`  ${placeholder}: `, "muted")];
-        slot.candidates.forEach((c, idx) => {
-          if (idx > 0) spans.push(text(" ", "muted"));
-          if (c.command) {
-            spans.push(action(c.label, c.command, { style: "link", title: c.command }));
-          } else {
-            spans.push(text(c.label, "accent"));
-          }
-        });
-        lines.push(line(spans));
+        // One line per group. A null label uses the slot placeholder as the
+        // prefix (single-category case, unchanged); a named label heads its own
+        // line so trade categories read distinctly.
+        for (const group of nonEmpty) {
+          const prefix = group.label === null ? `  ${placeholder}: ` : `  ${group.label}: `;
+          const spans: RenderSpan[] = [text(prefix, "muted")];
+          group.candidates.forEach((c, idx) => {
+            if (idx > 0) spans.push(text(" ", "muted"));
+            if (c.command) {
+              spans.push(action(c.label, c.command, { style: "link", title: c.command }));
+            } else {
+              spans.push(text(c.label, "accent"));
+            }
+            if (c.annotation) spans.push(text(` (${c.annotation})`, "muted"));
+          });
+          lines.push(line(spans));
+        }
       }
     } else {
       // Opaque (free-form / numeric): placeholder + hint, never an enumeration.
