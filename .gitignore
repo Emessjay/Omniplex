@@ -1,0 +1,11 @@
+node_modules/
+.next/
+dist/
+build/
+.env
+.env*.local
+.auditor-state/
+.claude/
+.DS_Store
+*.log
+coverage/
