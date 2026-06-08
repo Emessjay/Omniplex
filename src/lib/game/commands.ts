@@ -14,6 +14,7 @@ import "server-only";
  * throw to the client.
  */
 import type { Player } from "@/lib/players/types";
+import { validateHandle } from "@/lib/players/handle";
 import {
   galaxyAt,
   planetAt,
@@ -582,6 +583,8 @@ async function dispatchResolved(
       return handleBuy(player, args);
     case "who":
       return handleWho();
+    case "rename":
+      return handleRename(player, args);
     default:
       return errorFrame(`Unknown command "${verb}". Type help for the list.`);
   }
@@ -3248,4 +3251,47 @@ async function handleWho(): Promise<RenderFrame> {
     topCredits: topCredits.map((r) => ({ handle: r.handle, credits: r.credits })),
     topDiscoveries,
   });
+}
+
+// ---------------------------------------------------------------------------
+// rename  (set your PUBLIC handle — shown on leaderboards, `who` and bases)
+// ---------------------------------------------------------------------------
+
+async function handleRename(
+  player: Player,
+  args: string[],
+): Promise<RenderFrame> {
+  const requested = args.join(" ").trim();
+  if (requested.length === 0) {
+    return errorFrame("Usage: `rename <username>` — pick a public handle.");
+  }
+
+  // Validate shape first (pure rules; never lets an email/space/'@' through).
+  const validation = validateHandle(requested);
+  if (!validation.ok) {
+    return errorFrame(validation.reason);
+  }
+  const next = validation.value;
+
+  // No-op if it's already your handle (validation lowercases, so compare lower).
+  if (next === player.handle) {
+    return frame([
+      line(text(`Your handle is already "${next}".`, "muted")),
+    ]);
+  }
+
+  // Persist — the UNIQUE constraint rejects a name another player holds.
+  const ok = await world.setHandle(player.id, next);
+  if (!ok) {
+    return errorFrame(`"${next}" — that username is taken. Try another.`);
+  }
+
+  return frame([
+    line([
+      text("Handle updated: ", "success"),
+      text(player.handle, "muted"),
+      text(" → ", "muted"),
+      text(next, "success"),
+    ]),
+  ]);
 }

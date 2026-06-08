@@ -51,6 +51,7 @@ export const VERBS: string[] = [
   "sell",
   "buy",
   "who",
+  "rename",
   "help",
 ];
 
@@ -214,6 +215,12 @@ export const USAGE: Record<string, UsageDescriptor> = {
     ],
   },
   who: { desc: "see the shared-world leaderboards", slots: [] },
+  rename: {
+    desc: "set your public handle (shown on leaderboards, `who` and bases)",
+    slots: [
+      { name: "username", hint: "3–20 letters, digits, dashes or underscores" },
+    ],
+  },
   help: {
     desc: "list commands, or show usage for one",
     slots: [{ name: "command", optional: true, hint: "a command name; see `help`" }],

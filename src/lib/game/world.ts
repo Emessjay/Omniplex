@@ -774,6 +774,29 @@ export async function setHealth(playerId: string, health: number): Promise<void>
 }
 
 /**
+ * Set the player's PUBLIC handle (shown in leaderboard / `who` / bases). Returns
+ * `true` on success, `false` if the handle is already taken — the
+ * `players.handle` UNIQUE constraint surfaces as a 23505, which the `rename`
+ * handler reports as "that username is taken". All other errors throw. The
+ * handler validates the handle's shape (`validateHandle`) before calling.
+ */
+export async function setHandle(
+  playerId: string,
+  handle: string,
+): Promise<boolean> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ handle })
+    .eq("id", playerId);
+  if (error) {
+    if ((error as { code?: string }).code === "23505") return false; // taken
+    throw error;
+  }
+  return true;
+}
+
+/**
  * Set (or clear) the player's combat encounter. `null` ends combat (kill / flee
  * / death); a `{ faunaId, hp }` object starts or updates it. Stored in the
  * nullable `players.encounter` jsonb column.

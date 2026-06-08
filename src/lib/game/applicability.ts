@@ -95,12 +95,15 @@ const DISEMBARKED_ACTIONS = new Set([
 ]);
 
 /**
- * Fabrication / free region navigation usable in EITHER embark state, but NOT in
- * combat. `craft` is fabrication (cook food / make Hyperwarp Condensate, ungated
- * by embark); `jump` is free region navigation. Combat still overrides — you
- * can't slip to another region or step to a workbench mid-fight.
+ * Fabrication / free region navigation / self-service identity usable in EITHER
+ * embark state and at any location, but NOT in combat. `craft` is fabrication
+ * (cook food / make Hyperwarp Condensate, ungated by embark); `jump` is free
+ * region navigation; `rename` sets your public handle (a self-service identity
+ * action — not economy/travel/surface, so it isn't tied to embark or location).
+ * Combat still overrides — you can't slip to another region, step to a workbench,
+ * or fiddle with your callsign mid-fight.
  */
-const ANYTIME_OUT_OF_COMBAT = new Set(["craft", "jump"]);
+const ANYTIME_OUT_OF_COMBAT = new Set(["craft", "jump", "rename"]);
 
 /**
  * `eat` is allowed in EVERY state (including combat) — you can always snack to
