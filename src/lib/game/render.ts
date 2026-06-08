@@ -554,6 +554,8 @@ export interface MapLocation {
   system: number;
   planet: number;
   region: number;
+  /** Hyperwarp Condensate the player owns — drives the galaxy-jump affordance. */
+  condensate?: number;
 }
 
 /**
@@ -580,8 +582,31 @@ export function renderMap(
         "default",
       ),
     ]),
-    line(text("Nearby systems", "heading")),
   ];
+
+  // Galaxy jump (P3): `hyperwarp` consumes a Hyperwarp Condensate to leave this
+  // galaxy. The action reads RED (P9b) when you hold none — clicking it still
+  // returns the helpful "craft one from voidstone" error. The suggested target is
+  // the next galaxy outward; any index ≥ 0 works.
+  const condensate = loc.condensate ?? 0;
+  const canJump = condensate > 0;
+  lines.push(line(text("Galaxy jump", "heading")));
+  lines.push(
+    line([
+      text("Hyperwarp Condensate ", "muted"),
+      text(`×${condensate}   `, canJump ? "accent" : "danger"),
+      action(`hyperwarp ${loc.galaxy + 1}`, `hyperwarp ${loc.galaxy + 1}`, {
+        style: "link",
+        title: canJump
+          ? `jump to galaxy ${loc.galaxy + 1} (consumes one condensate)`
+          : "need Hyperwarp Condensate — craft one from voidstone",
+        disabled: !canJump,
+      }),
+      text("  (any galaxy index ≥ 0; consumes one condensate)", "muted"),
+    ]),
+  );
+
+  lines.push(line(text("Nearby systems", "heading")));
   if (neighbors.length === 0) {
     lines.push(line(text("No charted neighbors in range.", "muted")));
     return frame(lines);

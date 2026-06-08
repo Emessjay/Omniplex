@@ -530,6 +530,38 @@ export async function setWarpFuelAndLocation(
 }
 
 /**
+ * Set the player's GALAXY and full location in one update (hyperwarp — P3). The
+ * ONLY mutator that changes `galaxy`; `warp`/`land` stay within the galaxy. No
+ * fuel is charged here — the Hyperwarp Condensate IS the cost (the handler
+ * consumes it separately). Region resets to 0; the handler supplies the fixed
+ * entry point (arm 0 mod the destination's arm count, cluster/system/planet 0).
+ */
+export async function setGalaxyLocation(
+  playerId: string,
+  loc: {
+    galaxy: number;
+    arm: number;
+    cluster: number;
+    system: number;
+    planet: number;
+  },
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({
+      galaxy: loc.galaxy,
+      arm: loc.arm,
+      cluster: loc.cluster,
+      system: loc.system,
+      planet: loc.planet,
+      region: 0,
+    })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
  * Move within the current system to a new planet index AND set regular fuel in
  * one update (land). Region resets to 0 — landing always puts you down in region
  * 0, even when re-landing the planet you're already on. `land` burns regular

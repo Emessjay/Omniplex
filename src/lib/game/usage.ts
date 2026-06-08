@@ -25,6 +25,7 @@ export const VERBS: string[] = [
   "look",
   "map",
   "warp",
+  "hyperwarp",
   "land",
   "jump",
   "regions",
@@ -99,6 +100,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
       { name: "system", hint: "see `map` for destinations" },
     ],
   },
+  hyperwarp: {
+    desc: "jump to another galaxy (consumes a Hyperwarp Condensate)",
+    slots: [{ name: "galaxy", hint: "a galaxy index ≥ 0 (galaxies are infinite outward)" }],
+  },
   land: {
     desc: "fly to another planet in this system (burns regular fuel)",
     slots: [{ name: "planet", hint: "a planet # in this system; see `scan`" }],
@@ -145,8 +150,8 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   craft: {
-    desc: "cook food from materials (upgrades are now `produce`d)",
-    slots: [{ name: "food", hint: "a food id; see `inventory` / `eat`" }],
+    desc: "cook food, or craft Hyperwarp Condensate (upgrades are now `produce`d)",
+    slots: [{ name: "item", hint: "a food id, or `hyperwarp_condensate`" }],
   },
   eat: {
     desc: "eat a cooked food to restore health",

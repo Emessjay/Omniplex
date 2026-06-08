@@ -20,7 +20,7 @@
  * `craft` (see `FOOD_RECIPES`) and eaten to restore health. It reuses the same
  * `player_materials` storage as everything else.
  */
-export type MaterialCategory = "flora" | "animal" | "relic" | "mineral" | "food";
+export type MaterialCategory = "flora" | "animal" | "relic" | "mineral" | "food" | "consumable";
 
 export interface Material {
   id: string;
@@ -59,6 +59,11 @@ export const MATERIALS: readonly Material[] = [
   { id: "spore_broth", name: "Spore Broth", category: "food", value: 60, heal: 20 },
   { id: "seared_haunch", name: "Seared Haunch", category: "food", value: 70, heal: 35 },
   { id: "field_stew", name: "Field Stew", category: "food", value: 85, heal: 55 },
+  // Consumable — CRAFTED, not found/dropped. Hyperwarp Condensate (P3) is spent
+  // by `hyperwarp <galaxy>` to change galaxies; its recipe is a significant
+  // amount of voidstone (see `galaxy-jump.ts`). Sellable (a `value` above its raw
+  // voidstone cost), but the point is the jump. Stored in `player_materials`.
+  { id: "hyperwarp_condensate", name: "Hyperwarp Condensate", category: "consumable", value: 6000 },
 ] as const;
 
 const BY_ID: ReadonlyMap<string, Material> = new Map(MATERIALS.map((m) => [m.id, m]));
@@ -133,11 +138,12 @@ export function foodRecipeOf(id: string): Record<string, number> {
 
 /**
  * Materials that turn up when SCAVENGING: flora, unusual minerals, and rare
- * relics. Excludes animal parts (those only come from kills) AND food (which is
- * cooked, never found).
+ * relics. Excludes animal parts (those only come from kills), food (which is
+ * cooked, never found) AND consumables like Hyperwarp Condensate (crafted, never
+ * found).
  */
 export const SCAVENGEABLE: readonly Material[] = MATERIALS.filter(
-  (m) => m.category !== "animal" && m.category !== "food",
+  (m) => m.category !== "animal" && m.category !== "food" && m.category !== "consumable",
 );
 
 /** Probability a scavenge turns up a (high-value) relic rather than a common find. */

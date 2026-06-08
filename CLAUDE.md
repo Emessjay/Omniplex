@@ -967,3 +967,51 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **For P3 (galaxy jump):** consumes Hyperwarp Condensate and may also draw warp
   fuel; cross-galaxy `warpDistance` is `Infinity` so such warps are simply not
   offered until P3 adds the condensate path.
+
+### Load-bearing decisions from `galaxy-jump`
+
+- **P3 closes the exploration track: `hyperwarp <galaxy>` is the ONLY command
+  that changes `players.galaxy`.** Normal `warp` stays within-galaxy (cross-galaxy
+  `warpDistance` is `Infinity`, so `map`/`warp` never offer it). Embarked-only
+  (joined `EMBARKED_ONLY` alongside `warp`/`land`/`buy`/`sell`). **NO migration** —
+  the `galaxy` column exists (P1) and the condensate lives in `player_materials`
+  (no new table, no DB seed; material ids are free-text/code catalog).
+- **Hyperwarp Condensate is a CONSUMABLE material** — a new
+  `MaterialCategory: "consumable"` (`materials.ts`), id `hyperwarp_condensate`,
+  stored in `player_materials` like food. It is **manual-`craft`** (the
+  consumables — food, condensate — are manual-craft; parts/upgrades are
+  production-line `produce`). **Excluded from `SCAVENGEABLE`** (alongside
+  `animal`/`food`): crafted, never found/dropped. Sellable (value 6000, above its
+  raw voidstone cost) but the point is the jump.
+- **Recipe is voidstone, a mined RESOURCE in CARGO** — not a material. Pure rules
+  live in `src/lib/game/galaxy-jump.ts`: `CONDENSATE_RECIPE = { voidstone: 10 }`
+  (tunable, "significant"; voidstone is rarity-5 savage-world-only, gating galaxy
+  travel behind deep exploration), `HYPERWARP_CONDENSATE_ID`, and
+  `canHyperwarp(condensateOwned, fromGalaxy, toGalaxy)` →
+  `{ok:true} | {ok:false, reason:"no-condensate"|"same-galaxy"}` (condensate check
+  FIRST — the more actionable message). Module is PURE (no IO/`Date`/`Math.random`).
+  Seeded contract: `galaxy-jump.test.ts`.
+- **`craft hyperwarp_condensate`** (`handleCraftCondensate`): `craft`'s arg is
+  opaque, so `handleCraft` resolves the prefix itself against
+  `[...FOOD_IDS, HYPERWARP_CONDENSATE_ID]` (foods + condensate abbreviate
+  handler-side; `craft hyp` works). Unlike cooking (consumes `player_materials`),
+  this validates `canCraft(cargo, CONDENSATE_RECIPE)` against the CARGO hold, then
+  `removeInventory(voidstone)` + `addPlayerMaterial(condensate, +1)`. Ungated by
+  embark (like all crafting). Shortfall → clear error, nothing consumed.
+- **`hyperwarp <galaxy>`** (`handleHyperwarp`, opaque numeric arg): validates
+  `target ≥ 0`, reads the LIVE condensate count, gates via `canHyperwarp` BEFORE
+  mutating. On success: `addPlayerMaterial(condensate, -1)` then the new
+  `world.setGalaxyLocation(id, {galaxy, arm, cluster:0, system:0, planet:0})`
+  (region→0) — the **fixed entry point** is arm `0 % destGalaxy.armCount` (always
+  0), cluster/system/planet/region 0. **NO fuel charge** — the condensate IS the
+  cost. `setGalaxyLocation` is the ONLY `galaxy`-changing mutator (mirrors
+  `setWarpFuelAndLocation` minus fuel). Reports arrival (new galaxy name + arm
+  count from `galaxyAt`) and scans the entry region.
+- **Surfacing** (P9b red-action convention): `map` gained a "Galaxy jump" section
+  showing the condensate count and a `hyperwarp <galaxy+1>` action that reads RED
+  (`disabled`) when the player holds none — clicking it still returns the helpful
+  "craft one from voidstone" error. `MapLocation.condensate` carries the count
+  (`handleMap` fetches `getPlayerMaterials`). Condensate count is also visible in
+  `inventory` automatically (it's a material). `help`/abbrev/usage parity intact
+  (`hyperwarp` in `VERBS`+`USAGE`, opaque `<galaxy>` slot).
+- **This COMPLETES the exploration/survival/production mega-roadmap.**

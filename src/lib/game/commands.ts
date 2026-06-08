@@ -93,6 +93,11 @@ import {
   pickForBiome,
 } from "./wildlife";
 import {
+  CONDENSATE_RECIPE,
+  HYPERWARP_CONDENSATE_ID,
+  canHyperwarp,
+} from "./galaxy-jump";
+import {
   BASE_BUILD_COST,
   BASE_BUILD_CREDITS,
   BASE_BUILD_MINERALS,
@@ -405,7 +410,7 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
  * Commands that require being ABOARD the ship: the economy and ship travel.
  * Attempting them on foot is blocked with a message naming the fix (`embark`).
  */
-const EMBARKED_ONLY = new Set(["buy", "sell", "warp", "land"]);
+const EMBARKED_ONLY = new Set(["buy", "sell", "warp", "hyperwarp", "land"]);
 
 /**
  * Commands that require being ON FOOT in the region: surface work (mining and
@@ -441,6 +446,8 @@ async function dispatchResolved(
       return handleMap(player, seed);
     case "warp":
       return handleWarp(player, seed, args);
+    case "hyperwarp":
+      return handleHyperwarp(player, seed, args);
     case "land":
       return handleLand(player, seed, args);
     case "jump":
@@ -797,7 +804,13 @@ function neighborCandidates(current: SystemCoord, armCount: number): SystemCoord
 async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
   const current = systemOf(player);
   const galaxy = galaxyAt(seed, current.galaxy);
-  const discovered = await world.discoveredSystemKeys();
+  const [discovered, materials] = await Promise.all([
+    world.discoveredSystemKeys(),
+    world.getPlayerMaterials(player.id),
+  ]);
+  // Condensate count drives the `hyperwarp` affordance (red when you have none).
+  const condensate =
+    materials.find((m) => m.materialId === HYPERWARP_CONDENSATE_ID)?.qty ?? 0;
   const neighbors: MapNeighbor[] = neighborCandidates(current, galaxy.armCount)
     .map((coord) => {
       const sys = systemAt(seed, coord);
@@ -823,6 +836,7 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
     system: current.system,
     planet: player.planet,
     region: player.region,
+    condensate,
   });
 }
 
@@ -888,6 +902,75 @@ async function handleWarp(
     line([
       text(`Warped to ${destSystem.name}. `, "success"),
       text(`−${cost} warp fuel (${newWarpFuel} left).`, "muted"),
+    ]),
+    ...scan.lines,
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// hyperwarp — the ONLY command that changes `galaxy` (P3). Consumes one
+// Hyperwarp Condensate to jump to another galaxy, landing at a fixed entry
+// point. Embarked-only (gated in `dispatchResolved`). Cross-galaxy `warpDistance`
+// is Infinity, so normal `warp` never offers this — the condensate path is it.
+// ---------------------------------------------------------------------------
+
+/**
+ * `hyperwarp <galaxy>` — jump to galaxy index `<galaxy>` (any non-negative
+ * integer; galaxies are infinite outward). Requires being embarked (gated
+ * upstream), owning ≥1 Hyperwarp Condensate, and a target different from the
+ * current galaxy. Validates ALL of that BEFORE mutating: a refusal consumes
+ * nothing and leaves the player put. On success it consumes one condensate, then
+ * relocates to the destination's fixed entry point — arm 0 (mod the destination
+ * galaxy's arm count), cluster 0, system 0, planet 0, region 0 — with NO fuel
+ * charge (the condensate is the cost). Reports arrival (new galaxy + arm count)
+ * and scans the entry region.
+ */
+async function handleHyperwarp(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const target = toInt(args[0]);
+  if (target === null || target < 0) {
+    return errorFrame("Usage: hyperwarp <galaxy>  (a galaxy index ≥ 0, e.g. hyperwarp 1)");
+  }
+
+  // Gate on a LIVE condensate count + distinct-galaxy. Validate before mutating.
+  const materials = await world.getPlayerMaterials(player.id);
+  const owned = materials.find((m) => m.materialId === HYPERWARP_CONDENSATE_ID)?.qty ?? 0;
+  const gate = canHyperwarp(owned, player.galaxy, target);
+  if (!gate.ok) {
+    if (gate.reason === "no-condensate") {
+      return errorFrame(
+        "You need a Hyperwarp Condensate to jump galaxies — `craft hyperwarp_condensate` from voidstone first.",
+      );
+    }
+    return errorFrame(
+      `You're already in galaxy ${player.galaxy}. Pick a different galaxy index.`,
+    );
+  }
+
+  // Consume the condensate, then relocate to the destination's fixed entry
+  // point. Arm wraps into the destination galaxy's ring (arm 0 always valid).
+  await world.addPlayerMaterial(player.id, HYPERWARP_CONDENSATE_ID, -1);
+  const destGalaxy = galaxyAt(seed, target);
+  const arm = 0 % destGalaxy.armCount; // always 0 — explicit about the ring wrap.
+  const arrivalCoord: PlanetCoord = {
+    galaxy: target,
+    arm,
+    cluster: 0,
+    system: 0,
+    planet: 0,
+  };
+  await world.setGalaxyLocation(player.id, arrivalCoord);
+
+  const remaining = owned - 1;
+  const scan = await regionScanFrame(player, seed, arrivalCoord, 0);
+  return frame([
+    line([
+      text(`Hyperwarp engaged — you tear into ${destGalaxy.name}. `, "success"),
+      text(`Galaxy ${target} (${destGalaxy.armCount} arms). `, "default"),
+      text(`Condensate spent (${remaining} left).`, "muted"),
     ]),
     ...scan.lines,
   ]);
@@ -1467,17 +1550,68 @@ async function handleCraft(player: Player, args: string[]): Promise<RenderFrame>
     );
   }
 
-  // `craft` only cooks food now (from MATERIAL ingredients in player_materials).
-  // The arg is opaque, so resolve a food id / unique prefix handler-side (foods
-  // still abbreviate: `craft ber` → the berry dish).
-  const fr = resolveToken(target, [...FOOD_IDS]);
+  // `craft` cooks food (from MATERIAL ingredients in player_materials) and crafts
+  // Hyperwarp Condensate (from voidstone in CARGO — P3). The arg is opaque, so
+  // resolve a food / condensate id / unique prefix handler-side (these still
+  // abbreviate: `craft ber` → the berry dish, `craft hyp` → the condensate).
+  const fr = resolveToken(target, [...FOOD_IDS, HYPERWARP_CONDENSATE_ID]);
   if (!fr.ok) {
     if (fr.reason === "ambiguous") {
-      return errorFrame(`Ambiguous food '${target}' — did you mean: ${fr.matches.join(", ")}?`);
+      return errorFrame(`Ambiguous item '${target}' — did you mean: ${fr.matches.join(", ")}?`);
     }
-    return errorFrame(`Can't craft "${target}". \`craft\` cooks food; upgrades are \`produce\`d.`);
+    return errorFrame(
+      `Can't craft "${target}". \`craft\` cooks food or makes Hyperwarp Condensate; upgrades are \`produce\`d.`,
+    );
   }
+  if (fr.value === HYPERWARP_CONDENSATE_ID) return handleCraftCondensate(player);
   return handleCookFood(player, fr.value);
+}
+
+/**
+ * Craft one Hyperwarp Condensate (P3) — the consumable that powers `hyperwarp`.
+ * Unlike cooking (which draws on `player_materials`), its recipe is voidstone, a
+ * mined RESOURCE that lives in the ship's CARGO hold — so this validates
+ * `CONDENSATE_RECIPE` against the inventory with `canCraft` BEFORE mutating, then
+ * consumes the voidstone from cargo (`removeInventory`) and grants one condensate
+ * into `player_materials` (`addPlayerMaterial(+1)`). A shortfall errors with
+ * nothing consumed. Ungated by embark state, like all crafting.
+ */
+async function handleCraftCondensate(player: Player): Promise<RenderFrame> {
+  const recipe = CONDENSATE_RECIPE;
+
+  const stacks = await world.getInventory(player.id);
+  const have: Record<string, number> = {};
+  for (const s of stacks) have[s.resourceId] = s.qty;
+
+  if (!canCraft(have, recipe)) {
+    const missing = Object.entries(recipe)
+      .filter(([rid, qty]) => (have[rid] ?? 0) < qty)
+      .map(([rid, qty]) => `${getResource(rid).name} ${have[rid] ?? 0}/${qty}`);
+    return errorFrame(
+      `Can't craft Hyperwarp Condensate — short on ${missing.join(", ")}. Mine voidstone on savage worlds.`,
+    );
+  }
+
+  // Consume voidstone from cargo, then grant the condensate.
+  for (const [rid, qty] of Object.entries(recipe)) {
+    await world.removeInventory(player.id, rid, qty);
+  }
+  const owned = await world.addPlayerMaterial(player.id, HYPERWARP_CONDENSATE_ID, 1);
+
+  const consumed = Object.entries(recipe)
+    .map(([rid, qty]) => `${qty} ${getResource(rid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text("Crafted Hyperwarp Condensate. ", "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`You now hold ${owned}.`, "accent"),
+    ]),
+    line([
+      text("`embark` then `hyperwarp <galaxy>` ", "muted"),
+      text("to jump to another galaxy (one condensate per jump).", "muted"),
+    ]),
+  ]);
 }
 
 /**
