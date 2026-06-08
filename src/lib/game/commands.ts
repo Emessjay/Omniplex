@@ -62,7 +62,9 @@ import {
   errorFrame,
   type MapNeighbor,
   type CommandHelpSlotView,
+  type CommandHelpGroup,
 } from "./render";
+import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import * as world from "./world";
 
 /** Strict integer parse: returns null for missing/non-integer tokens. */
@@ -277,6 +279,11 @@ async function handleHelp(
   const ctx = await loadArgDomainContext(player, seed, verb);
   const spec = buildResolveSpec(ctx);
 
+  // Trade commands annotate their candidates with live prices; fetch the drifted
+  // market prices once (the candidate SET still comes from `argDomain`).
+  const isTrade = verb === "buy" || verb === "sell";
+  const prices = isTrade ? await world.getMarketPrices() : null;
+
   const slots: CommandHelpSlotView[] = usage.slots.map((slot, i) => {
     const domain = spec.argDomain(verb, i, []);
     if (domain === null) {
@@ -287,18 +294,79 @@ async function handleHelp(
     // command (no earlier arg required, every later slot optional).
     const laterAllOptional = usage.slots.slice(i + 1).every((s) => s.optional);
     const clickable = i === 0 && laterAllOptional;
+    const groups =
+      isTrade && prices
+        ? tradeSlotGroups(verb, domain, prices, clickable)
+        : [
+            {
+              // Single, unlabeled category (mine/craft): renders as one line
+              // against the `<placeholder>:` prefix, exactly as before.
+              label: null,
+              candidates: domain.map((c) => ({
+                label: c,
+                command: clickable ? `${verb} ${c}` : null,
+              })),
+            } satisfies CommandHelpGroup,
+          ];
     return {
       name: slot.name,
       optional: !!slot.optional,
-      candidates: domain.map((c) => ({
-        label: c,
-        command: clickable ? `${verb} ${c}` : null,
-      })),
+      groups,
       emptyNote: domain.length === 0 ? emptyDomainNote(verb) : undefined,
     };
   });
 
   return renderCommandHelp({ verb, usage: usageLine(verb), desc: usage.desc, slots });
+}
+
+/**
+ * Build the labeled, price-annotated groups for a `buy`/`sell` argument from its
+ * (already `argDomain`-sourced) candidate ids. Grouping is the pure
+ * `groupTradeCandidates`; this layers the live prices on top:
+ *   - buy: fuel = `FUEL_PRICE_PER_UNIT`; minerals = `buyUnitCost(price)`;
+ *     upgrades = `buyUnitCost(upgradeValue)`.
+ *   - sell: minerals = current market price; upgrades = `upgradeValue`; the
+ *     `all` token carries no price.
+ */
+function tradeSlotGroups(
+  verb: "buy" | "sell",
+  domain: string[],
+  prices: Record<string, number>,
+  clickable: boolean,
+): CommandHelpGroup[] {
+  return groupTradeCandidates(domain).map((g) => ({
+    label: g.category,
+    candidates: g.ids.map((id) => ({
+      label: id,
+      command: clickable ? `${verb} ${id}` : null,
+      annotation: tradeAnnotation(verb, id, g.category, prices),
+    })),
+  }));
+}
+
+/** The credit-per-unit annotation for one trade candidate (undefined for `all`). */
+function tradeAnnotation(
+  verb: "buy" | "sell",
+  id: string,
+  category: TradeCategory,
+  prices: Record<string, number>,
+): string | undefined {
+  switch (category) {
+    case "everything":
+      return undefined; // the `all` token has no single price
+    case "fuel":
+      return creditLabel(FUEL_PRICE_PER_UNIT);
+    case "upgrades": {
+      const value = upgradeValue(id);
+      return creditLabel(verb === "buy" ? buyUnitCost(value) : value);
+    }
+    case "minerals": {
+      // markets seed every resource at base_value, so a row is expected; fall
+      // back to base value defensively so help always shows a number.
+      const price = prices[id] ?? getResource(id).baseValue;
+      return creditLabel(verb === "buy" ? buyUnitCost(price) : price);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

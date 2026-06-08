@@ -371,3 +371,25 @@ gotchas) accrete here as workers surface things worth persisting. See
   null → a `<placeholder>` + the slot's `hint`. Rendering is
   `renderCommandHelp(CommandHelpView)` in `render.ts` (pure; handler computes
   candidates/clickability, renderer stays dumb).
+
+### Load-bearing decisions from `help-trade-clarity`
+
+- **Grouped + price-annotated help** for trade commands. A resolvable help
+  slot's candidates are now `CommandHelpGroup[]` (in `render.ts`): each group
+  has a `label` (`null` = the single-category case, rendered inline against the
+  `<placeholder>:` prefix exactly as before; a string = its own `label:` line)
+  and `CommandHelpCandidate[]` (each `{ label, command, annotation? }`, the
+  annotation shown muted as `(<n>cr)` after the clickable token). mine/craft
+  stay one `{label:null}` group (visually unchanged).
+- **`help buy`/`help sell`** keep sourcing the candidate SET from the SAME
+  `argDomain` the parser uses (no-drift guarantee), then layer grouping +
+  pricing on top in `handleHelp`. Grouping is the pure `groupTradeCandidates`
+  in `src/lib/game/trade-help.ts` (`tradeCategoryOf`: `fuel`→fuel, `all`→
+  everything, `isUpgradeId`→upgrades, else minerals; fixed group order;
+  unit-tested in `trade-help.test.ts`). Prices come from ONE `getMarketPrices`
+  call: buy = `buyUnitCost(price)` / `buyUnitCost(upgradeValue)` /
+  `FUEL_PRICE_PER_UNIT`; sell = market price / `upgradeValue`; `all` carries no
+  price. Credit format is `creditLabel(n)` = `<n>cr`.
+- **Reuse for future trade-like commands**: build groups via
+  `groupTradeCandidates` + `creditLabel`; single-category commands just pass one
+  `{label:null}` group and render identically to the old single line.
