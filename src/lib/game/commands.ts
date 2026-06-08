@@ -34,6 +34,7 @@ import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
 import { VERBS, USAGE, usageLine } from "./usage";
+import { isApplicable, type PlayerStateView } from "./applicability";
 import { getWorldSeed } from "./seed";
 import {
   effectiveAbundance,
@@ -406,19 +407,30 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   return result;
 }
 
-/**
- * Commands that require being ABOARD the ship: the economy and ship travel.
- * Attempting them on foot is blocked with a message naming the fix (`embark`).
- */
-const EMBARKED_ONLY = new Set(["buy", "sell", "warp", "hyperwarp", "land"]);
+/** The minimal player-state slice the unified applicability model reads. */
+function playerState(player: Player): PlayerStateView {
+  return { embarked: player.embarked, inCombat: player.encounter != null };
+}
 
 /**
- * Commands that require being ON FOOT in the region: surface work (mining and
- * the P5 exploration/combat loop). Attempting them from the ship is blocked with
- * a message naming the fix (`disembark`). `attack`/`flee` additionally require an
- * active encounter — their handlers check that after this gate.
+ * The contextual reason a (resolved, non-applicable) verb can't run right now —
+ * derived from the SAME state buckets `isApplicable` uses, so the message always
+ * matches why help omitted it. Combat is checked first (it overrides
+ * everything); then the combat-only verbs out of combat; then the no-op embark
+ * toggles; finally the embark-state split.
  */
-const DISEMBARKED_ONLY = new Set(["mine", "explore", "harvest", "attack", "flee", "build"]);
+function inapplicableReason(verb: string, state: PlayerStateView): string {
+  if (state.inCombat) {
+    return "You're in combat — `attack`, `flee`, or `eat` your way out.";
+  }
+  if (verb === "attack" || verb === "flee") {
+    return "Nothing to fight here — `explore` to find creatures.";
+  }
+  if (verb === "embark") return "You're already aboard your ship.";
+  if (verb === "disembark") return "You're already on the surface.";
+  if (!state.embarked) return "You must `embark` your ship first.";
+  return "You must `disembark` onto the surface first.";
+}
 
 /** Dispatch an already-resolved (canonical verb, expanded args) command. */
 async function dispatchResolved(
@@ -427,13 +439,15 @@ async function dispatchResolved(
   verb: string,
   args: string[],
 ): Promise<RenderFrame> {
-  // Embark-state gating: the economy/flying need the ship; mining needs to be
-  // on the surface. Each error names the command that fixes the state.
-  if (EMBARKED_ONLY.has(verb) && !player.embarked) {
-    return errorFrame("You must `embark` your ship first.");
-  }
-  if (DISEMBARKED_ONLY.has(verb) && player.embarked) {
-    return errorFrame("You must `disembark` onto the surface first.");
+  // Unified applicability gate: informational commands are usable in every
+  // state; everything else must be applicable in the player's current state
+  // (embark + combat). The set rejected here is EXACTLY the set the no-arg
+  // `help` omits — both consult `isApplicable`, so "shown" ⇔ "usable". The
+  // older finer errors (e.g. `attack` with no encounter) still live in the
+  // handlers and stay consistent with this gate.
+  const state = playerState(player);
+  if (!isApplicable(verb, state)) {
+    return errorFrame(inapplicableReason(verb, state));
   }
 
   switch (verb) {
@@ -537,7 +551,10 @@ async function handleHelp(
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
-  if (args.length === 0) return renderHelp();
+  // No-arg `help` is now CONTEXT-AWARE: list only the verbs applicable in the
+  // player's current state (the same predicate the dispatch gate uses).
+  const state = playerState(player);
+  if (args.length === 0) return renderHelp(state);
 
   const targetRaw = args[0]!;
   const res = resolveToken(targetRaw, VERBS);
@@ -608,7 +625,13 @@ async function handleHelp(
     };
   });
 
-  return renderCommandHelp({ verb, usage: usageLine(verb), desc: usage.desc, slots });
+  const helpFrame = renderCommandHelp({ verb, usage: usageLine(verb), desc: usage.desc, slots });
+  // `help <command>` still fully describes the command, but notes when it isn't
+  // usable right now (and why) — consistent with the no-arg list omitting it.
+  if (!isApplicable(verb, state)) {
+    return frame([...helpFrame.lines, line(text(`  (${inapplicableReason(verb, state)})`, "muted"))]);
+  }
+  return helpFrame;
 }
 
 /**
@@ -2029,7 +2052,8 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
 
 /**
  * `deposit <item> [qty]` — move a resource from your ship cargo into this
- * region's base storage. Requires a base here; either embark state is fine.
+ * region's base storage. Requires a base here; disembarked-only (a surface/base
+ * action, gated in `dispatchResolved` via the unified applicability model).
  * Bounded by what you hold AND remaining storage capacity. With no `qty`,
  * deposits as much as fits. Atomic: `add_inventory(-)` then `add_base_storage(+)`.
  */
@@ -2159,8 +2183,8 @@ async function handleWithdraw(
  * — clamped to the base's remaining storage capacity. The collected ore is added
  * to storage AND written back as per-region depletion (`recordDepletion`), so
  * excavation drains the SHARED region exactly like manual mining (others see
- * less; regen slowly refills). Each excavator's clock advances to now. Either
- * embark state is fine — it's your base.
+ * less; regen slowly refills). Each excavator's clock advances to now.
+ * Disembarked-only (a surface/base action, gated in `dispatchResolved`).
  */
 async function handleCollect(player: Player, seed: string): Promise<RenderFrame> {
   const coord = locOf(player);
@@ -2269,8 +2293,9 @@ async function handleCollect(player: Player, seed: string): Promise<RenderFrame>
  * must be present in THIS base's silo storage. Consumes the inputs from base
  * storage and banks the produced part(s) into the same storage, bounded by the
  * remaining `baseCapacity`. Validation (line exists, inputs siloed, capacity)
- * happens BEFORE any mutation, so a failed produce changes nothing. Either
- * embark state is fine — it's your base (matches `deposit`/`withdraw`/`collect`).
+ * happens BEFORE any mutation, so a failed produce changes nothing.
+ * Disembarked-only (a surface/base action, gated in `dispatchResolved`, like
+ * `deposit`/`withdraw`/`collect`).
  *
  * Production is INSTANT for now (no timer). A future enhancement could meter it
  * over time like excavator drain (lastProducedAt + a per-ms rate).

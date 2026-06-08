@@ -1015,3 +1015,57 @@ gotchas) accrete here as workers surface things worth persisting. See
   `inventory` automatically (it's a material). `help`/abbrev/usage parity intact
   (`hyperwarp` in `VERBS`+`USAGE`, opaque `<galaxy>` slot).
 - **This COMPLETES the exploration/survival/production mega-roadmap.**
+
+### Load-bearing decisions from `context-help`
+
+- **ONE applicability model is the single source of truth for both context-aware
+  `help` AND the dispatch gate** — "shown in `help`" ⇔ "usable right now" can
+  never drift (the same single-source pattern as arg domains + the verb
+  registry). It lives in `src/lib/game/applicability.ts` (PURE — no IO, no
+  `server-only`): `isApplicable(verb, state)` + `applicableVerbs(state, verbs?)`
+  over `PlayerStateView = { embarked: boolean; inCombat: boolean }` (`inCombat =
+  player.encounter != null`). This REPLACED the scattered `EMBARKED_ONLY` /
+  `DISEMBARKED_ONLY` sets and the ad-hoc combat checks in `commands.ts` — there
+  is NO parallel gating logic anymore.
+- **State buckets** (each verb lives in exactly ONE; that placement decides both
+  help-visibility and dispatch-acceptance):
+  - **INFORMATIONAL** (always, every state incl. combat): `help`, `scan`,
+    `map`, `inventory`, `upgrades`, `who`, `bases`, `regions`, `storage` (+ the
+    `look`/`base` aliases, which follow their canonical informational verb).
+  - **COMBAT_ONLY** (iff `inCombat`): `attack`, `flee`.
+  - **EMBARKED_ACTIONS** (iff `embarked && !inCombat`): `buy`, `sell`, `warp`,
+    `land`, `hyperwarp`, `disembark`.
+  - **DISEMBARKED_ACTIONS** (iff `!embarked && !inCombat`): `mine`, `explore`,
+    `harvest`, `build`, `produce`, `collect`, `deposit`, `withdraw`, `embark`.
+    NOTE: `produce`/`collect`/`deposit`/`withdraw` are now DISEMBARKED-only
+    (they were ungated "it's your base" before P10) — viewing the base
+    (`storage`) stays informational, but ACTING on it requires being on foot.
+  - **ANYTIME_OUT_OF_COMBAT** (either embark state, but NOT combat): `craft`
+    (fabrication — cook food / make condensate), `jump` (free region nav; combat
+    must not let you slip away).
+  - **`eat`** is in the ALWAYS set (usable in every state incl. combat — you can
+    always snack to heal).
+- **Combat overrides everything**: while `inCombat`, only `attack`/`flee`/`eat`
+  (+ informational) are applicable; all surface/economy/travel/base verbs are
+  hidden in `help` and rejected by dispatch.
+- **`renderHelp(state)`** (now takes state) lists `applicableVerbs(state)` minus
+  aliases, preserving `VERBS` display order — still GENERATED from the registry,
+  just state-filtered. **`handleHelp` threads `playerState(player)`**; the
+  no-arg list is context-aware, and `help <command>` still fully describes any
+  command but appends a muted `(<reason>)` note when it isn't usable now.
+- **Dispatch gate** (`dispatchResolved`): `if (!isApplicable(verb, state))
+  return errorFrame(inapplicableReason(verb, state))`. `inapplicableReason`
+  derives the message from the SAME buckets (in-combat → "`attack`, `flee`, or
+  `eat`"; combat verbs out of combat → "nothing to fight"; `embark`/`disembark`
+  no-ops → "already aboard/on the surface"; else must-embark / must-disembark).
+  Finer handler-level errors (e.g. `attack` with a stale encounter) still live
+  in the handlers and stay CONSISTENT with the gate. You can still TYPE/abbrev
+  any verb — inapplicable ones get the contextual rejection.
+- **Parity is locked per-state** in `help-args.test.ts` (updated): for
+  embarked/disembarked/combat, the `help`-listed set === applicable non-alias
+  verbs, bidirectionally, and every listed verb is `isApplicable`. The seeded
+  `context-help.test.ts` locks the `isApplicable`/`applicableVerbs` matrix.
+- **Future commands declare applicability HERE**: add the verb to exactly one
+  bucket in `applicability.ts` (alongside its `VERBS`+`USAGE` registration and
+  `argDomain`/handler) — help-visibility and dispatch-gating both follow
+  automatically.

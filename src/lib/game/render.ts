@@ -13,7 +13,8 @@ import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { effectiveAbundance, warpFuelCost, FREEZING_C, BOILING_C } from "./rules";
 import { UPGRADES, getUpgrade } from "./upgrades";
-import { VERBS, USAGE, usageLine } from "./usage";
+import { USAGE, usageLine } from "./usage";
+import { applicableVerbs, type PlayerStateView } from "./applicability";
 
 /** Human description of what owning an upgrade lets you do (UI text only). */
 function capabilityOf(upgradeId: string): string {
@@ -37,20 +38,21 @@ export function noticeFrame(message: string): RenderFrame {
 }
 
 /**
- * The full command list, GENERATED from the single command registry
- * (`VERBS` + `USAGE`) so it can never drift from what the dispatcher actually
- * accepts: every dispatchable verb appears here automatically, and removing one
- * removes its help line. There is intentionally no hardcoded command array.
+ * The CONTEXT-AWARE command list: lists exactly the verbs applicable in the
+ * player's current `state` (`applicableVerbs`), so "shown in `help`" ⇔ "usable
+ * right now" — help and the dispatch gate read the SAME applicability predicate
+ * and can never drift. The set narrows by state (economy/travel aboard,
+ * surface/base on foot, only attack/flee/eat in combat, informational always).
  *
- * Order follows `VERBS` (the abbreviation vocabulary), which is also the only
- * place a command's display position is recorded — there's no second order list
- * to forget a command in. Aliases (e.g. `look` → `scan`) are skipped so the same
- * capability isn't listed twice; they still resolve and have their own
- * `help <alias>`. Each line shows the canonical `usageLine(verb)` as a clickable
- * token plus the verb's one-line `desc`.
+ * Still GENERATED from the single command registry — `applicableVerbs` filters
+ * `VERBS`, preserving its order (the only place a command's display position is
+ * recorded; no second order list to forget a command in). Aliases (e.g. `look` →
+ * `scan`) are skipped so the same capability isn't listed twice; they still
+ * resolve and have their own `help <alias>`. Each line shows the canonical
+ * `usageLine(verb)` as a clickable token plus the verb's one-line `desc`.
  */
-export function renderHelp(): RenderFrame {
-  const verbs = VERBS.filter((verb) => !USAGE[verb]?.alias);
+export function renderHelp(state: PlayerStateView): RenderFrame {
+  const verbs = applicableVerbs(state).filter((verb) => !USAGE[verb]?.alias);
   return frame([
     line(text("Omniplex — commands", "heading")),
     ...verbs.map((verb) => {
@@ -363,8 +365,9 @@ export function renderScan(view: ScanView): RenderFrame {
 
   // Deposits (this region) with effective (post-depletion) abundance. A `mine`
   // action is shown disabled (red) when the player can't mine right now — using
-  // the SAME gates the `mine` command enforces: you must be on foot
-  // (DISEMBARKED_ONLY) and, on a hostile surface, hold the landing gear.
+  // the SAME gates the `mine` command enforces: you must be on foot (`mine` is a
+  // DISEMBARKED action in the applicability model) and, on a hostile surface,
+  // hold the landing gear.
   const mineBlocked =
     view.embarked || (!!view.requiredUpgrade && view.hasRequiredUpgrade === false);
   if (region.deposits.length === 0) {
