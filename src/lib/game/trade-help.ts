@@ -9,17 +9,20 @@
  * and turns these groups into the `CommandHelpGroup` view the renderer draws.
  */
 import { isUpgradeId } from "./upgrades";
+import { isPartId } from "./parts";
 
 /**
  * Which help group a `buy`/`sell` candidate belongs to. Categorize by id, the
  * same rule the spec mandates: `fuel` → fuel; `all` → its own "everything"
- * token; a known upgrade id → upgrades; anything else → a mineral.
+ * token; a known part id → parts (a tradeable commodity, P12b); a known upgrade
+ * id → upgrades; anything else → a mineral.
  */
-export type TradeCategory = "fuel" | "minerals" | "upgrades" | "everything";
+export type TradeCategory = "fuel" | "minerals" | "parts" | "upgrades" | "everything";
 
 export function tradeCategoryOf(id: string): TradeCategory {
   if (id === "fuel" || id === "warpfuel") return "fuel";
   if (id === "all") return "everything";
+  if (isPartId(id)) return "parts";
   if (isUpgradeId(id)) return "upgrades";
   return "minerals";
 }
@@ -28,6 +31,7 @@ export function tradeCategoryOf(id: string): TradeCategory {
 const CATEGORY_ORDER: readonly TradeCategory[] = [
   "fuel",
   "minerals",
+  "parts",
   "upgrades",
   "everything",
 ];

@@ -701,6 +701,11 @@ export interface InventoryView {
    * Food materials also carry a `heal` (HP restored by `eat`).
    */
   materials?: { materialId: string; qty: number; name: string; value: number; heal?: number }[];
+  /**
+   * Ship parts carried in the parts store (P12b) — tradeable + depositable, no
+   * cargo cost. Listed with name + fixed sell value, like materials.
+   */
+  parts?: { partId: string; qty: number; name: string; value: number }[];
   cargoUsed: number;
   cargoCap: number;
   credits: number;
@@ -785,6 +790,31 @@ export function renderInventory(view: InventoryView): RenderFrame {
         }),
       );
       lines.push(line(spans));
+    }
+  }
+
+  // Ship parts (tradeable commodity; not in the resource hold). Listed only when
+  // held — each shows its fixed value with a `sell` action and a `deposit` hint.
+  const parts = view.parts ?? [];
+  if (parts.length > 0) {
+    lines.push(line(text("Ship parts (sell at a market, or `deposit` to a base silo):", "heading")));
+    for (const p of parts) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${p.name} ×${p.qty}  `, "default"),
+          text(`@ ${p.value}/u  `, "muted"),
+          action(`sell ${p.partId}`, `sell ${p.partId}`, {
+            style: "link",
+            title: `sell ${p.name}`,
+          }),
+          text("  ", "muted"),
+          action(`deposit ${p.partId}`, `deposit ${p.partId}`, {
+            style: "link",
+            title: `deposit ${p.name} into a base silo`,
+          }),
+        ]),
+      );
     }
   }
   return frame(lines);

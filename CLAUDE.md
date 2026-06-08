@@ -1245,3 +1245,70 @@ gotchas) accrete here as workers surface things worth persisting. See
   `BIOFUEL_EFFICIENCY = 0.5`) with the **loss invariant**: fuel credit-value
   `< materials' credit-value` for all positive inputs (since `EFF < 1`). Seeded
   contract: `src/lib/game/per-system-market.test.ts`.
+
+### Load-bearing decisions from `supply-market`
+
+- **The finite buyable SUPPLY is now PER-SYSTEM and self-reverting (P12b)** — for
+  ship UPGRADES (was global in P9a) AND ship PARTS (newly tradeable). New
+  `public.system_supply` table (migration `20260608150000_supply-market.sql`,
+  forward-only/idempotent): `(location_key, item_id, supply int ≥0, updated_at,
+  PK(location_key,item_id))`, where `location_key = systemKey(systemOf(player))`
+  (the 4-seg `"galaxy:arm:cluster:system"`) and `item_id` is a code catalog id
+  (an upgrade id OR a part id — they don't collide; no FK, like
+  `upgrade_market`/`base_storage`). **PUBLIC read** (shared market signal, like
+  `markets`); service-role writes only. **Rows are LAZY**: a system+item with no
+  row reads as that item's code BASELINE. This SUPERSEDES the global P9a
+  `upgrade_market` table — those rows are now **inert** (never read/written), left
+  in place (forward-only; a later migration may drop them). The
+  `getUpgradeSupply`/`getUpgradeSupplies`/`addUpgradeSupply` world adapters were
+  REPLACED by `getSystemSupply(locationKey, itemId)`,
+  `getSystemSupplies(locationKey)`, `setSystemSupply(locationKey, itemId, supply)`.
+- **Reversion-on-read, persist-on-write** (the SUPPLY-side mirror of P12a's
+  per-system PRICE mean-reversion — same discipline, don't fork). Pure rule in
+  `rules.ts`: `supplyTowardBaseline(supply, baseline, elapsedMs, ratePerMs?)`
+  moves `supply` toward `baseline` by `ratePerMs·elapsedMs` without overshooting,
+  clamped ≥0 + integer (mirror of `priceTowardBase`; `elapsedMs` passed in, never
+  touches `Date`). Constants: `UPGRADE_SUPPLY_BASELINE = 3` (the old global seed),
+  `PART_SUPPLY_BASELINE = 5`, `SUPPLY_REVERT_PER_MS = 1/3_600_000` (~1 unit/hr).
+  `world.ts` `driftedSupply`/`supplyBaseline` apply it on read (lazy row →
+  baseline; parts→PART baseline, else UPGRADE baseline). The atomic clamped RPC is
+  `set_system_supply(p_location, p_item, p_supply)` — an ABSOLUTE upsert (not a
+  delta — lazy baseline rows make a delta-from-0 RPC wrong), clamped via
+  `greatest(0, …)`, stamps `updated_at = now`. Trades do read-effective →
+  `setSystemSupply(effective ± qty)`. So every system's stock drifts to baseline
+  on its OWN clock with NO player present. Seeded contract:
+  `src/lib/game/supply-market.test.ts`.
+- **Ship parts are a fully tradeable commodity.** New `public.player_parts`
+  (`player_id → players on delete cascade, part_id text, qty int ≥0,
+  PK(player_id,part_id)`, RLS read-own, service-role writes, atomic
+  `add_player_part(player, part, delta)` RPC) — the ship's **parts store**, a
+  SEPARATE cargo lane from the resource hold (`inventory`); like
+  `player_materials`/`player_upgrades`, parts do NOT count against `cargoCap`.
+  World adapters `getPlayerParts`/`addPlayerPart` mirror the materials ones.
+  - **`buy <part> [qty]`** (`handleBuyPart`): economy-gated (`atTradeLocation`,
+    via the `buy` dispatch gate); gated by the current system's part supply
+    (`canBuyFromSupply` + `supply ≥ qty`); cost `buyUnitCost(partValue)` per unit;
+    decrements the system supply (`setSystemSupply(supply − qty)`); lands in
+    `player_parts`. No cargo-space check (separate store).
+  - **`sell <part> [qty]`** (`handleSellPart`): pays `partValue`/u from
+    `player_parts`; INCREMENTS the current system's part supply
+    (`setSystemSupply(current + qty)`). Default qty = whole stack.
+  - **`deposit <part>` / `withdraw <part>`** now bridge parts between
+    `player_parts` (cargo) and `base_storage` (silo) — **P8b's "parts can't be
+    withdrawn" block was LIFTED**. `handleDeposit`/`handleWithdraw` branch on
+    `isPartId`: parts source/destination is `player_parts` (uncapped), resources
+    use `inventory` (cargo-space bounded); both land in / leave the silo via
+    `add_base_storage`. `produce` still consumes parts FROM the silo (unchanged).
+- **buy/sell upgrades went per-system** too (`handleBuyUpgrade`/`handleSellUpgrade`
+  + the `upgrades` market view + `help buy`): all read this system's supply via
+  `getSystemSupply`/`getSystemSupplies` (rowless = `UPGRADE_SUPPLY_BASELINE`),
+  persist via `setSystemSupply`. PRICES stay code-derived (`buyUnitCost`/value) —
+  only SUPPLY is per-system. Trade-help gained a **`"parts"` `TradeCategory`**
+  (`tradeCategoryOf`: `isPartId` → parts, ordered fuel→minerals→parts→upgrades→
+  everything); `buy`/`sell`/`deposit`/`withdraw` abbrev domains include part ids;
+  P9b red-marking (`buyDisabled`/`tradeAnnotation` parts branch — out-of-stock /
+  unaffordable) + help-parity + per-state applicability all intact. `inventory`
+  lists held parts (`InventoryView.parts`) with `sell`/`deposit` actions.
+- **For later phases**: more supply-market item kinds drop into `system_supply`
+  by id (no schema change — `item_id` is free-text); per-system part PRICES (vs
+  code-derived) would extend the `markets` keying, not `system_supply`.

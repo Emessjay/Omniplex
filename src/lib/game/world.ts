@@ -21,7 +21,14 @@ import { getServerClient } from "@/lib/supabase/server";
 import type { Player, PlayerRow, PlayerEncounter } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
 import { getResource, RESOURCES } from "@/lib/universe";
-import { regeneratedDepletion, priceTowardBase } from "./rules";
+import {
+  regeneratedDepletion,
+  priceTowardBase,
+  supplyTowardBaseline,
+  UPGRADE_SUPPLY_BASELINE,
+  PART_SUPPLY_BASELINE,
+} from "./rules";
+import { isPartId } from "./parts";
 
 /** Re-read the authoritative player row by id (post-mutation refresh). */
 export async function getPlayerById(id: string): Promise<Player | null> {
@@ -307,52 +314,144 @@ export async function removeInventory(
 }
 
 // ---------------------------------------------------------------------------
-// Upgrade market (upgrade_market) — the shared, finite buyable SUPPLY per
-// upgrade (P9a). PUBLIC read (a shared market signal); service-role writes.
-// `buy` decrements, `sell`/manufacture increments. The catalog (ids, recipes,
-// code-derived prices) still lives in code (`upgrades.ts`); this is only the
-// supply count.
+// System supply (system_supply) — the per-SYSTEM, self-reverting finite buyable
+// SUPPLY of an item: a ship UPGRADE (P9a) or a ship PART (P12b). Keyed by
+// `(location_key = systemKey, item_id)`. PUBLIC read (a shared market signal);
+// service-role writes. `buy` decrements, `sell`/manufacture increments — per
+// system. The catalog (ids, recipes, code-derived prices) still lives in code
+// (`upgrades.ts`/`parts.ts`); this stores only the supply count.
+//
+// Reversion-on-read, persist-on-write (mirrors per-system PRICES from P12a):
+// a system+item with no stored row reads as that item's code BASELINE
+// (`UPGRADE_SUPPLY_BASELINE` / `PART_SUPPLY_BASELINE`), and every stored row is
+// drifted back toward its baseline by the time since `updated_at` via the pure
+// `supplyTowardBaseline`. Trades persist the resulting absolute supply +
+// `updated_at = now` (`setSystemSupply`), so each system's stock self-corrects
+// on its own clock with NO player present.
 // ---------------------------------------------------------------------------
 
-/**
- * The current shared buyable supply of `upgradeId` (0 if no row yet). A read,
- * not a mutation — `buy` checks this before charging.
- */
-export async function getUpgradeSupply(upgradeId: string): Promise<number> {
-  const db = getServerClient();
-  const { data, error } = await db
-    .from("upgrade_market")
-    .select("supply")
-    .eq("upgrade_id", upgradeId)
-    .maybeSingle();
-  if (error) throw error;
-  return data ? (data as { supply: number }).supply : 0;
+/** The baseline supply an item reverts toward — parts vs upgrades (vs default). */
+function supplyBaseline(itemId: string): number {
+  return isPartId(itemId) ? PART_SUPPLY_BASELINE : UPGRADE_SUPPLY_BASELINE;
 }
 
-/** Every upgrade's current market supply as `{ upgradeId: supply }` (for views). */
-export async function getUpgradeSupplies(): Promise<Record<string, number>> {
+/** Apply supply reversion-on-read: drift `stored` toward `itemId`'s baseline. */
+function driftedSupply(stored: number, itemId: string, updatedAt: string): number {
+  const t = Date.parse(updatedAt);
+  const elapsed = Number.isNaN(t) ? 0 : Math.max(0, Date.now() - t);
+  return supplyTowardBaseline(stored, supplyBaseline(itemId), elapsed);
+}
+
+/**
+ * The current buyable supply of `itemId` in `locationKey` (a `systemKey`), with
+ * reversion-on-read applied. A system with no stored row for this item defaults
+ * to the item's baseline (untraded → normal stock). `buy`/`sell` read this
+ * before mutating.
+ */
+export async function getSystemSupply(
+  locationKey: string,
+  itemId: string,
+): Promise<number> {
   const db = getServerClient();
-  const { data, error } = await db.from("upgrade_market").select("upgrade_id, supply");
+  const { data, error } = await db
+    .from("system_supply")
+    .select("supply, updated_at")
+    .eq("location_key", locationKey)
+    .eq("item_id", itemId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return supplyBaseline(itemId); // lazy row → baseline
+  const r = data as { supply: number; updated_at: string };
+  return driftedSupply(r.supply, itemId, r.updated_at);
+}
+
+/**
+ * The drifted stored supplies for `locationKey` as `{ itemId: supply }` (for
+ * views/help). Only items with a STORED row appear; items with no row default to
+ * their baseline — the caller merges baselines for the full catalog (most
+ * systems start rowless, so most items read as baseline).
+ */
+export async function getSystemSupplies(
+  locationKey: string,
+): Promise<Record<string, number>> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("system_supply")
+    .select("item_id, supply, updated_at")
+    .eq("location_key", locationKey);
   if (error) throw error;
   const out: Record<string, number> = {};
-  for (const r of data ?? []) {
-    out[(r as { upgrade_id: string }).upgrade_id] = (r as { supply: number }).supply;
+  for (const row of data ?? []) {
+    const r = row as { item_id: string; supply: number; updated_at: string };
+    out[r.item_id] = driftedSupply(r.supply, r.item_id, r.updated_at);
   }
   return out;
 }
 
 /**
- * Atomically adjust an upgrade's market supply by `delta` (negative on buy,
- * positive on sell/manufacture); returns the new supply. Clamped at 0 in SQL,
- * but handlers validate supply (and ownership/credits) first.
+ * Persist an absolute new supply for `itemId` in `locationKey` (a `systemKey`),
+ * stamping `updated_at = now` so reversion accrues forward from this trade.
+ * UPSERTs on the `(location_key, item_id)` primary key, so the FIRST trade in a
+ * system creates its row. Clamped ≥ 0 in SQL; returns the stored supply. The
+ * supply-side analogue of `setMarketPrice`.
  */
-export async function addUpgradeSupply(
-  upgradeId: string,
+export async function setSystemSupply(
+  locationKey: string,
+  itemId: string,
+  supply: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("set_system_supply", {
+    p_location: locationKey,
+    p_item: itemId,
+    p_supply: supply,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Player parts (player_parts) — ship parts carried in the ship's parts store
+// (cargo), separate from the resource hold (`inventory`). Parts are a fully
+// tradeable commodity (P12b): `buy <part>` lands them here, `sell <part>` pays
+// out from here, and `deposit`/`withdraw` bridge them to/from a base silo
+// (`base_storage`). Mirror of the `player_materials` adapters.
+// ---------------------------------------------------------------------------
+
+export interface PartStack {
+  partId: string;
+  qty: number;
+}
+
+/** A player's owned ship parts (qty > 0), ascending by id for stable display. */
+export async function getPlayerParts(playerId: string): Promise<PartStack[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("player_parts")
+    .select("part_id, qty")
+    .eq("player_id", playerId)
+    .gt("qty", 0)
+    .order("part_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    partId: (r as { part_id: string }).part_id,
+    qty: (r as { qty: number }).qty,
+  }));
+}
+
+/**
+ * Atomically adjust a part count by `delta` (negative to sell/deposit); returns
+ * the new qty. Clamped at 0 in SQL, but handlers validate ownership first.
+ */
+export async function addPlayerPart(
+  playerId: string,
+  partId: string,
   delta: number,
 ): Promise<number> {
   const db = getServerClient();
-  const { data, error } = await db.rpc("add_upgrade_supply", {
-    p_upgrade: upgradeId,
+  const { data, error } = await db.rpc("add_player_part", {
+    p_player: playerId,
+    p_part: partId,
     p_delta: delta,
   });
   if (error) throw error;

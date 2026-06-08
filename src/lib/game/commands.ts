@@ -64,6 +64,8 @@ import {
   DEPLETION_PER_UNIT,
   REGULAR_FUEL_PRICE_PER_UNIT,
   WARP_FUEL_PRICE_PER_UNIT,
+  UPGRADE_SUPPLY_BASELINE,
+  PART_SUPPLY_BASELINE,
 } from "./rules";
 import {
   UPGRADES,
@@ -79,6 +81,7 @@ import {
   PART_IDS,
   isPartId,
   getPart,
+  partValue,
 } from "./parts";
 import {
   isMaterialId,
@@ -195,6 +198,16 @@ function systemOf(player: Player): SystemCoord {
 }
 
 /**
+ * The baseline a supply-market item reverts toward (P12b) — parts vs upgrades.
+ * Used to resolve a lazy (rowless) system+item supply, which reads as the
+ * baseline. Mirrors `world.supplyBaseline` (kept local so help can merge without
+ * a DB round-trip per id).
+ */
+function supplyBaselineFor(itemId: string): number {
+  return isPartId(itemId) ? PART_SUPPLY_BASELINE : UPGRADE_SUPPLY_BASELINE;
+}
+
+/**
  * Build the scan frame for the player standing in region `regionIndex` of the
  * planet at `coord`. Shared by `scan`, `warp`, `land`, and `jump` so they
  * describe the world identically. Depletion is read per-REGION (`regionKey`);
@@ -302,14 +315,18 @@ async function minableHere(player: Player, seed: string): Promise<string[]> {
  * when held so the abbreviation surface stays small.
  */
 async function sellableHere(player: Player): Promise<string[]> {
-  const [stacks, materials] = await Promise.all([
+  const [stacks, materials, parts] = await Promise.all([
     world.getInventory(player.id),
     world.getPlayerMaterials(player.id),
+    world.getPlayerParts(player.id),
   ]);
   return [
     ...stacks.map((s) => s.resourceId),
     "all",
     ...UPGRADE_IDS,
+    // Owned ship parts are a tradeable commodity now (P12b) — listed when held so
+    // `sell hull` abbreviates; the handler validates you actually carry each.
+    ...parts.map((p) => p.partId),
     ...materials.map((m) => m.materialId),
   ];
 }
@@ -360,21 +377,27 @@ async function loadArgDomainContext(
     return { ...EMPTY_ARG_CONTEXT, eatCandidates: owned };
   }
   if (verb === "deposit") {
-    // You can only deposit resources you're carrying.
-    const stacks = await world.getInventory(player.id);
-    return { ...EMPTY_ARG_CONTEXT, depositCandidates: stacks.map((s) => s.resourceId) };
+    // You can deposit resources from your cargo hold OR ship parts from your
+    // parts store (P12b — parts are a commodity now; deposit them into a silo).
+    const [stacks, parts] = await Promise.all([
+      world.getInventory(player.id),
+      world.getPlayerParts(player.id),
+    ]);
+    return {
+      ...EMPTY_ARG_CONTEXT,
+      depositCandidates: [...stacks.map((s) => s.resourceId), ...parts.map((p) => p.partId)],
+    };
   }
   if (verb === "withdraw") {
-    // You can only withdraw items your base here is storing — and only raw
-    // resources (ship PARTS stay siloed as production intermediates; P9 wires
-    // them out). Parts are filtered from the domain so abbrev/help never offer
-    // an item the handler would reject. No base/storage at the orbital outpost.
+    // You can withdraw anything your base here is storing — raw resources AND
+    // ship parts (P12b lifted the old parts-stay-siloed block; parts now move
+    // back into the ship's parts store). No base/storage at the orbital outpost.
     if (atOutpost(player)) return { ...EMPTY_ARG_CONTEXT, withdrawCandidates: [] };
     const base = await world.getBaseInRegion(player.id, regionKey(regionAt(seed, locOf(player), player.region).coord));
     const stored = base ? await world.getBaseStorage(base.id) : [];
     return {
       ...EMPTY_ARG_CONTEXT,
-      withdrawCandidates: stored.map((s) => s.itemId).filter((id) => !isPartId(id)),
+      withdrawCandidates: stored.map((s) => s.itemId),
     };
   }
   return EMPTY_ARG_CONTEXT;
@@ -410,7 +433,8 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // than a bare "no such" from the resolver). Foods abbreviate handler-side.
       if (verb === "craft" && argIndex === 0) return null;
       if (verb === "buy" && argIndex === 0) {
-        return ["fuel", "warpfuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
+        // P12b: ship parts are buyable from the per-system supply too.
+        return ["fuel", "warpfuel", ...RESOURCES.map((r) => r.id), ...PART_IDS, ...UPGRADE_IDS];
       }
       return null; // opaque: warp coords, land index, buy/craft quantity, …
     },
@@ -625,18 +649,21 @@ async function handleHelp(
   const spec = buildResolveSpec(ctx);
 
   // Trade commands annotate their candidates with live prices; fetch the drifted
-  // market prices once (the candidate SET still comes from `argDomain`).
+  // per-system market prices once (the candidate SET still comes from `argDomain`).
   const isTrade = verb === "buy" || verb === "sell";
-  const prices = isTrade ? await world.getMarketPrices(systemKey(systemOf(player))) : null;
+  const sysKey = systemKey(systemOf(player));
+  const prices = isTrade ? await world.getMarketPrices(sysKey) : null;
   // `help buy` additionally marks candidates the player can't perform RIGHT NOW
-  // (can't afford, or — for upgrades — out of stock) red, using the same checks
-  // `handleBuy*` enforce. `sell` candidates are things you already own, so none
-  // are "unperformable"; only fetch the affordability inputs for `buy`.
+  // (can't afford, or — for upgrades/parts — out of stock) red, using the same
+  // checks `handleBuy*` enforce. The supply is per-system now (P12b); rowless
+  // items default to baseline (in stock), so `buyDisabled` merges baselines.
+  // `sell` candidates are things you already own, so none are "unperformable";
+  // only fetch the affordability inputs for `buy`.
   const buyCtx =
     verb === "buy"
       ? {
           credits: ((await world.getPlayerById(player.id)) ?? player).credits,
-          supplies: await world.getUpgradeSupplies(),
+          supplies: await world.getSystemSupplies(sysKey),
         }
       : null;
 
@@ -726,9 +753,16 @@ function buyDisabled(
     case "fuel":
       return ctx.credits < (id === "warpfuel" ? WARP_FUEL_PRICE_PER_UNIT : REGULAR_FUEL_PRICE_PER_UNIT);
     case "upgrades": {
-      const supply = ctx.supplies[id] ?? 0;
+      // Per-system supply (P12b): a rowless system defaults to the baseline.
+      const supply = ctx.supplies[id] ?? supplyBaselineFor(id);
       if (!canBuyFromSupply(supply)) return true; // out of stock
       return ctx.credits < buyUnitCost(upgradeValue(id));
+    }
+    case "parts": {
+      // Ship parts are buyable from the per-system supply (P12b); same gates.
+      const supply = ctx.supplies[id] ?? supplyBaselineFor(id);
+      if (!canBuyFromSupply(supply)) return true; // out of stock
+      return ctx.credits < buyUnitCost(partValue(id));
     }
     case "minerals": {
       const price = prices[id] ?? getResource(id).baseValue;
@@ -751,6 +785,11 @@ function tradeAnnotation(
       return creditLabel(id === "warpfuel" ? WARP_FUEL_PRICE_PER_UNIT : REGULAR_FUEL_PRICE_PER_UNIT);
     case "upgrades": {
       const value = upgradeValue(id);
+      return creditLabel(verb === "buy" ? buyUnitCost(value) : value);
+    }
+    case "parts": {
+      // Parts are code-priced (like upgrades): buy at the markup, sell at value.
+      const value = partValue(id);
       return creditLabel(verb === "buy" ? buyUnitCost(value) : value);
     }
     case "minerals": {
@@ -1633,11 +1672,12 @@ async function handleFlee(player: Player): Promise<RenderFrame> {
 // ---------------------------------------------------------------------------
 
 async function handleInventory(player: Player): Promise<RenderFrame> {
-  const [stacks, prices, materials] = await Promise.all([
+  const [stacks, prices, materials, parts] = await Promise.all([
     world.getInventory(player.id),
     // Prices are per-system now — show the prices of the system you're in.
     world.getMarketPrices(systemKey(systemOf(player))),
     world.getPlayerMaterials(player.id),
+    world.getPlayerParts(player.id),
   ]);
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const cargoUsed = stacks.reduce((sum, s) => sum + s.qty, 0);
@@ -1646,6 +1686,14 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
       resourceId: s.resourceId,
       qty: s.qty,
       price: prices[s.resourceId] ?? null,
+    })),
+    // Ship parts ride in a separate parts store (no cargo cost); tradeable +
+    // depositable into a base silo (P12b). Listed with their fixed sell value.
+    parts: parts.map((p) => ({
+      partId: p.partId,
+      qty: p.qty,
+      name: getPart(p.partId).name,
+      value: partValue(p.partId),
     })),
     // Materials are sellable but not in the cargo hold (no space cost), like
     // upgrades — listed with their fixed value so you know what they fetch.
@@ -1672,16 +1720,19 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
 // ---------------------------------------------------------------------------
 
 async function handleUpgrades(player: Player): Promise<RenderFrame> {
+  // Supply is per-system now (P12b) — show THIS system's stock (rowless = baseline).
+  const sysKey = systemKey(systemOf(player));
   const [stacks, supplies] = await Promise.all([
     world.getPlayerUpgrades(player.id),
-    world.getUpgradeSupplies(),
+    world.getSystemSupplies(sysKey),
   ]);
   return renderUpgrades({
     owned: stacks.map((s) => ({ upgradeId: s.upgradeId, qty: s.qty })),
-    // The shared, finite market supply per upgrade (P9a) — buyable while > 0.
+    // The per-system, self-reverting finite market supply per upgrade (P9a/P12b)
+    // — buyable while > 0; a system never traded here reads as the baseline.
     market: UPGRADES.map((u) => ({
       upgradeId: u.id,
-      supply: supplies[u.id] ?? 0,
+      supply: supplies[u.id] ?? UPGRADE_SUPPLY_BASELINE,
       price: buyUnitCost(upgradeValue(u.id)),
     })),
     // Credits drive the unaffordable→red marking on the buy actions above.
@@ -2312,9 +2363,15 @@ async function handleDeposit(
     );
   }
 
-  const stacks = await world.getInventory(player.id);
-  const held = stacks.find((s) => s.resourceId === itemId)?.qty ?? 0;
-  if (held <= 0) return errorFrame(`You aren't carrying any ${itemId}.`);
+  // Items deposit from the resource cargo hold (`inventory`) OR — for ship parts
+  // (P12b) — the ship's parts store (`player_parts`). Either way they land in the
+  // base silo (`base_storage`); the source is what differs.
+  const isPart = isPartId(itemId);
+  const itemName = storageItemName(itemId);
+  const held = isPart
+    ? (await world.getPlayerParts(player.id)).find((p) => p.partId === itemId)?.qty ?? 0
+    : (await world.getInventory(player.id)).find((s) => s.resourceId === itemId)?.qty ?? 0;
+  if (held <= 0) return errorFrame(`You aren't carrying any ${itemName}.`);
 
   const [buildings, stored] = await Promise.all([
     world.getBaseBuildings(base.id),
@@ -2341,17 +2398,17 @@ async function handleDeposit(
   const move = Math.min(requested, held, remaining);
   if (move <= 0) return errorFrame("Nothing to deposit.");
 
-  await world.removeInventory(player.id, itemId, move);
+  if (isPart) await world.addPlayerPart(player.id, itemId, -move);
+  else await world.removeInventory(player.id, itemId, move);
   const nowStored = await world.addBaseStorage(base.id, itemId, move);
 
-  const res = getResource(itemId);
   return frame([
     line([
-      text(`Deposited ${move} ${res.name} `, "success"),
+      text(`Deposited ${move} ${itemName} `, "success"),
       text(`into your base. `, "default"),
       text(`Storage ${used + move}/${capacity}.`, "muted"),
     ]),
-    line(text(`  ${res.name} in store: ${nowStored}. ${held - move} left in cargo.`, "muted")),
+    line(text(`  ${itemName} in store: ${nowStored}. ${held - move} left in cargo.`, "muted")),
   ]);
 }
 
@@ -2377,17 +2434,37 @@ async function handleWithdraw(
     );
   }
 
-  // Ship parts are production intermediates — they stay in the silo (no cargo
-  // slot / sell path yet; P9 wires them out). Only raw resources are withdrawable.
-  if (isPartId(itemId)) {
-    return errorFrame(
-      `${getPart(itemId).name} is a ship part — it stays in the silo as a production intermediate.`,
-    );
-  }
+  // P12b: ship parts are a commodity now — withdraw moves them from the silo back
+  // into the ship's parts store (`player_parts`), which is uncapped (separate
+  // from the resource cargo hold). Raw resources withdraw into `inventory` and
+  // are bounded by free cargo space, as before.
+  const isPart = isPartId(itemId);
+  const itemName = storageItemName(itemId);
 
   const stored = await world.getBaseStorage(base.id);
   const inStore = stored.find((s) => s.itemId === itemId)?.qty ?? 0;
-  if (inStore <= 0) return errorFrame(`Your base here isn't storing any ${itemId}.`);
+  if (inStore <= 0) return errorFrame(`Your base here isn't storing any ${itemName}.`);
+
+  if (isPart) {
+    const requested = args[1] === undefined ? inStore : toInt(args[1]);
+    if (requested === null || requested <= 0) {
+      return errorFrame("Usage: withdraw <item> [qty]  — qty must be a positive whole number.");
+    }
+    const move = Math.min(requested, inStore);
+    if (move <= 0) return errorFrame("Nothing to withdraw.");
+
+    await world.addBaseStorage(base.id, itemId, -move);
+    const owned = await world.addPlayerPart(player.id, itemId, move);
+
+    return frame([
+      line([
+        text(`Withdrew ${move} ${itemName} `, "success"),
+        text(`to your parts store. `, "default"),
+        text(`You now carry ${owned}.`, "muted"),
+      ]),
+      line(text(`  ${itemName} left in store: ${inStore - move}.`, "muted")),
+    ]);
+  }
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const used = await world.getCargoUsed(player.id);
@@ -2695,9 +2772,10 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
   const target = args[0]?.toLowerCase();
   if (!target) return errorFrame("Usage: sell <resource>  or  sell all");
 
-  // Selling an upgrade or a material is code-priced (no market drift); resource
-  // selling below is unchanged.
+  // Selling an upgrade, a part, or a material is code-priced (no market drift);
+  // resource selling below is unchanged.
   if (isUpgradeId(target)) return handleSellUpgrade(player, target, args[1]);
+  if (isPartId(target)) return handleSellPart(player, target, args[1]);
   if (isMaterialId(target)) return handleSellMaterial(player, target, args[1]);
 
   const stacks = await world.getInventory(player.id);
@@ -2785,9 +2863,12 @@ async function handleSellUpgrade(
   const total = unit * qty;
   const remaining = await world.addPlayerUpgrade(player.id, upgradeId, -qty);
   const newBalance = await world.addPlayerCredits(player.id, total);
-  // Selling puts the upgrade(s) on the shared market for others to `buy` — the
-  // only way the finite buyable supply grows (P9a).
-  const supply = await world.addUpgradeSupply(upgradeId, qty);
+  // Selling puts the upgrade(s) on THIS system's market for others to `buy` —
+  // a way the finite per-system supply grows (P12b). Read the reverted supply,
+  // then persist it + the increment (apply-on-read, persist-on-write).
+  const sysKey = systemKey(systemOf(player));
+  const current = await world.getSystemSupply(sysKey, upgradeId);
+  const supply = await world.setSystemSupply(sysKey, upgradeId, current + qty);
 
   return frame([
     line([
@@ -2848,6 +2929,62 @@ async function handleSellMaterial(
   ]);
 }
 
+/**
+ * Sell `qty` ship parts from the ship's parts store (`player_parts`) for
+ * `partValue` per unit — code-priced, no market drift (like upgrades/materials).
+ * Selling RAISES this system's part supply so other pilots can `buy` it (P12b),
+ * read+persisted with reversion (apply-on-read, persist-on-write). No `qty` sells
+ * the whole stack; a positive `qty` sells that many. Validates ownership before
+ * mutating. Economy-gated (only usable at a trade location, via the `sell`
+ * dispatch gate).
+ */
+async function handleSellPart(
+  player: Player,
+  partId: string,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  const part = getPart(partId);
+
+  const stacks = await world.getPlayerParts(player.id);
+  const ownedNow = stacks.find((s) => s.partId === partId)?.qty ?? 0;
+  if (ownedNow <= 0) {
+    return errorFrame(`You aren't carrying any ${part.name}.`);
+  }
+
+  let qty: number;
+  if (qtyArg === undefined) {
+    qty = ownedNow; // sell the whole stack by default
+  } else {
+    const requested = toInt(qtyArg);
+    if (requested === null || requested <= 0) {
+      return errorFrame("Usage: sell <part> [qty]  — qty must be a positive whole number.");
+    }
+    qty = requested;
+  }
+  if (ownedNow < qty) {
+    return errorFrame(`You only own ${ownedNow} ${part.name} — can't sell ${qty}.`);
+  }
+
+  const unit = partValue(partId);
+  const total = unit * qty;
+  const remaining = await world.addPlayerPart(player.id, partId, -qty);
+  const newBalance = await world.addPlayerCredits(player.id, total);
+  // Grow this system's buyable part supply by what we sold (persist reverted + qty).
+  const sysKey = systemKey(systemOf(player));
+  const current = await world.getSystemSupply(sysKey, partId);
+  const supply = await world.setSystemSupply(sysKey, partId, current + qty);
+
+  return frame([
+    line([
+      text(`Sold ${qty} ${part.name} `, "success"),
+      text(`for ${total} cr `, "accent"),
+      text(`(${unit}/u). `, "muted"),
+      text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
+    ]),
+    line(text(`  ${supply} now on this system's market for other pilots to buy.`, "muted")),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // buy fuel [n]  |  buy <resource> [qty]  |  buy <upgrade> [qty]
 // ---------------------------------------------------------------------------
@@ -2858,6 +2995,7 @@ async function handleBuy(player: Player, args: string[]): Promise<RenderFrame> {
   if (what === "fuel") return handleBuyFuel(player, "regular", args[1]);
   if (what === "warpfuel") return handleBuyFuel(player, "warp", args[1]);
   if (isUpgradeId(what)) return handleBuyUpgrade(player, what, args[1]);
+  if (isPartId(what)) return handleBuyPart(player, what, args[1]);
   return handleBuyResource(player, what, args[1]);
 }
 
@@ -2987,18 +3125,20 @@ async function handleBuyUpgrade(
   const qty = requested;
   const upgrade = getUpgrade(upgradeId);
 
-  // Finite supply gate (P9a): you can only buy what's currently on the market.
-  // Validate supply BEFORE charging — manufacturing (`produce`) + selling are
-  // the only ways stock appears.
-  const supply = await world.getUpgradeSupply(upgradeId);
+  // Finite, per-system supply gate (P9a/P12b): you can only buy what's currently
+  // on THIS system's market. Read the reverted supply (rowless = baseline) and
+  // validate BEFORE charging — manufacturing (`produce`) + selling are the only
+  // ways stock appears beyond the self-reverting baseline.
+  const sysKey = systemKey(systemOf(player));
+  const supply = await world.getSystemSupply(sysKey, upgradeId);
   if (!canBuyFromSupply(supply)) {
     return errorFrame(
-      `${upgrade.name} is out of stock — none on the market; someone must manufacture and sell one.`,
+      `${upgrade.name} is out of stock here — none on this system's market; someone must manufacture and sell one.`,
     );
   }
   if (supply < qty) {
     return errorFrame(
-      `Only ${supply} ${upgrade.name} on the market — can't buy ${qty}. Try a smaller quantity.`,
+      `Only ${supply} ${upgrade.name} on this system's market — can't buy ${qty}. Try a smaller quantity.`,
     );
   }
 
@@ -3012,9 +3152,9 @@ async function handleBuyUpgrade(
     );
   }
 
-  // Take the unit(s) off the shared market, then grant + charge. The RPC is
-  // clamped at 0; we validated supply >= qty above.
-  const newSupply = await world.addUpgradeSupply(upgradeId, -qty);
+  // Take the unit(s) off this system's market (persist reverted supply − qty),
+  // then grant + charge. We validated supply >= qty above.
+  const newSupply = await world.setSystemSupply(sysKey, upgradeId, supply - qty);
   const owned = await world.addPlayerUpgrade(player.id, upgradeId, qty);
   const newBalance = await world.addPlayerCredits(player.id, -total);
 
@@ -3025,7 +3165,73 @@ async function handleBuyUpgrade(
       text(`(${unitCost}/u). `, "muted"),
       text(`You now own ${owned}. Balance ${newBalance} cr.`, "accent"),
     ]),
-    line(text(`  ${newSupply} left on the market.`, "muted")),
+    line(text(`  ${newSupply} left on this system's market.`, "muted")),
+  ]);
+}
+
+/**
+ * Buy `qty` ship parts from THIS system's finite, self-reverting supply (P12b) at
+ * `buyUnitCost(partValue)` per unit. Validates the system's part supply (≥ qty)
+ * and credits BEFORE mutating; bought parts land in the ship's parts store
+ * (`player_parts`), not the resource cargo hold, so there's no cargo-space check
+ * (like upgrades/materials). Economy-gated to a trade location by the `buy`
+ * dispatch gate. `partId` is already abbrev-resolved by the dispatcher.
+ */
+async function handleBuyPart(
+  player: Player,
+  partId: string,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: buy <part> [qty]  — qty must be a positive whole number.");
+  }
+  const qty = requested;
+  const part = getPart(partId);
+
+  // Per-system supply gate (rowless = baseline). Validate BEFORE charging.
+  const sysKey = systemKey(systemOf(player));
+  const supply = await world.getSystemSupply(sysKey, partId);
+  if (!canBuyFromSupply(supply)) {
+    return errorFrame(
+      `${part.name} is out of stock here — none on this system's market; someone must manufacture and sell one.`,
+    );
+  }
+  if (supply < qty) {
+    return errorFrame(
+      `Only ${supply} ${part.name} on this system's market — can't buy ${qty}. Try a smaller quantity.`,
+    );
+  }
+
+  const unitCost = buyUnitCost(partValue(partId));
+  const total = unitCost * qty;
+
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  if (fresh.credits < total) {
+    return errorFrame(
+      `Not enough credits: ${qty} ${part.name} costs ${total} cr (${unitCost}/u) and you have ${fresh.credits}.`,
+    );
+  }
+
+  // Take the unit(s) off this system's market (persist reverted supply − qty),
+  // then grant into the parts store + charge. We validated supply >= qty above.
+  const newSupply = await world.setSystemSupply(sysKey, partId, supply - qty);
+  const owned = await world.addPlayerPart(player.id, partId, qty);
+  const newBalance = await world.addPlayerCredits(player.id, -total);
+
+  return frame([
+    line([
+      text(`Bought ${qty} ${part.name} `, "success"),
+      text(`for ${total} cr `, "accent"),
+      text(`(${unitCost}/u). `, "muted"),
+      text(`You now carry ${owned}. Balance ${newBalance} cr.`, "accent"),
+    ]),
+    line([
+      text(`  ${newSupply} left on this system's market. `, "muted"),
+      text("`deposit ", "muted"),
+      text(`${partId}`, "default"),
+      text("` at a base to use it in production.", "muted"),
+    ]),
   ]);
 }
 

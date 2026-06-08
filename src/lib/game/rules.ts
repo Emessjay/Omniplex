@@ -661,3 +661,63 @@ export function biofuelYield(materialValue: number, qty: number): number {
   const recoveredCredits = materialValue * qty * BIOFUEL_EFFICIENCY;
   return Math.floor(recoveredCredits / REGULAR_FUEL_PRICE_PER_UNIT);
 }
+
+// ---------------------------------------------------------------------------
+// Per-system, self-reverting market SUPPLY (P12b).
+//
+// The finite buyable supply of upgrades AND ship parts is now PER-SYSTEM and
+// gradually reverts toward a "normal" baseline over real time, with NO player
+// present — a system bought out by demand slowly restocks; one flooded by
+// players selling slowly drains back. This is the SUPPLY-side mirror of
+// `priceTowardBase`'s mean-reversion: the same apply-on-read, persist-on-write
+// discipline, with `elapsedMs` passed in (the impure adapters in `world.ts`
+// compute it from a stored `updated_at` and supply `now`), so the math stays
+// pure & deterministic. A system+item with no stored row reads as its baseline.
+// ---------------------------------------------------------------------------
+
+/**
+ * The "normal" buyable stock of an upgrade each system reverts toward (the old
+ * P9a global seed). A bought-out system climbs back up to this; an over-sold one
+ * settles back down to it.
+ */
+export const UPGRADE_SUPPLY_BASELINE = 3;
+
+/**
+ * The "normal" buyable stock of a ship part each system reverts toward. A bit
+ * higher than upgrades — parts are the bulk commodity traded in P12b.
+ */
+export const PART_SUPPLY_BASELINE = 5;
+
+/**
+ * Units of supply that revert toward the baseline per millisecond. Deliberately
+ * small ("gradual"): at ~1 unit/hour a bought-out system creeps back to a
+ * baseline of a handful over several hours, on the same human-scale clock as
+ * `PRICE_REVERT_PER_MS`. A rate per ms, like the other living-economy knobs.
+ */
+export const SUPPLY_REVERT_PER_MS = 1 / 3_600_000;
+
+/**
+ * Effective supply after reverting toward `baseline` over `elapsedMs`. Moves
+ * `supply` toward `baseline` by `ratePerMs * elapsedMs`, NEVER overshooting: a
+ * supply below baseline rises to at most baseline, one above falls to at least
+ * baseline, one already at baseline is unchanged. Clamped ≥ 0 and rounded to an
+ * integer (the stored `supply` column is an integer ≥ 0). The supply-side mirror
+ * of `priceTowardBase`; monotonic toward baseline in `elapsedMs`. Pure.
+ */
+export function supplyTowardBaseline(
+  supply: number,
+  baseline: number,
+  elapsedMs: number,
+  ratePerMs: number = SUPPLY_REVERT_PER_MS,
+): number {
+  const move = Math.max(0, ratePerMs * elapsedMs);
+  let next: number;
+  if (supply < baseline) {
+    next = Math.min(baseline, supply + move);
+  } else if (supply > baseline) {
+    next = Math.max(baseline, supply - move);
+  } else {
+    next = supply;
+  }
+  return Math.max(0, Math.round(next));
+}
