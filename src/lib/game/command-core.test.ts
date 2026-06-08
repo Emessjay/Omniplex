@@ -78,9 +78,17 @@ describe("priceAfterSale — shared-economy drift (AC#8)", () => {
     expect(priceAfterSale(100, 0)).toBe(100);
   });
 
-  it("strictly decreases with quantity sold", () => {
-    expect(priceAfterSale(100, 10)).toBeLessThan(100);
-    expect(priceAfterSale(100, 100)).toBeLessThan(priceAfterSale(100, 10));
+  it("is monotonically non-increasing in quantity sold", () => {
+    expect(priceAfterSale(100, 100)).toBeLessThanOrEqual(priceAfterSale(100, 10));
+    expect(priceAfterSale(100, 10)).toBeLessThanOrEqual(priceAfterSale(100, 1));
+  });
+
+  it("barely moves on a small trade but clearly drops under heavy volume", () => {
+    // ~10 units shaves well under ~2% off a 1000-credit price...
+    expect(priceAfterSale(1000, 10)).toBeGreaterThanOrEqual(980);
+    // ...while hundreds of units cut it substantially.
+    expect(priceAfterSale(1000, 500)).toBeLessThan(priceAfterSale(1000, 10));
+    expect(priceAfterSale(1000, 500)).toBeLessThan(800);
   });
 
   it("never drops below the floor of 1 and never goes negative", () => {

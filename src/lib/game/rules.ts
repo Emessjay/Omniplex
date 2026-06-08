@@ -38,13 +38,18 @@ export const DEPLETION_PER_UNIT = 0.02;
 export const PRICE_FLOOR = 1;
 
 /**
- * Fraction of the current price each unit sold knocks off, rounded UP to an
- * integer (so each unit always moves the price by at least 1). This makes the
- * per-unit impact proportional to value — selling legendary goods drifts the
- * price by more credits than dumping common ore. Buying uses the same impact in
- * reverse (see `priceAfterPurchase`).
+ * Per-unit price stickiness: the fraction by which ONE traded unit nudges the
+ * price, COMPOUNDED over the quantity (geometric, NOT a per-unit ≥1 floor).
+ * Selling multiplies the price by `(1 - PRICE_IMPACT)` per unit, buying by
+ * `(1 + PRICE_IMPACT)` per unit (see `priceAfterSale` / `priceAfterPurchase`).
+ *
+ * Deliberately tiny so prices are HARD to move: a ~10-unit trade shifts a
+ * 1000-credit price by under ~2% (≈ ±15cr), and it takes hundreds of units of
+ * cumulative volume to swing a price substantially (≈500 units ≈ a 50% move).
+ * Because the model is multiplicative there is NO per-unit minimum, so a single
+ * unit of a cheap good rounds to no change at all — only real volume bites.
  */
-export const MARKET_IMPACT = 0.02;
+export const PRICE_IMPACT = 0.0015;
 
 // ---------------------------------------------------------------------------
 // Living economy — slow recovery of the shared world.
@@ -124,15 +129,17 @@ export function buyUnitCost(price: number): number {
 
 /**
  * The new GLOBAL market price after `qtyBought` units are BOUGHT at `price` —
- * the mirror of `priceAfterSale`. Each unit RAISES the price by
- * `ceil(price * MARKET_IMPACT)` (≥ 1), so the result strictly increases in
- * `qtyBought` for `qtyBought > 0`; buying nothing leaves it unchanged. Never
- * below `PRICE_FLOOR`. This is what lets demand push the shared price up.
+ * the mirror of `priceAfterSale`. The price is multiplied by
+ * `(1 + PRICE_IMPACT)` per unit (compounding over `qtyBought`) and rounded, so
+ * it is monotonically NON-DECREASING in `qtyBought` and only actually rises once
+ * the cumulative volume is large enough to round up — a single unit of a cheap
+ * good leaves the price unchanged. Buying nothing is a no-op. Never below
+ * `PRICE_FLOOR`. This is what lets sustained demand push the shared price up.
  */
 export function priceAfterPurchase(price: number, qtyBought: number): number {
   if (qtyBought <= 0) return Math.max(PRICE_FLOOR, price);
-  const risePerUnit = Math.max(1, Math.ceil(price * MARKET_IMPACT));
-  return Math.max(PRICE_FLOOR, price + qtyBought * risePerUnit);
+  const raised = price * (1 + PRICE_IMPACT) ** qtyBought;
+  return Math.max(PRICE_FLOOR, Math.round(raised));
 }
 
 // ---------------------------------------------------------------------------
@@ -252,14 +259,17 @@ export function sellValue(price: number, qty: number): number {
 }
 
 /**
- * The new GLOBAL market price after `qtySold` units are sold at `price`. Each
- * unit drops the price by `ceil(price * MARKET_IMPACT)` (≥ 1), so the result
- * strictly decreases in `qtySold` for `qtySold > 0` until it hits the floor of
- * `PRICE_FLOOR`. Never below the floor, never negative. This is what makes the
- * shared economy "remember" everyone's sales.
+ * The new GLOBAL market price after `qtySold` units are sold at `price`. The
+ * price is multiplied by `(1 - PRICE_IMPACT)` per unit (compounding over
+ * `qtySold`) and rounded, so it is monotonically NON-INCREASING in `qtySold`
+ * and only actually drops once the cumulative volume is large enough to round
+ * down — a single unit of a cheap good leaves the price unchanged. Selling
+ * nothing is a no-op. Floored at `PRICE_FLOOR`, never negative. This is what
+ * makes the shared economy "remember" everyone's sales without letting a tiny
+ * trade crater the price.
  */
 export function priceAfterSale(price: number, qtySold: number): number {
   if (qtySold <= 0) return Math.max(PRICE_FLOOR, price);
-  const dropPerUnit = Math.max(1, Math.ceil(price * MARKET_IMPACT));
-  return Math.max(PRICE_FLOOR, price - qtySold * dropPerUnit);
+  const dropped = price * (1 - PRICE_IMPACT) ** qtySold;
+  return Math.max(PRICE_FLOOR, Math.round(dropped));
 }

@@ -290,8 +290,8 @@ gotchas) accrete here as workers surface things worth persisting. See
   `priceTowardBase(price, base, elapsedMs, revertPerMs?)` (moves toward `base`
   without overshooting, floored at `PRICE_FLOOR`), `buyUnitCost(price)` =
   `ceil(price * BUY_MARKUP)`, and `priceAfterPurchase(price, qtyBought)` (the
-  buy-side mirror of `priceAfterSale`, raising the price by
-  `ceil(price * MARKET_IMPACT)` per unit).
+  buy-side mirror of `priceAfterSale`; see `price-stickiness` below for the
+  current volume-based impact model that superseded the old per-unit `MARKET_IMPACT`).
 - **Regen on read**: `world.getEffectiveDepletionMap(planetKey)` is the
   regen-aware sibling of `getDepletionMap` — it sums depletion deltas and heals
   each resource by the time since its *most recent* delta, returning the same
@@ -393,3 +393,23 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **Reuse for future trade-like commands**: build groups via
   `groupTradeCandidates` + `creditLabel`; single-category commands just pass one
   `{label:null}` group and render identically to the old single line.
+
+### Load-bearing decisions from `price-stickiness`
+
+- **Global prices are deliberately HARD to move.** The old per-unit, `≥1`-floored
+  `MARKET_IMPACT = 0.02` (which swung prices on tiny trades and moved cheap goods
+  ~20%/unit) is GONE. The current model is a single tunable constant
+  `PRICE_IMPACT = 0.0015` (`rules.ts`, 0.15%/unit, **compounding**, NO per-unit
+  `≥1` floor): `priceAfterSale(p, q) = max(PRICE_FLOOR, round(p · (1−PRICE_IMPACT)^q))`
+  and `priceAfterPurchase(p, q) = round(p · (1+PRICE_IMPACT)^q)`. Same signatures
+  as before — handlers (`sell`/`buy`) are unchanged; only the output is gentler.
+- **Feel targets** (the reason for the tuning, reason-check before retuning):
+  a ~10-unit trade moves a 1000cr price < ~2% (≈ ±15cr); ~500 units ≈ a ~50%
+  swing; a single unit of a cheap good rounds to NO change. Monotonic
+  (sale non-increasing, purchase non-decreasing in qty); `qty ≤ 0` is a no-op;
+  sale floored at `PRICE_FLOOR`. `priceTowardBase` mean-reversion is untouched.
+- **One-time reset**: migration `20260608075033_reset-prices.sql` snaps every
+  `location_key = 'global'` market `price` back to its `resources.base_value`
+  (and stamps `updated_at = now()`). Forward-only + tracked in
+  `schema_migrations`, so it runs EXACTLY ONCE — it will not clobber
+  organically-moved prices on later deploys.

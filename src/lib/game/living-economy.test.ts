@@ -85,12 +85,20 @@ describe("priceAfterPurchase — buying drives price up", () => {
     expect(priceAfterPurchase(100, 0)).toBe(100);
   });
 
-  it("strictly increases with quantity bought", () => {
-    expect(priceAfterPurchase(100, 5)).toBeGreaterThan(100);
-    expect(priceAfterPurchase(100, 50)).toBeGreaterThan(priceAfterPurchase(100, 5));
+  it("is monotonically non-decreasing in quantity bought", () => {
+    expect(priceAfterPurchase(100, 50)).toBeGreaterThanOrEqual(priceAfterPurchase(100, 5));
+    expect(priceAfterPurchase(100, 5)).toBeGreaterThanOrEqual(priceAfterPurchase(100, 1));
   });
 
-  it("moves price by at least 1 per unit", () => {
-    expect(priceAfterPurchase(10, 1)).toBeGreaterThanOrEqual(11);
+  it("barely moves on a small trade but clearly rises under heavy volume", () => {
+    // ~10 units lifts a 1000-credit price by under ~2%...
+    expect(priceAfterPurchase(1000, 10)).toBeLessThanOrEqual(1020);
+    // ...while hundreds of units push it well up.
+    expect(priceAfterPurchase(1000, 500)).toBeGreaterThan(priceAfterPurchase(1000, 10));
+    expect(priceAfterPurchase(1000, 500)).toBeGreaterThan(1500);
+  });
+
+  it("rounds a single unit of a cheap good to no change", () => {
+    expect(priceAfterPurchase(10, 1)).toBe(10);
   });
 });
