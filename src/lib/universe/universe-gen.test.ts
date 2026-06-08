@@ -195,6 +195,36 @@ describe("abundance is biased by rarity — common ore forms richer veins", () =
   });
 });
 
+describe("hazard scales with temperature extremity", () => {
+  // Over a large deterministic sample, planets with extreme temperatures (very
+  // hot OR very cold) should be markedly more hazardous on average than
+  // temperate worlds. Directional with a margin — robust to RNG, not exact.
+  const planets = samplePlanets(SEED);
+  const mean = (xs: number[]) =>
+    xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+
+  // "Extreme" = far outside a comfortable band around ~15°C; "temperate" =
+  // comfortably inside it. The thresholds are deliberately well clear of the
+  // generator's comfort band so the two populations don't overlap.
+  const extreme = planets.filter(
+    (p) => p.temperature <= -120 || p.temperature >= 250,
+  );
+  const temperate = planets.filter(
+    (p) => p.temperature >= -30 && p.temperature <= 60,
+  );
+
+  it("the sample has enough extreme and temperate planets to compare", () => {
+    expect(extreme.length).toBeGreaterThan(15);
+    expect(temperate.length).toBeGreaterThan(15);
+  });
+
+  it("extreme-temperature planets are much more hazardous on average", () => {
+    expect(mean(extreme.map((p) => p.hazard))).toBeGreaterThan(
+      mean(temperate.map((p) => p.hazard)) + 0.3,
+    );
+  });
+});
+
 describe("location keys round-trip (AC#7)", () => {
   it("systemKey/planetKey parse back to the coord", () => {
     const sc: SystemCoord = { sector: 5, system: 12 };

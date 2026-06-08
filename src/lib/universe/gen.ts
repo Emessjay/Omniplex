@@ -160,6 +160,51 @@ function starClassFor(rng: Rng): StarClass {
 }
 
 // ---------------------------------------------------------------------------
+// Hazard — coupled to temperature extremity.
+//
+// Hazard rises *rapidly* as a planet's mean temperature departs from a
+// temperate "comfort band" toward either extreme — scorching or frozen worlds
+// come out markedly more savage, while temperate worlds stay low-hazard. A
+// modest random jitter rides on top so two similar-temperature worlds still
+// differ (and so the distribution keeps enough spread for both calm and savage
+// planets to exist). Via the hazard→rarity coupling below, the most extreme
+// worlds therefore also carry the rarest resources.
+// ---------------------------------------------------------------------------
+
+/** Center of the comfortable temperature band (°C) — roughly Earth-like. */
+const TEMP_COMFORT_MID = 15;
+/** Half-width of the comfort band (°C); within ±this of the mid, no temp hazard. */
+const TEMP_COMFORT_BAND = 50;
+/** Temperature departure *beyond the band* (°C) that maps to full extremity. */
+const TEMP_EXTREME_SCALE = 200;
+/** Exponent on normalized extremity; >1 makes hazard climb sharply at the edges. */
+const TEMP_HAZARD_POWER = 1.5;
+/** Share of the [0,1] hazard range the temperature term commands. */
+const TEMP_HAZARD_WEIGHT = 0.9;
+/** Max random jitter added on top (keeps similar-temperature worlds distinct). */
+const HAZARD_JITTER = 0.25;
+
+/**
+ * Derive hazard in [0, 1] from a planet's temperature plus a small random
+ * jitter. We take the temperature's distance *outside* the comfort band,
+ * normalize it over `TEMP_EXTREME_SCALE`, and raise it to `TEMP_HAZARD_POWER`
+ * (>1) so danger ramps up fast for very hot / very cold worlds while temperate
+ * worlds stay near zero. The jitter is the only random component, so the curve
+ * is otherwise a pure function of temperature. Result is clamped to [0, 1].
+ */
+function hazardFor(rng: Rng, temperature: number): number {
+  const departure = Math.max(
+    0,
+    Math.abs(temperature - TEMP_COMFORT_MID) - TEMP_COMFORT_BAND,
+  );
+  const normalized = Math.min(1, departure / TEMP_EXTREME_SCALE);
+  const extremity = Math.pow(normalized, TEMP_HAZARD_POWER);
+  const jitter = rng() * HAZARD_JITTER;
+  const hazard = extremity * TEMP_HAZARD_WEIGHT + jitter;
+  return Math.min(1, Math.max(0, hazard));
+}
+
+// ---------------------------------------------------------------------------
 // Deposits — the hazard→rarity coupling (AC#5).
 // ---------------------------------------------------------------------------
 
@@ -254,10 +299,11 @@ function generatePlanet(
   const biome = biomeFor(rng);
   const atmosphere = atmosphereFor(rng);
   const gravity = Number(randFloat(rng, 0.1, 2.8).toFixed(3)); // g, (0,10]
-  const hazard = Number(rng().toFixed(4)); // uniform [0,1)
+  // Temperature first — hazard is derived from it (extreme temps ⇒ savage).
   const temperature = Number(
     (STAR_TEMP_BASE[starClass] + randFloat(rng, -120, 120)).toFixed(1),
   );
+  const hazard = Number(hazardFor(rng, temperature).toFixed(4));
   const deposits = depositsFor(rng, hazard).map((d) => ({
     resourceId: d.resourceId,
     abundance: Number(d.abundance.toFixed(4)),
