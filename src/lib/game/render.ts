@@ -326,6 +326,21 @@ export function renderScan(view: ScanView): RenderFrame {
       text(region.biome, "accent"),
     ]),
   );
+  // Per-region climate: this region's own temperature + hazard (the biome nudges
+  // them off the planet mean shown below, never crossing the 0/100 band). This is
+  // the hazard that bites you on foot, so a volcanic region reads hotter + more
+  // dangerous than a barren one alongside it.
+  lines.push(
+    line([
+      text("   region temp ", "muted"),
+      text(`${region.temperature}°C`, "default"),
+      text("   region hazard ", "muted"),
+      text(
+        `${Math.round(region.hazard * 100)}%`,
+        region.hazard >= 0.6 ? "danger" : "default",
+      ),
+    ]),
+  );
   // Planet context: the biome palette its regions draw from + atmosphere.
   lines.push(
     line([

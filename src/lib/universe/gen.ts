@@ -249,6 +249,46 @@ function starClassFor(rng: Rng): StarClass {
 }
 
 // ---------------------------------------------------------------------------
+// Planet temperature ← star brightness + orbital closeness (biome-consistency).
+//
+// A planet's mean temperature rises with BOTH its star's brightness
+// (`STAR_TEMP_BASE`, hotter spectral class ⇒ hotter) AND its closeness to that
+// star (smaller `orbitalRadius` ⇒ hotter, via a `1/radius` insolation term).
+// This replaces the old `STAR_TEMP_BASE + jitter` model — `orbitalRadius` is now
+// generated BEFORE temperature so the planet's distance can drive its climate.
+//
+// The deterministic part (star base + closeness) is strictly MONOTONIC: holding
+// the jitter draw fixed, temperature rises as the star gets brighter and as the
+// radius shrinks. A bounded random jitter rides on top so two otherwise-similar
+// worlds still differ (and the population keeps a wide spread for the hazard
+// coupling). `1/radius` concentrates the heating on the rare close-in worlds,
+// leaving the bulk distribution star-driven as before.
+// ---------------------------------------------------------------------------
+
+/** Insolation coefficient: the closeness term is `RADIUS_TEMP_COEF / orbitalRadius` (°C). */
+const RADIUS_TEMP_COEF = 120;
+/** Max ± random jitter (°C) on top of the deterministic star+closeness temperature. */
+const TEMP_JITTER = 120;
+
+/**
+ * A planet's mean surface temperature (°C) from its star class and orbital
+ * radius, plus a bounded jitter. PURE: deterministic given (starClass, radius,
+ * rng draw). Monotonic in both inputs for a fixed jitter — increasing star
+ * brightness raises it, and decreasing `orbitalRadius` (moving closer to the
+ * sun) raises it via the `1/radius` insolation term.
+ */
+function planetTemperatureFor(
+  starClass: StarClass,
+  orbitalRadius: number,
+  rng: Rng,
+): number {
+  const star = STAR_TEMP_BASE[starClass];
+  const closeness = RADIUS_TEMP_COEF / orbitalRadius; // smaller radius ⇒ hotter
+  const jitter = randFloat(rng, -TEMP_JITTER, TEMP_JITTER);
+  return star + closeness + jitter;
+}
+
+// ---------------------------------------------------------------------------
 // Hazard — coupled to temperature extremity.
 //
 // Hazard rises *rapidly* as a planet's mean temperature departs from a
@@ -352,6 +392,113 @@ function depositsFor(rng: Rng, hazard: number, biome: Biome): ResourceDeposit[] 
 // Planet & system generation.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Band lines for region temperature clamping (biome-consistency). These mirror
+// the landing-gate thresholds in `src/lib/game/rules.ts` (`FREEZING_C` /
+// `BOILING_C`) — kept as local constants so the universe layer stays free of a
+// dependency on the game layer. A planet `> BOILING_C` is "boiling", `<
+// FREEZING_C` is "freezing", otherwise "moderate"; region variation must never
+// flip a region into a different band than its planet.
+// ---------------------------------------------------------------------------
+const FREEZING_C = 0;
+const BOILING_C = 100;
+/**
+ * Margin (°C) a clamped region temperature is held strictly OFF the 0/100 lines,
+ * so that after rounding to one decimal a boiling planet's regions still read
+ * `> 100` and a freezing planet's `< 0` (and never land exactly on the line,
+ * which `band()` treats as moderate).
+ */
+const BAND_MARGIN = 0.1;
+
+// ---------------------------------------------------------------------------
+// Biome affinities & per-region offsets (biome-consistency).
+//
+// Each biome has (a) a TEMPERATURE AFFINITY used when assembling a planet's
+// palette — hot worlds favor hot biomes and downweight cold ones, and vice
+// versa — and (b) small per-region TEMPERATURE and HAZARD offsets that make a
+// region read hotter/colder and more/less hazardous than its planet's mean.
+//
+// Affinity sign: +1 = hot-loving (volcanic, desert), −1 = cold-loving (tundra),
+// 0 = temperature-neutral (everything else). `ocean`/`jungle` are also confined
+// to moderate worlds in the palette builder (no liquid water on boiling/freezing
+// worlds). `gas` is special — it never enters the weighted pool; a gas giant is
+// drawn up front as the exclusive `["gas"]` palette.
+// ---------------------------------------------------------------------------
+
+/** Temperature affinity per biome: +1 hot-loving, −1 cold-loving, 0 neutral. */
+const BIOME_TEMP_AFFINITY: Record<Biome, number> = {
+  barren: 0,
+  ocean: 0,
+  jungle: 0,
+  desert: 1,
+  tundra: -1,
+  volcanic: 1,
+  toxic: 0,
+  crystalline: 0,
+  gas: 0,
+  irradiated: 0,
+};
+
+/**
+ * Per-region TEMPERATURE offset (°C) by biome, applied to the planet's mean to
+ * get the region's temperature (then band-clamped). Hot biomes (`volcanic`,
+ * `desert`) run warmer; `tundra` runs colder; `barren`/`gas` are neutral (0).
+ * The seeded contract requires `volcanic > barren` and `tundra < barren`.
+ */
+const BIOME_TEMP_OFFSET: Record<Biome, number> = {
+  volcanic: 15,
+  desert: 8,
+  irradiated: 5,
+  toxic: 3,
+  jungle: 2,
+  barren: 0,
+  gas: 0,
+  crystalline: -2,
+  ocean: -3,
+  tundra: -15,
+};
+
+/**
+ * Per-region HAZARD offset (added to the planet's hazard, then clamped to
+ * [0,1]). The naturally dangerous biomes (`volcanic`, `irradiated`, `toxic`)
+ * are positive; calmer ones sit at/below 0. The seeded contract requires
+ * `volcanic > barren` and that volcanic/irradiated/toxic are all ≥ 0.
+ */
+const BIOME_HAZARD_OFFSET: Record<Biome, number> = {
+  volcanic: 0.15,
+  irradiated: 0.15,
+  toxic: 0.12,
+  desert: 0.03,
+  tundra: 0.02,
+  gas: 0,
+  barren: 0,
+  jungle: 0,
+  crystalline: 0,
+  ocean: -0.02,
+};
+
+/** Per-region temperature offset (°C) contributed by a region's biome. */
+export function biomeTempOffset(biome: Biome): number {
+  return BIOME_TEMP_OFFSET[biome];
+}
+
+/** Per-region hazard offset (added to planet hazard, then clamped to [0,1]). */
+export function biomeHazardOffset(biome: Biome): number {
+  return BIOME_HAZARD_OFFSET[biome];
+}
+
+/**
+ * Clamp a region's temperature to the SAME band (relative to 0°C / 100°C) as its
+ * planet, so region variation can never read as a different landing category.
+ * Inputs are one-decimal-rounded; the `BAND_MARGIN` push keeps boiling regions
+ * strictly `> 100` and freezing regions strictly `< 0` even after rounding.
+ */
+function clampRegionTemp(regionTemp: number, planetTemp: number): number {
+  if (planetTemp > BOILING_C) return Math.max(regionTemp, BOILING_C + BAND_MARGIN);
+  if (planetTemp < FREEZING_C) return Math.min(regionTemp, FREEZING_C - BAND_MARGIN);
+  return Math.min(BOILING_C, Math.max(FREEZING_C, regionTemp));
+}
+
 /** Surface biomes, weighted so the galaxy is varied but barren/desert common. */
 const BIOME_WEIGHTS: Record<Biome, number> = {
   barren: 16,
@@ -367,19 +514,84 @@ const BIOME_WEIGHTS: Record<Biome, number> = {
 };
 
 /**
- * The planet's biome palette: a DISTINCT subset of `BIOMES` of size in
- * `[PALETTE_MIN, PALETTE_MAX]`. Members are drawn weighted by `BIOME_WEIGHTS`
- * (without replacement) so common biomes dominate palettes just as they
- * dominated single-biome planets before the region reshape. A region's biome is
- * later picked from this palette, so this is the only set of biomes a planet's
- * regions can ever exhibit.
+ * Chance a planet is a GAS GIANT — an exclusive `["gas"]` palette. Drawn up
+ * front so `gas` never mixes into a multi-biome palette (rule 1).
  */
-function biomePaletteFor(rng: Rng): Biome[] {
-  const size = randInt(rng, PALETTE_MIN, PALETTE_MAX);
-  const available = BIOMES.slice();
+const GAS_GIANT_CHANCE = 0.12;
+
+/**
+ * How temperature affinity bends palette selection. The weight multiplier for a
+ * biome is `exp(AFFINITY_STRENGTH · affinity · tNorm)`, where `tNorm` is the
+ * planet's temperature normalized around the comfort mid. So on a hot world
+ * (tNorm > 0) `tundra` (affinity −1) is exponentially downweighted while
+ * `volcanic`/`desert` (affinity +1) are upweighted, and vice-versa on a cold
+ * world. Neutral biomes (affinity 0) are unaffected.
+ */
+const AFFINITY_STRENGTH = 2.5;
+
+/** Comfort-window half-width (°C) within which a planet counts as fully moderate. */
+const PALETTE_COMFORT = 40;
+/** Temperature departure beyond the comfort window (°C) that maps to full extremity. */
+const PALETTE_EXTREME_SCALE = 130;
+
+/**
+ * Temperature extremity in [0, 1]: 0 for a moderate world (within ±`PALETTE_COMFORT`
+ * of the comfort mid), rising to 1 as it gets very hot or very cold. Drives
+ * palette SIZE (rule 4): extreme worlds collapse toward a single coherent biome,
+ * moderate worlds spread to `PALETTE_MAX`.
+ */
+function tempExtremity(temperature: number): number {
+  const departure = Math.max(
+    0,
+    Math.abs(temperature - TEMP_COMFORT_MID) - PALETTE_COMFORT,
+  );
+  return Math.min(1, departure / PALETTE_EXTREME_SCALE);
+}
+
+/**
+ * The planet's biome palette: a DISTINCT subset of `BIOMES` whose composition
+ * and size are coupled to the planet's `temperature` (biome-consistency):
+ *  - rule 1: a `GAS_GIANT_CHANCE` fraction are gas giants → exactly `["gas"]`;
+ *    otherwise `gas` is excluded from the pool entirely.
+ *  - rule 4: SIZE declines with `tempExtremity` — moderate worlds reach
+ *    `PALETTE_MAX`, extreme worlds collapse toward 1.
+ *  - rule 3: members are drawn weighted by `BIOME_WEIGHTS` bent by temperature
+ *    affinity, so hot worlds favor hot biomes / shed cold ones (and vice-versa).
+ *  - rule 5: `ocean` (and `jungle`, the other liquid/life biome) are excluded on
+ *    boiling/freezing worlds — no liquid water beyond the band.
+ * A region's biome is later picked uniformly from this palette, so it is the
+ * only set of biomes a planet's regions can ever exhibit.
+ */
+function biomePaletteFor(rng: Rng, temperature: number): Biome[] {
+  // (1) Gas giants: rolled first, exclusive, single-biome.
+  if (rng() < GAS_GIANT_CHANCE) return ["gas"];
+
+  // (4) Size from temperature extremity: 4 at moderate → 1 at extreme, plus a
+  // small jitter so similar worlds still vary; clamped to [1, PALETTE_MAX].
+  const extremity = tempExtremity(temperature);
+  const sizeBase = PALETTE_MAX - (PALETTE_MAX - PALETTE_MIN) * extremity;
+  const size = Math.min(
+    PALETTE_MAX,
+    Math.max(PALETTE_MIN, Math.round(sizeBase + randFloat(rng, -0.49, 0.49))),
+  );
+
+  // (5) Exclude `gas` always (handled above) and, on boiling/freezing worlds,
+  // the liquid/life biomes that can't exist beyond the 0/100 band.
+  const extremeWorld = temperature > BOILING_C || temperature < FREEZING_C;
+  const available = BIOMES.filter(
+    (b) => b !== "gas" && !(extremeWorld && (b === "ocean" || b === "jungle")),
+  );
+
+  // (3) Temperature-weighted selection without replacement. tNorm > 0 on hot
+  // worlds, < 0 on cold; affinity bends each biome's weight exponentially.
+  const tNorm = (temperature - TEMP_COMFORT_MID) / 100;
   const palette: Biome[] = [];
   for (let i = 0; i < size && available.length > 0; i++) {
-    const weights = available.map((b) => BIOME_WEIGHTS[b]);
+    const weights = available.map(
+      (b) =>
+        BIOME_WEIGHTS[b] *
+        Math.exp(AFFINITY_STRENGTH * BIOME_TEMP_AFFINITY[b] * tNorm),
+    );
     const idx = weightedIndex(rng, weights);
     palette.push(available[idx]!);
     available.splice(idx, 1); // distinct biome per palette slot
@@ -444,19 +656,20 @@ function generatePlanet(
     coord.planet,
   );
 
-  const biomePalette = biomePaletteFor(rng);
   const atmosphere = atmosphereFor(rng);
   const gravity = Number(randFloat(rng, 0.1, 2.8).toFixed(3)); // g, (0,10]
-  // Temperature first — hazard is derived from it (extreme temps ⇒ savage).
+  // Orbital RADIUS is drawn BEFORE temperature now (biome-consistency): a
+  // planet's temperature rises with closeness to its sun, so we need the radius
+  // first. Period/phase are still time-only orbital shape and follow later.
+  const orbitalRadius = Number(randFloat(rng, ORBIT_RADIUS_MIN, ORBIT_RADIUS_MAX).toFixed(4));
+  // Temperature from star brightness + closeness; hazard derives from it
+  // (extreme temps ⇒ savage); the palette's composition + size derive from it too.
   const temperature = Number(
-    (STAR_TEMP_BASE[starClass] + randFloat(rng, -120, 120)).toFixed(1),
+    planetTemperatureFor(starClass, orbitalRadius, rng).toFixed(1),
   );
   const hazard = Number(hazardFor(rng, temperature).toFixed(4));
+  const biomePalette = biomePaletteFor(rng, temperature);
   const regionCount = regionCountFor(rng);
-  // Orbital attributes are drawn LAST so adding them left every pre-existing
-  // field (palette, atmosphere, gravity, temperature, hazard, regionCount)
-  // byte-identical — the orbital draws only consume fresh stream after them.
-  const orbitalRadius = Number(randFloat(rng, ORBIT_RADIUS_MIN, ORBIT_RADIUS_MAX).toFixed(4));
   const orbitalPeriod = Math.round(randFloat(rng, ORBIT_PERIOD_MIN_MS, ORBIT_PERIOD_MAX_MS));
   const orbitalPhase = Number(randFloat(rng, 0, TWO_PI).toFixed(6));
 
@@ -550,9 +763,26 @@ export function regionAt(
   );
 
   // Biome is always a member of the planet's palette (AC#2). It's rolled before
-  // deposits so the biome-aware candidate pool stays deterministic.
+  // temperature/hazard/deposits so the per-region offsets and the biome-aware
+  // candidate pool are deterministic functions of the region coord.
   const biome = pick(rng, planet.biomePalette);
-  const deposits = depositsFor(rng, planet.hazard, biome).map((d) => ({
+
+  // Per-region temperature & hazard: the planet's mean nudged by the biome, then
+  // (temperature) clamped to the planet's 0/100 band so a region never reads as
+  // a different landing category, and (hazard) clamped to [0, 1].
+  const temperature = Number(
+    clampRegionTemp(
+      Number((planet.temperature + biomeTempOffset(biome)).toFixed(1)),
+      planet.temperature,
+    ).toFixed(1),
+  );
+  const hazard = Number(
+    Math.min(1, Math.max(0, planet.hazard + biomeHazardOffset(biome))).toFixed(4),
+  );
+
+  // Deposits use the REGION's hazard now, so the savage→rare coupling bites
+  // per-region: a volcanic region carries rarer ore than a calm one alongside it.
+  const deposits = depositsFor(rng, hazard, biome).map((d) => ({
     resourceId: d.resourceId,
     abundance: Number(d.abundance.toFixed(4)),
   }));
@@ -560,6 +790,8 @@ export function regionAt(
   return {
     coord: { ...planetCoord, region: regionIndex },
     biome,
+    temperature,
+    hazard,
     deposits,
   };
 }

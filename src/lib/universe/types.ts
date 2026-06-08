@@ -56,8 +56,13 @@ export const REGION_COUNT_MAX = 100_000;
  * Per-planet biome palette size bounds. Each planet picks a distinct subset of
  * `BIOMES` of size in `[PALETTE_MIN, PALETTE_MAX]`; its regions only ever draw
  * their biome from that palette, giving each world a coherent-but-varied look.
+ *
+ * `PALETTE_MIN` is 1 because palette SIZE is now coupled to temperature
+ * extremity (`biome-consistency` phase): temperature-extreme worlds (very hot /
+ * very cold) collapse toward a single, coherent biome, while moderate worlds
+ * spread up to `PALETTE_MAX`. Gas giants are also size-1 (`["gas"]`, exclusive).
  */
-export const PALETTE_MIN = 2;
+export const PALETTE_MIN = 1;
 export const PALETTE_MAX = 4;
 
 /**
@@ -168,12 +173,23 @@ export interface Planet {
 
 /**
  * A fully-described, recomputable region of a planet. Its `biome` is always a
- * member of the planet's `biomePalette`; its `deposits` are rolled with the
- * planet's hazard (so the savage→rare coupling carries down to the region).
+ * member of the planet's `biomePalette`. The region carries its OWN
+ * `temperature` and `hazard`, derived from the planet's by a small per-biome
+ * offset (`biomeTempOffset` / `biomeHazardOffset`): a `volcanic` region reads
+ * hotter and more hazardous than a `barren` one on the same world. The
+ * temperature offset is CLAMPED so a region never crosses the 0°C / 100°C lines
+ * its planet sits on (a moderate planet's regions stay in [0,100], a boiling
+ * planet's stay > 100, a freezing planet's stay < 0) — so region variation can
+ * never flip the planet-level landing category. `deposits` are rolled with the
+ * REGION's hazard, so the savage→rare coupling now bites per-region.
  */
 export interface Region {
   readonly coord: RegionCoord;
   readonly biome: Biome;
+  /** Mean surface temperature of THIS region in °C (planet temp ± biome offset, band-clamped). */
+  readonly temperature: number;
+  /** Environmental danger of THIS region in [0, 1] (planet hazard ± biome offset). */
+  readonly hazard: number;
   /** Harvestable deposits; may be empty (barren), usually ≥1. */
   readonly deposits: readonly ResourceDeposit[];
 }

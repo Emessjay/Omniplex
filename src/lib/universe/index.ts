@@ -46,6 +46,8 @@ export {
   regionKey,
   parseLocationKey,
   warpDistance,
+  biomeTempOffset,
+  biomeHazardOffset,
   ARM_SPAN,
   CLUSTER_SPAN,
   SYSTEM_SPAN,

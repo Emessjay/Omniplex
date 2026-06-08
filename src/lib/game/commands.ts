@@ -1080,7 +1080,9 @@ async function handleDisembark(player: Player, seed: string): Promise<RenderFram
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
   const region = regionAt(seed, coord, player.region);
-  const hazardPct = Math.round(planet.hazard * 100);
+  // Hazard is per-region now — you're standing in THIS region, so its hazard
+  // (not the planet mean) is what threatens you.
+  const hazardPct = Math.round(region.hazard * 100);
   return frame([
     line([
       text("You disembark onto the surface — ", "success"),
@@ -1173,16 +1175,18 @@ async function handleMine(
     text(`Cargo ${used + yield_}/${player.cargoCap} (${remaining} free).`, "muted"),
   ]);
 
-  // Surface hazard: a successful mine exposes you to harm. Two real rolls feed
-  // the pure `rollHazardDamage`; the result is subtracted from health (floored
-  // at 0 by the death branch). The ore is yours either way — you struck it
-  // before the hazard hit.
-  const damage = rollHazardDamage(planet.hazard, Math.random(), Math.random());
+  // Surface hazard: a successful mine exposes you to harm. The roll uses the
+  // REGION's hazard (you're standing in it) so a volcanic region wounds you more
+  // than a calm one on the same planet. Two real rolls feed the pure
+  // `rollHazardDamage`; the result is subtracted from health (floored at 0 by
+  // the death branch). The ore is yours either way — you struck it before the
+  // hazard hit.
+  const damage = rollHazardDamage(region.hazard, Math.random(), Math.random());
   if (damage <= 0) {
     return frame([mineLine]);
   }
 
-  const hazardPct = Math.round(planet.hazard * 100);
+  const hazardPct = Math.round(region.hazard * 100);
   const newHealth = player.health - damage;
   if (newHealth > 0) {
     await world.setHealth(player.id, newHealth);
@@ -1333,11 +1337,12 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
     }
   }
 
-  // Surface hazard: exploring exposes you to harm exactly like mining does.
-  const damage = rollHazardDamage(planet.hazard, Math.random(), Math.random());
+  // Surface hazard: exploring exposes you to harm exactly like mining does,
+  // off the REGION's hazard (you're standing in it).
+  const damage = rollHazardDamage(region.hazard, Math.random(), Math.random());
   if (damage <= 0) return frame(lines);
 
-  const hazardPct = Math.round(planet.hazard * 100);
+  const hazardPct = Math.round(region.hazard * 100);
   const newHealth = player.health - damage;
   if (newHealth > 0) {
     await world.setHealth(player.id, newHealth);

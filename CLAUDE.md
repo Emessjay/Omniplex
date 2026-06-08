@@ -1069,3 +1069,63 @@ gotchas) accrete here as workers surface things worth persisting. See
   bucket in `applicability.ts` (alongside its `VERBS`+`USAGE` registration and
   `argDomain`/handler) — help-visibility and dispatch-gating both follow
   automatically.
+
+### Load-bearing decisions from `biome-consistency`
+
+- **Biome / temperature / hazard are now physically coherent.** All the new
+  logic is PURE & deterministic in `src/lib/universe/gen.ts` (+ a `Region`
+  reshape in `types.ts`) — **no schema/migration**; the only gameplay wiring is a
+  damage-source + scan-render tweak in `commands.ts`/`render.ts`.
+- **Temperature ← star brightness + orbital closeness** (`planetTemperatureFor(
+  starClass, orbitalRadius, rng)`): `STAR_TEMP_BASE[starClass] + RADIUS_TEMP_COEF
+  / orbitalRadius + jitter(±TEMP_JITTER)`. The deterministic part is MONOTONIC —
+  hotter star ⇒ hotter, smaller radius ⇒ hotter (the `1/radius` insolation term).
+  `RADIUS_TEMP_COEF = 120`, `TEMP_JITTER = 120`. **`orbitalRadius` is now drawn
+  BEFORE temperature** in `generatePlanet` (the closeness term needs it); this
+  replaced the old `STAR_TEMP_BASE + random`. Hazard is still `hazardFor(temp)`
+  (temp-hazard coupling), computed off the new temperature — distribution is
+  preserved (the `1/radius` term concentrates heat on rare close-in worlds, so
+  the bulk stays star-driven and every existing universe test passes unmigrated).
+- **Gas is exclusive (`["gas"]`).** `biomePaletteFor(rng, temperature)` rolls a
+  `GAS_GIANT_CHANCE = 0.12` gas-giant up front (palette `["gas"]`); otherwise
+  `gas` is filtered out of the candidate pool entirely. No planet is "part gas".
+- **Palette SIZE ← temperature extremity.** `tempExtremity(temp)` ∈ [0,1] (0 when
+  within ±`PALETTE_COMFORT`=40°C of the comfort mid 15°C, →1 over
+  `PALETTE_EXTREME_SCALE`=130°C beyond). Size = `round(PALETTE_MAX −
+  (PALETTE_MAX−PALETTE_MIN)·extremity + jitter)`, clamped to `[1, PALETTE_MAX]`.
+  Moderate worlds reach 4; extreme worlds collapse toward 1. **`PALETTE_MIN` was
+  lowered 2 → 1** (gas giants and extreme worlds are single-biome) — the existing
+  `>= PALETTE_MIN` assertions still hold against the constant.
+- **Palette COMPOSITION ← temperature affinity.** Each biome has a
+  `BIOME_TEMP_AFFINITY` (+1 hot: volcanic/desert, −1 cold: tundra, 0 neutral);
+  selection weight = `BIOME_WEIGHTS[b] · exp(AFFINITY_STRENGTH·affinity·tNorm)`
+  (`AFFINITY_STRENGTH = 2.5`, `tNorm = (temp−15)/100`). Hot worlds downweight
+  cold biomes / upweight hot, and vice-versa — so hot planets carry far fewer
+  tundra regions than cold ones.
+- **No oceans (or jungle) on extreme worlds.** When `temp > BOILING_C` (100) or
+  `temp < FREEZING_C` (0), `ocean` AND `jungle` (the liquid/life biomes) are
+  excluded from the candidate pool. (`gas` always excluded — it's the giant gate.)
+- **Per-region temperature + hazard** (`Region` gained `temperature` and
+  `hazard`): `region.temperature = clampRegionTemp(round1(planet.temperature +
+  biomeTempOffset(biome)), planet.temperature)`; `region.hazard =
+  clamp01(planet.hazard + biomeHazardOffset(biome))`. **`clampRegionTemp` keeps a
+  region on the SAME side of 0/100 as its planet** (boiling planet → regions
+  `> 100` via a `BAND_MARGIN`=0.1 push that survives 1-decimal rounding; freezing
+  → `< 0`; moderate → `[0,100]`), so region variation can NEVER flip the
+  planet-level landing category — the **landing gate stays planet-level**.
+  Exported **`biomeTempOffset(biome)` / `biomeHazardOffset(biome)`** (from
+  `@/lib/universe`) order extreme biomes above calm: volcanic↑ & tundra↓ temp;
+  volcanic/irradiated/toxic ≥ 0 hazard; barren/gas neutral.
+- **Deposits use the REGION's hazard** now (`depositsFor(rng, region.hazard,
+  biome)` in `regionAt`) — the savage→rare rarity coupling bites per-region, so a
+  volcanic region carries rarer ore than a calm one alongside it (biome rolled
+  before temp/hazard/deposits so all three are deterministic per region coord).
+- **Disembarked damage uses region hazard.** `mine`/`explore`/`disembark` in
+  `commands.ts` roll `rollHazardDamage(region.hazard, …)` (was `planet.hazard`),
+  and `scan` (`renderScan`) shows a `region temp / region hazard` line alongside
+  the planet's mean — so "volcanic regions are more dangerous" actually bites.
+- **Seeded contract**: `src/lib/universe/biome-consistency.test.ts` (gas
+  exclusivity, temp monotone in star+radius, cold-biome-vs-temp, palette-size-vs-
+  extremity, no-ocean-on-extreme, region band + offset ordering). The existing
+  universe suites (universe-gen, planet-regions, biome-minerals, addressing)
+  needed NO migration — the new distributions preserved their thresholds.
