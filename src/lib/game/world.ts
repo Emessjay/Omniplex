@@ -309,6 +309,59 @@ export async function removeInventory(
 }
 
 // ---------------------------------------------------------------------------
+// Upgrade market (upgrade_market) — the shared, finite buyable SUPPLY per
+// upgrade (P9a). PUBLIC read (a shared market signal); service-role writes.
+// `buy` decrements, `sell`/manufacture increments. The catalog (ids, recipes,
+// code-derived prices) still lives in code (`upgrades.ts`); this is only the
+// supply count.
+// ---------------------------------------------------------------------------
+
+/**
+ * The current shared buyable supply of `upgradeId` (0 if no row yet). A read,
+ * not a mutation — `buy` checks this before charging.
+ */
+export async function getUpgradeSupply(upgradeId: string): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("upgrade_market")
+    .select("supply")
+    .eq("upgrade_id", upgradeId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? (data as { supply: number }).supply : 0;
+}
+
+/** Every upgrade's current market supply as `{ upgradeId: supply }` (for views). */
+export async function getUpgradeSupplies(): Promise<Record<string, number>> {
+  const db = getServerClient();
+  const { data, error } = await db.from("upgrade_market").select("upgrade_id, supply");
+  if (error) throw error;
+  const out: Record<string, number> = {};
+  for (const r of data ?? []) {
+    out[(r as { upgrade_id: string }).upgrade_id] = (r as { supply: number }).supply;
+  }
+  return out;
+}
+
+/**
+ * Atomically adjust an upgrade's market supply by `delta` (negative on buy,
+ * positive on sell/manufacture); returns the new supply. Clamped at 0 in SQL,
+ * but handlers validate supply (and ownership/credits) first.
+ */
+export async function addUpgradeSupply(
+  upgradeId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_upgrade_supply", {
+    p_upgrade: upgradeId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Materials (player_materials) — harvested/looted/dropped goods. Ownership
 // counts only; the catalog (names, values) lives in code (`materials.ts`).
 // Direct mirror of the player_upgrades adapters above.

@@ -824,3 +824,60 @@ gotchas) accrete here as workers surface things worth persisting. See
   (consuming parts), and parts gain a finite, player-grown market supply +
   on-market selling. Extend `parts.ts` / the upgrade recipes there; no schema
   change needed.
+
+### Load-bearing decisions from `upgrade-economy`
+
+- **P9a turns ship upgrades into MANUFACTURED goods with a finite, player-driven
+  market supply.** Two coupled changes, both reusing existing machinery (no
+  fork):
+  1. **Upgrade recipes are now SHIP PARTS, not raw minerals.** `Upgrade.recipe`
+     keys are PART ids (`upgrades.ts`): Ablative Shields =
+     `{ hull_plating: 2, alloy_beam: 1 }`, Antifreeze Tanks =
+     `{ circuit_board: 2, sensor_array: 1 }`. `recipeCost` now sums **`partValue`**
+     (× qty) and `upgradeValue = round(recipeCost × CRAFT_VALUE_MARKUP)` is
+     unchanged in formula but much higher in absolute value (parts are valuable).
+     `upgrades.ts` imports `getPart` from `parts.ts` (one-way; no cycle).
+  2. **Upgrades moved OFF manual `craft` onto `produce`.** `craft` now ONLY cooks
+     food (P6). `craft <upgrade>` errors with a redirect to `produce` + a
+     production line. To make that redirect reachable (the resolver would
+     otherwise reject an unknown arg), **`craft`'s arg domain is now OPAQUE
+     (`null`)** and `handleCraft` resolves the food prefix itself via
+     `resolveToken(target, FOOD_IDS)` (foods still abbreviate handler-side; `help
+     craft` shows a `<food>` placeholder + hint). `produce`'s arg domain is now
+     `[...PART_IDS, ...UPGRADE_IDS]`.
+- **`produce <upgrade>`** (`handleProduceUpgrade`, branched out of `handleProduce`
+  after the shared base + production-line checks): consumes the upgrade's siloed
+  **PART** inputs (`add_base_storage(-)`) and **grants the upgrade to the player**
+  (`add_player_upgrade(+1)`) — NOT banked into storage, so there's NO capacity
+  check (upgrades don't sit in the silo). Validates `canProduce(siloed, recipe,
+  qty)` BEFORE mutating; atomic; ungated by embark state (it's your base, like
+  parts). Supports `qty`.
+- **Finite buyable SUPPLY** lives in `public.upgrade_market` (migration
+  `20260608120000_upgrade-economy.sql`, forward-only/idempotent): `upgrade_id
+  text pk`, `supply integer ≥ 0`, `updated_at`. **PUBLIC read** (shared market,
+  like `markets`/`bases`); service-role writes only. Atomic
+  `add_upgrade_supply(upgrade, delta)` RPC (clamped ≥ 0, stamps `updated_at`),
+  mirroring `add_player_upgrade`/`add_base_storage`. **Seeded 3 per upgrade** via
+  `on conflict do nothing` (runs once; never clobbers organically-moved supply).
+  The seeded ids MUST stay in lock-step with `UPGRADES`. `world.ts` adapters:
+  `getUpgradeSupply(id)`, `getUpgradeSupplies()` (for the view),
+  `addUpgradeSupply(id, delta)`.
+- **buy/sell upgrade supply mechanics** (still embarked-only economy; PRICE stays
+  code-derived `buyUnitCost(upgradeValue)` — only SUPPLY is the new mechanic):
+  `buy <upgrade>` requires `canBuyFromSupply(supply)` (pure, `supply > 0`, in
+  `upgrades.ts`) — out of stock errors "someone must manufacture and sell one";
+  validates `supply ≥ qty` BEFORE charging, then `add_upgrade_supply(-qty)`.
+  `sell <upgrade>` is unchanged in payout but now also `add_upgrade_supply(+qty)`
+  — so the ONLY way buyable stock grows is players manufacturing + selling.
+- **Supply is surfaced in the `upgrades` market view** (`renderUpgrades` /
+  `UpgradesView.market`): a "Market (finite supply)" section listing each upgrade
+  as `N in stock (price)` (clickable `buy` when in stock) or "out of stock". The
+  owned-none hint points to `produce` (no longer a clickable `craft`).
+- **Landing gate unchanged** (`canLand`/`landingRequirement`, owning ≥ 1
+  Ablative/Antifreeze) — you just obtain upgrades via `produce`/`buy` now.
+  `ship-upgrades.test.ts` was migrated: the recipe-component assertion now expects
+  the parts-based recipes (the value-band `(cost, 2×cost)` assertion still holds at
+  `CRAFT_VALUE_MARKUP = 1.2`).
+- **For P9b**: render unbuyable (out-of-stock / unaffordable) and otherwise-
+  unperformable action tokens RED. The supply read (`getUpgradeSupplies`) +
+  `canBuyFromSupply` are the hooks for the out-of-stock case.

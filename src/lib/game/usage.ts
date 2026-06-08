@@ -145,8 +145,8 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   craft: {
-    desc: "synthesize a ship upgrade or cook food from materials",
-    slots: [{ name: "thing" }],
+    desc: "cook food from materials (upgrades are now `produce`d)",
+    slots: [{ name: "food", hint: "a food id; see `inventory` / `eat`" }],
   },
   eat: {
     desc: "eat a cooked food to restore health",
@@ -191,7 +191,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   produce: {
-    desc: "manufacture a ship part from siloed minerals (needs a production line)",
+    desc: "manufacture a ship part or upgrade from siloed inputs (needs a production line)",
     slots: [
       { name: "part" },
       { name: "qty", optional: true, hint: "a number (default 1)" },

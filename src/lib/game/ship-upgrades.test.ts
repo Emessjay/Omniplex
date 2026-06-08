@@ -16,20 +16,29 @@ import {
   recipeCost,
   upgradeValue,
 } from "@/lib/game/upgrades";
+import { isPartId } from "@/lib/game/parts";
 
 describe("upgrade catalog", () => {
-  it("has the two upgrades with the user-specified components", () => {
+  // P9a: upgrade recipes are now SHIP PARTS (manufactured at a production line),
+  // not raw minerals — the old titanium/silica/iron components are gone.
+  it("has the two upgrades, now built from ship parts", () => {
     expect(UPGRADE_IDS).toEqual(
       expect.arrayContaining(["ablative_shields", "antifreeze_tanks"]),
     );
     expect(Object.keys(recipeOf("ablative_shields")).sort()).toEqual([
-      "silica",
-      "titanium",
+      "alloy_beam",
+      "hull_plating",
     ]);
     expect(Object.keys(recipeOf("antifreeze_tanks")).sort()).toEqual([
-      "iron",
-      "titanium",
+      "circuit_board",
+      "sensor_array",
     ]);
+    // Every recipe key is a real ship-part id.
+    for (const u of UPGRADES) {
+      for (const partId of Object.keys(u.recipe)) {
+        expect(isPartId(partId)).toBe(true);
+      }
+    }
   });
 
   it("recipe quantities are positive integers", () => {

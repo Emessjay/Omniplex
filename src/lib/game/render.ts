@@ -637,36 +637,65 @@ export function renderInventory(view: InventoryView): RenderFrame {
 
 export interface UpgradesView {
   owned: { upgradeId: string; qty: number }[];
+  /**
+   * The shared finite market (P9a): per-upgrade buyable supply + the per-unit
+   * buy price. `buy` works only while `supply > 0`; `sell`/manufacture grow it.
+   */
+  market?: { upgradeId: string; supply: number; price: number }[];
 }
 
 /**
- * Owned ship upgrades + the capability each one activates. When the player owns
- * none, list the craftable catalog as a hint (each a clickable `craft` action).
+ * Owned ship upgrades + the capability each one activates, then the shared
+ * upgrade MARKET (P9a): how many of each upgrade are currently buyable. Upgrades
+ * are now MANUFACTURED at a production line (`produce`), not hand-crafted, so the
+ * catalog hint points there; the market section shows live finite supply.
  */
 export function renderUpgrades(view: UpgradesView): RenderFrame {
   const lines: RenderLine[] = [line(text("Ship upgrades", "heading"))];
   if (view.owned.length === 0) {
-    lines.push(line(text("None installed. Craftable:", "muted")));
+    lines.push(
+      line(text("None installed. Manufacture at a base's production line, or buy from the market below:", "muted")),
+    );
     for (const u of UPGRADES) {
       lines.push(
         line([
           text("  • ", "muted"),
-          action(u.name, `craft ${u.id}`, { style: "link", title: `craft ${u.name}` }),
-          text(`  — ${capabilityOf(u.id)}`, "muted"),
+          text(`${u.name}`, "default"),
+          text(`  — ${capabilityOf(u.id)} (\`produce ${u.id}\`)`, "muted"),
         ]),
       );
     }
-    return frame(lines);
+  } else {
+    for (const o of view.owned) {
+      const up = getUpgrade(o.upgradeId);
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${up.name} ×${o.qty}  `, "default"),
+          text(`✓ ${capabilityOf(o.upgradeId)}`, "success"),
+        ]),
+      );
+    }
   }
-  for (const o of view.owned) {
-    const up = getUpgrade(o.upgradeId);
-    lines.push(
-      line([
-        text("  • ", "muted"),
-        text(`${up.name} ×${o.qty}  `, "default"),
-        text(`✓ ${capabilityOf(o.upgradeId)}`, "success"),
-      ]),
-    );
+
+  if (view.market && view.market.length > 0) {
+    lines.push(line(text("Market (finite supply):", "heading")));
+    for (const m of view.market) {
+      const up = getUpgrade(m.upgradeId);
+      const inStock = m.supply > 0;
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          inStock
+            ? action(up.name, `buy ${m.upgradeId}`, { style: "link", title: `buy ${up.name}` })
+            : text(up.name, "muted"),
+          text(
+            inStock ? ` — ${m.supply} in stock (${m.price} cr)` : " — out of stock",
+            inStock ? "muted" : "warning",
+          ),
+        ]),
+      );
+    }
   }
   return frame(lines);
 }

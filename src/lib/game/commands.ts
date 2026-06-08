@@ -60,10 +60,13 @@ import {
   FUEL_PRICE_PER_UNIT,
 } from "./rules";
 import {
+  UPGRADES,
   UPGRADE_IDS,
   isUpgradeId,
   getUpgrade,
+  recipeOf,
   upgradeValue,
+  canBuyFromSupply,
 } from "./upgrades";
 import {
   PARTS,
@@ -328,9 +331,15 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines).
       if (verb === "build" && argIndex === 0) return ["base", "silo", "excavator", "production_line"];
-      // `produce`'s part domain: the ship parts a production line can make.
-      if (verb === "produce" && argIndex === 0) return [...PART_IDS];
-      if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS, ...FOOD_IDS];
+      // `produce`'s domain: the ship parts a production line banks into storage,
+      // PLUS the upgrades it manufactures (P9a — consuming siloed parts, granting
+      // the upgrade to the player).
+      if (verb === "produce" && argIndex === 0) return [...PART_IDS, ...UPGRADE_IDS];
+      // `craft` now only cooks food (P9a — upgrades moved to `produce`). Its arg
+      // is OPAQUE: `handleCraft` resolves a food prefix itself, so a fully-typed
+      // upgrade id reaches the handler and gets a redirect to `produce` (rather
+      // than a bare "no such" from the resolver). Foods abbreviate handler-side.
+      if (verb === "craft" && argIndex === 0) return null;
       if (verb === "buy" && argIndex === 0) {
         return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
       }
@@ -1336,63 +1345,50 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
 // ---------------------------------------------------------------------------
 
 async function handleUpgrades(player: Player): Promise<RenderFrame> {
-  const stacks = await world.getPlayerUpgrades(player.id);
+  const [stacks, supplies] = await Promise.all([
+    world.getPlayerUpgrades(player.id),
+    world.getUpgradeSupplies(),
+  ]);
   return renderUpgrades({
     owned: stacks.map((s) => ({ upgradeId: s.upgradeId, qty: s.qty })),
+    // The shared, finite market supply per upgrade (P9a) — buyable while > 0.
+    market: UPGRADES.map((u) => ({
+      upgradeId: u.id,
+      supply: supplies[u.id] ?? 0,
+      price: buyUnitCost(upgradeValue(u.id)),
+    })),
   });
 }
 
 // ---------------------------------------------------------------------------
-// craft  (synthesize one upgrade from mined components)
+// craft  (cook one food from materials; upgrades are now `produce`d — P9a)
 // ---------------------------------------------------------------------------
 
 async function handleCraft(player: Player, args: string[]): Promise<RenderFrame> {
   const target = args[0]?.toLowerCase();
-  if (!target) return errorFrame("Usage: craft <thing>  (see `upgrades`; foods cook too)");
+  if (!target) return errorFrame("Usage: craft <food>  (see `inventory`; upgrades are `produce`d)");
 
-  // Food cooks from MATERIAL ingredients (player_materials), upgrades from MINED
-  // resources (cargo) — distinct stores, so branch up front.
-  if (isFoodId(target)) return handleCookFood(player, target);
-
-  if (!isUpgradeId(target)) {
-    return errorFrame(`Can't craft "${target}". Try \`upgrades\` for the list.`);
-  }
-
-  const upgrade = getUpgrade(target);
-  const recipe = upgrade.recipe;
-
-  // Read current cargo and confirm the recipe is fully covered BEFORE touching
-  // any state — a short recipe changes nothing.
-  const stacks = await world.getInventory(player.id);
-  const have: Record<string, number> = {};
-  for (const s of stacks) have[s.resourceId] = s.qty;
-
-  if (!canCraft(have, recipe)) {
-    const missing = Object.entries(recipe)
-      .filter(([rid, qty]) => (have[rid] ?? 0) < qty)
-      .map(([rid, qty]) => `${getResource(rid).name} ${have[rid] ?? 0}/${qty}`);
+  // P9a: ship upgrades are MANUFACTURED goods now — `produce` them at a base's
+  // production line from siloed parts. Catch a (fully-typed) upgrade id here and
+  // redirect, since `craft`'s arg is opaque (upgrades left its abbrev domain).
+  if (isUpgradeId(target)) {
+    const upgrade = getUpgrade(target);
     return errorFrame(
-      `Can't craft ${upgrade.name} — short on ${missing.join(", ")}.`,
+      `${upgrade.name} is manufactured, not crafted — \`produce ${target}\` at a base with a production line.`,
     );
   }
 
-  // Consume components atomically (each via the race-safe inventory RPC), then
-  // grant the upgrade.
-  for (const [rid, qty] of Object.entries(recipe)) {
-    await world.removeInventory(player.id, rid, qty);
+  // `craft` only cooks food now (from MATERIAL ingredients in player_materials).
+  // The arg is opaque, so resolve a food id / unique prefix handler-side (foods
+  // still abbreviate: `craft ber` → the berry dish).
+  const fr = resolveToken(target, [...FOOD_IDS]);
+  if (!fr.ok) {
+    if (fr.reason === "ambiguous") {
+      return errorFrame(`Ambiguous food '${target}' — did you mean: ${fr.matches.join(", ")}?`);
+    }
+    return errorFrame(`Can't craft "${target}". \`craft\` cooks food; upgrades are \`produce\`d.`);
   }
-  const owned = await world.addPlayerUpgrade(player.id, target, 1);
-
-  const consumed = Object.entries(recipe)
-    .map(([rid, qty]) => `${qty} ${getResource(rid).name}`)
-    .join(" + ");
-  return frame([
-    line([
-      text(`Crafted ${upgrade.name}. `, "success"),
-      text(`Consumed ${consumed}. `, "muted"),
-      text(`You now own ${owned}.`, "accent"),
-    ]),
-  ]);
+  return handleCookFood(player, fr.value);
 }
 
 /**
@@ -2046,10 +2042,10 @@ async function handleProduce(
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
-  const partId = args[0]?.toLowerCase();
-  if (!partId) return errorFrame("Usage: produce <part> [qty]  (see `storage`)");
-  if (!isPartId(partId)) {
-    return errorFrame(`Can't produce "${partId}". Try \`storage\` for the parts list.`);
+  const targetId = args[0]?.toLowerCase();
+  if (!targetId) return errorFrame("Usage: produce <part|upgrade> [qty]  (see `storage`)");
+  if (!isPartId(targetId) && !isUpgradeId(targetId)) {
+    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the parts list.`);
   }
 
   const base = await baseHere(player, seed);
@@ -2069,6 +2065,14 @@ async function handleProduce(
     return errorFrame("No production line here — `build production_line` first.");
   }
 
+  // P9a: an upgrade id manufactures the UPGRADE (consuming siloed PARTS, granting
+  // ownership) rather than banking a part into storage. Distinct enough — and
+  // capacity-free — to split out.
+  if (isUpgradeId(targetId)) {
+    return handleProduceUpgrade(player, base, stored, args[1], targetId);
+  }
+
+  const partId = targetId;
   const part = getPart(partId);
   const recipe = part.recipe;
 
@@ -2118,6 +2122,65 @@ async function handleProduce(
       text(`Storage ${usedAfter}/${capacity}.`, "muted"),
     ]),
     line(text(`  ${part.name} in store: ${nowStored} (worth ${part.value} cr each).`, "accent")),
+  ]);
+}
+
+/**
+ * Manufacture a ship UPGRADE at the current region's production line (P9a). The
+ * recipe is now ship PARTS (`upgrades.ts`), consumed from THIS base's silo
+ * storage (`add_base_storage(-)`); the finished upgrade is granted to the player
+ * (`add_player_upgrade(+)`) rather than banked into storage — so there's no
+ * capacity check (upgrades don't sit in the silo). Validation (parts siloed)
+ * happens BEFORE any mutation, so a failed produce changes nothing; consumption
+ * + grant are atomic via the race-safe RPCs. The base/production-line checks
+ * already ran in `handleProduce`.
+ */
+async function handleProduceUpgrade(
+  player: Player,
+  base: { id: string; name: string | null; rKey: string },
+  stored: world.StorageStack[],
+  qtyArg: string | undefined,
+  upgradeId: string,
+): Promise<RenderFrame> {
+  const upgrade = getUpgrade(upgradeId);
+  const recipe = recipeOf(upgradeId);
+
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: produce <upgrade> [qty]  — qty must be a positive whole number.");
+  }
+
+  // Siloed amounts. The recipe references PART ids (parts live in storage too).
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+
+  if (!canProduce(siloed, recipe, requested)) {
+    const short = Object.entries(recipe)
+      .filter(([pid, perUnit]) => (siloed[pid] ?? 0) < perUnit * requested)
+      .map(([pid, perUnit]) => `${perUnit * requested} ${getPart(pid).name} in the silo (have ${siloed[pid] ?? 0})`);
+    return errorFrame(`Can't produce ${requested} ${upgrade.name} — need ${short.join(", ")}.`);
+  }
+
+  // Consume the part inputs from the silo, then grant the upgrade — atomic RPCs.
+  for (const [pid, perUnit] of Object.entries(recipe)) {
+    await world.addBaseStorage(base.id, pid, -(perUnit * requested));
+  }
+  const owned = await world.addPlayerUpgrade(player.id, upgradeId, requested);
+
+  const consumed = Object.entries(recipe)
+    .map(([pid, perUnit]) => `${perUnit * requested} ${getPart(pid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Manufactured ${requested} ${upgrade.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`You now own ${owned}.`, "accent"),
+    ]),
+    line([
+      text("`embark` then `sell` ", "muted"),
+      text(`${upgradeId}`, "default"),
+      text(" to put one on the market for other pilots.", "muted"),
+    ]),
   ]);
 }
 
@@ -2217,6 +2280,9 @@ async function handleSellUpgrade(
   const total = unit * qty;
   const remaining = await world.addPlayerUpgrade(player.id, upgradeId, -qty);
   const newBalance = await world.addPlayerCredits(player.id, total);
+  // Selling puts the upgrade(s) on the shared market for others to `buy` — the
+  // only way the finite buyable supply grows (P9a).
+  const supply = await world.addUpgradeSupply(upgradeId, qty);
 
   return frame([
     line([
@@ -2225,6 +2291,7 @@ async function handleSellUpgrade(
       text(`(${unit}/u). `, "muted"),
       text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
     ]),
+    line(text(`  ${supply} now on the market for other pilots to buy.`, "muted")),
   ]);
 }
 
@@ -2393,6 +2460,21 @@ async function handleBuyUpgrade(
   const qty = requested;
   const upgrade = getUpgrade(upgradeId);
 
+  // Finite supply gate (P9a): you can only buy what's currently on the market.
+  // Validate supply BEFORE charging — manufacturing (`produce`) + selling are
+  // the only ways stock appears.
+  const supply = await world.getUpgradeSupply(upgradeId);
+  if (!canBuyFromSupply(supply)) {
+    return errorFrame(
+      `${upgrade.name} is out of stock — none on the market; someone must manufacture and sell one.`,
+    );
+  }
+  if (supply < qty) {
+    return errorFrame(
+      `Only ${supply} ${upgrade.name} on the market — can't buy ${qty}. Try a smaller quantity.`,
+    );
+  }
+
   const unitCost = buyUnitCost(upgradeValue(upgradeId));
   const total = unitCost * qty;
 
@@ -2403,6 +2485,9 @@ async function handleBuyUpgrade(
     );
   }
 
+  // Take the unit(s) off the shared market, then grant + charge. The RPC is
+  // clamped at 0; we validated supply >= qty above.
+  const newSupply = await world.addUpgradeSupply(upgradeId, -qty);
   const owned = await world.addPlayerUpgrade(player.id, upgradeId, qty);
   const newBalance = await world.addPlayerCredits(player.id, -total);
 
@@ -2413,6 +2498,7 @@ async function handleBuyUpgrade(
       text(`(${unitCost}/u). `, "muted"),
       text(`You now own ${owned}. Balance ${newBalance} cr.`, "accent"),
     ]),
+    line(text(`  ${newSupply} left on the market.`, "muted")),
   ]);
 }
 
