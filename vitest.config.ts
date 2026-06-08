@@ -12,6 +12,8 @@ export default defineConfig({
     // Pure-logic unit tests (procedural gen + game rules + helpers). No DOM
     // by default; downstream workers can opt into jsdom per-file if needed.
     environment: "node",
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // App/game logic lives under src/ as .ts(x); infra scripts (e.g. the
+    // migration runner) keep their pure-logic tests beside them as .mjs.
+    include: ["src/**/*.{test,spec}.{ts,tsx}", "scripts/**/*.{test,spec}.mjs"],
   },
 });
