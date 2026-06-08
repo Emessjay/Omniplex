@@ -38,14 +38,24 @@ import {
   priceAfterPurchase,
   buyUnitCost,
   sellValue,
+  canCraft,
+  canLand,
+  landingRequirement,
   DEPLETION_PER_UNIT,
   FUEL_PRICE_PER_UNIT,
 } from "./rules";
+import {
+  UPGRADE_IDS,
+  isUpgradeId,
+  getUpgrade,
+  upgradeValue,
+} from "./upgrades";
 import {
   renderHelp,
   renderScan,
   renderMap,
   renderInventory,
+  renderUpgrades,
   renderWho,
   errorFrame,
   type MapNeighbor,
@@ -78,6 +88,8 @@ const VERBS = [
   "land",
   "mine",
   "inventory",
+  "upgrades",
+  "craft",
   "sell",
   "buy",
   "who",
@@ -98,10 +110,14 @@ async function minableHere(player: Player, seed: string): Promise<string[]> {
     .map((d) => d.resourceId);
 }
 
-/** Sellable arg candidates: resource ids carried in the hold, plus `all`. */
+/**
+ * Sellable arg candidates: resource ids carried in the hold, the literal `all`,
+ * and every upgrade id (so `sell ab` abbreviates even before the ownership
+ * check; the handler validates you actually own it).
+ */
 async function sellableHere(player: Player): Promise<string[]> {
   const stacks = await world.getInventory(player.id);
-  return [...stacks.map((s) => s.resourceId), "all"];
+  return [...stacks.map((s) => s.resourceId), "all", ...UPGRADE_IDS];
 }
 
 export async function dispatch(player: Player, input: string): Promise<RenderFrame> {
@@ -127,10 +143,11 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
     argDomain: (verb, argIndex) => {
       if (verb === "mine" && argIndex === 0) return mineCandidates;
       if (verb === "sell" && argIndex === 0) return sellCandidates;
+      if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS];
       if (verb === "buy" && argIndex === 0) {
-        return ["fuel", ...RESOURCES.map((r) => r.id)];
+        return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
       }
-      return null; // opaque: warp coords, land index, buy quantity, …
+      return null; // opaque: warp coords, land index, buy/craft quantity, …
     },
   };
 
@@ -172,6 +189,10 @@ async function dispatchResolved(
       return handleMine(player, seed, args);
     case "inventory":
       return handleInventory(player);
+    case "upgrades":
+      return handleUpgrades(player);
+    case "craft":
+      return handleCraft(player, args);
     case "sell":
       return handleSell(player, args);
     case "buy":
@@ -191,11 +212,20 @@ async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
   const system = systemAt(seed, coord);
-  const [depletionMap, justDiscovered] = await Promise.all([
+  const [depletionMap, justDiscovered, owned] = await Promise.all([
     world.getEffectiveDepletionMap(planetKey(coord)),
     world.recordDiscovery(planetKey(coord), player.id),
+    world.getOwnedUpgradeIds(player.id),
   ]);
-  return renderScan({ planet, system, depletionMap, justDiscovered });
+  const requiredUpgrade = landingRequirement(planet.temperature);
+  return renderScan({
+    planet,
+    system,
+    depletionMap,
+    justDiscovered,
+    requiredUpgrade,
+    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -270,16 +300,24 @@ async function handleWarp(
 
   const arrivalCoord: PlanetCoord = { ...dest, planet: 0 };
   const destSystem = systemAt(seed, dest);
-  const [depletionMap, justDiscovered] = await Promise.all([
+  const arrivalPlanet = planetAt(seed, arrivalCoord);
+  const [depletionMap, justDiscovered, owned] = await Promise.all([
     world.getEffectiveDepletionMap(planetKey(arrivalCoord)),
     world.recordDiscovery(planetKey(arrivalCoord), player.id),
+    world.getOwnedUpgradeIds(player.id),
   ]);
 
+  // Warp is NOT gated — you always arrive in-system at planet 0. If that world
+  // is hostile you simply can't `mine` it until you have the gear (or `land` a
+  // survivable sibling), so this can never softlock you.
+  const requiredUpgrade = landingRequirement(arrivalPlanet.temperature);
   const scan = renderScan({
-    planet: planetAt(seed, arrivalCoord),
+    planet: arrivalPlanet,
     system: destSystem,
     depletionMap,
     justDiscovered,
+    requiredUpgrade,
+    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
   });
   return frame([
     line([
@@ -314,16 +352,37 @@ async function handleLand(
     system: player.system,
     planet: idx,
   };
+  const planet = planetAt(seed, coord);
+
+  // Landing gate: a hostile surface needs the matching upgrade. No move, no
+  // state change when blocked — naming the gear the player is missing.
+  const owned = await world.getOwnedUpgradeIds(player.id);
+  const gate = canLand(planet.temperature, owned);
+  if (!gate.ok) {
+    const up = getUpgrade(gate.required);
+    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    return errorFrame(
+      `${planet.name} is ${why} (${planet.temperature}°C) — landing requires ${up.name}. \`craft\` or \`buy\` it first.`,
+    );
+  }
+
   if (idx !== player.planet) {
     await world.setPlanet(player.id, idx);
   }
 
-  const planet = planetAt(seed, coord);
+  const requiredUpgrade = landingRequirement(planet.temperature);
   const [depletionMap, justDiscovered] = await Promise.all([
     world.getEffectiveDepletionMap(planetKey(coord)),
     world.recordDiscovery(planetKey(coord), player.id),
   ]);
-  const scan = renderScan({ planet, system, depletionMap, justDiscovered });
+  const scan = renderScan({
+    planet,
+    system,
+    depletionMap,
+    justDiscovered,
+    requiredUpgrade,
+    hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
+  });
   return frame([
     line(text(`Landed on ${planet.name}.`, "success")),
     ...scan.lines,
@@ -344,6 +403,18 @@ async function handleMine(
 
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
+
+  // Same gate as `land`: you can't work a hostile surface without the gear.
+  const owned = await world.getOwnedUpgradeIds(player.id);
+  const gate = canLand(planet.temperature, owned);
+  if (!gate.ok) {
+    const up = getUpgrade(gate.required);
+    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    return errorFrame(
+      `${planet.name} is ${why} (${planet.temperature}°C) — mining requires ${up.name}. \`craft\` or \`buy\` it first.`,
+    );
+  }
+
   const deposit = planet.deposits.find((d) => d.resourceId === resourceId);
   if (!deposit) {
     return errorFrame(`No ${resourceId} deposit on ${planet.name}. Try \`scan\`.`);
@@ -404,12 +475,75 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
 }
 
 // ---------------------------------------------------------------------------
+// upgrades  (owned ship upgrades + their active capability)
+// ---------------------------------------------------------------------------
+
+async function handleUpgrades(player: Player): Promise<RenderFrame> {
+  const stacks = await world.getPlayerUpgrades(player.id);
+  return renderUpgrades({
+    owned: stacks.map((s) => ({ upgradeId: s.upgradeId, qty: s.qty })),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// craft  (synthesize one upgrade from mined components)
+// ---------------------------------------------------------------------------
+
+async function handleCraft(player: Player, args: string[]): Promise<RenderFrame> {
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: craft <upgrade>  (see `upgrades`)");
+  if (!isUpgradeId(target)) {
+    return errorFrame(`Unknown upgrade "${target}". Try \`upgrades\` for the list.`);
+  }
+
+  const upgrade = getUpgrade(target);
+  const recipe = upgrade.recipe;
+
+  // Read current cargo and confirm the recipe is fully covered BEFORE touching
+  // any state — a short recipe changes nothing.
+  const stacks = await world.getInventory(player.id);
+  const have: Record<string, number> = {};
+  for (const s of stacks) have[s.resourceId] = s.qty;
+
+  if (!canCraft(have, recipe)) {
+    const missing = Object.entries(recipe)
+      .filter(([rid, qty]) => (have[rid] ?? 0) < qty)
+      .map(([rid, qty]) => `${getResource(rid).name} ${have[rid] ?? 0}/${qty}`);
+    return errorFrame(
+      `Can't craft ${upgrade.name} — short on ${missing.join(", ")}.`,
+    );
+  }
+
+  // Consume components atomically (each via the race-safe inventory RPC), then
+  // grant the upgrade.
+  for (const [rid, qty] of Object.entries(recipe)) {
+    await world.removeInventory(player.id, rid, qty);
+  }
+  const owned = await world.addPlayerUpgrade(player.id, target, 1);
+
+  const consumed = Object.entries(recipe)
+    .map(([rid, qty]) => `${qty} ${getResource(rid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Crafted ${upgrade.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`You now own ${owned}.`, "accent"),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
 // sell
 // ---------------------------------------------------------------------------
 
 async function handleSell(player: Player, args: string[]): Promise<RenderFrame> {
   const target = args[0]?.toLowerCase();
   if (!target) return errorFrame("Usage: sell <resource>  or  sell all");
+
+  // Selling an upgrade is code-priced (no market drift); resource selling below
+  // is unchanged.
+  if (isUpgradeId(target)) return handleSellUpgrade(player, target, args[1]);
 
   const stacks = await world.getInventory(player.id);
   if (stacks.length === 0) return errorFrame("Nothing to sell — your hold is empty.");
@@ -464,14 +598,58 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
   ]);
 }
 
+/**
+ * Sell `qty` of an upgrade back for `upgradeValue` per unit (a bit above raw
+ * component cost). Code-priced — upgrades aren't in the market and never drift.
+ * Validates ownership before mutating; selling your last one drops the
+ * capability.
+ */
+async function handleSellUpgrade(
+  player: Player,
+  upgradeId: string,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: sell <upgrade> [qty]  — qty must be a positive whole number.");
+  }
+  const qty = requested;
+  const upgrade = getUpgrade(upgradeId);
+
+  const stacks = await world.getPlayerUpgrades(player.id);
+  const ownedNow = stacks.find((s) => s.upgradeId === upgradeId)?.qty ?? 0;
+  if (ownedNow < qty) {
+    return errorFrame(
+      `You only own ${ownedNow} ${upgrade.name} — can't sell ${qty}.`,
+    );
+  }
+
+  const unit = upgradeValue(upgradeId);
+  const total = unit * qty;
+  const remaining = await world.addPlayerUpgrade(player.id, upgradeId, -qty);
+  const newBalance = await world.addPlayerCredits(player.id, total);
+
+  return frame([
+    line([
+      text(`Sold ${qty} ${upgrade.name} `, "success"),
+      text(`for ${total} cr `, "accent"),
+      text(`(${unit}/u). `, "muted"),
+      text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
+    ]),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
-// buy fuel [n]  |  buy <resource> [qty]
+// buy fuel [n]  |  buy <resource> [qty]  |  buy <upgrade> [qty]
 // ---------------------------------------------------------------------------
 
 async function handleBuy(player: Player, args: string[]): Promise<RenderFrame> {
   const what = args[0]?.toLowerCase();
   if (!what) return errorFrame("Usage: buy fuel [n]  or  buy <resource> [qty]");
-  if (what !== "fuel") return handleBuyResource(player, what, args[1]);
+  if (what !== "fuel") {
+    if (isUpgradeId(what)) return handleBuyUpgrade(player, what, args[1]);
+    return handleBuyResource(player, what, args[1]);
+  }
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const maxAffordable = Math.floor(fresh.credits / FUEL_PRICE_PER_UNIT);
@@ -558,6 +736,46 @@ async function handleBuyResource(
       text(`Balance ${newBalance} cr.`, "accent"),
     ]),
     line(text(`  price ${price}→${newPrice}`, "muted")),
+  ]);
+}
+
+/**
+ * Buy `qty` of an upgrade at `buyUnitCost(upgradeValue)` per unit (the existing
+ * 1.5× markup over its code-derived value). Upgrades take no cargo space (not
+ * in the hold), so only credits are validated before mutating.
+ */
+async function handleBuyUpgrade(
+  player: Player,
+  upgradeId: string,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: buy <upgrade> [qty]  — qty must be a positive whole number.");
+  }
+  const qty = requested;
+  const upgrade = getUpgrade(upgradeId);
+
+  const unitCost = buyUnitCost(upgradeValue(upgradeId));
+  const total = unitCost * qty;
+
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  if (fresh.credits < total) {
+    return errorFrame(
+      `Not enough credits: ${qty} ${upgrade.name} costs ${total} cr (${unitCost}/u) and you have ${fresh.credits}.`,
+    );
+  }
+
+  const owned = await world.addPlayerUpgrade(player.id, upgradeId, qty);
+  const newBalance = await world.addPlayerCredits(player.id, -total);
+
+  return frame([
+    line([
+      text(`Bought ${qty} ${upgrade.name} `, "success"),
+      text(`for ${total} cr `, "accent"),
+      text(`(${unitCost}/u). `, "muted"),
+      text(`You now own ${owned}. Balance ${newBalance} cr.`, "accent"),
+    ]),
   ]);
 }
 

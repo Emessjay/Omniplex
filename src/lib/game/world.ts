@@ -247,6 +247,66 @@ export async function clearInventory(
 }
 
 // ---------------------------------------------------------------------------
+// Ship upgrades (player_upgrades). Ownership counts only; the catalog (recipes,
+// prices) lives in code (`upgrades.ts`). Owning ≥ 1 activates a capability.
+// ---------------------------------------------------------------------------
+
+export interface UpgradeStack {
+  upgradeId: string;
+  qty: number;
+}
+
+/** A player's owned upgrades (qty > 0), ascending by id for stable display. */
+export async function getPlayerUpgrades(playerId: string): Promise<UpgradeStack[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("player_upgrades")
+    .select("upgrade_id, qty")
+    .eq("player_id", playerId)
+    .gt("qty", 0)
+    .order("upgrade_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    upgradeId: (r as { upgrade_id: string }).upgrade_id,
+    qty: (r as { qty: number }).qty,
+  }));
+}
+
+/** The set of upgrade ids a player owns (qty > 0) — the capability set. */
+export async function getOwnedUpgradeIds(playerId: string): Promise<Set<string>> {
+  const stacks = await getPlayerUpgrades(playerId);
+  return new Set(stacks.map((s) => s.upgradeId));
+}
+
+/**
+ * Atomically adjust an upgrade count by `delta` (negative to sell); returns the
+ * new qty. Clamped at 0 in SQL, but handlers validate ownership/credits first.
+ */
+export async function addPlayerUpgrade(
+  playerId: string,
+  upgradeId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_player_upgrade", {
+    p_player: playerId,
+    p_upgrade: upgradeId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+/** Remove `amount` units of a resource from cargo atomically; returns new qty. */
+export async function removeInventory(
+  playerId: string,
+  resourceId: string,
+  amount: number,
+): Promise<number> {
+  return addInventory(playerId, resourceId, -amount);
+}
+
+// ---------------------------------------------------------------------------
 // Markets (single global market for MVP).
 // ---------------------------------------------------------------------------
 

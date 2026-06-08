@@ -11,7 +11,20 @@ import type { Planet, StarSystem } from "@/lib/universe";
 import { getResource } from "@/lib/universe";
 import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
-import { effectiveAbundance, fuelCost } from "./rules";
+import { effectiveAbundance, fuelCost, FREEZING_C, BOILING_C } from "./rules";
+import { UPGRADES, getUpgrade } from "./upgrades";
+
+/** Human description of what owning an upgrade lets you do (UI text only). */
+function capabilityOf(upgradeId: string): string {
+  switch (upgradeId) {
+    case "ablative_shields":
+      return `land & mine boiling worlds (> ${BOILING_C}°C)`;
+    case "antifreeze_tanks":
+      return `land & mine freezing worlds (< ${FREEZING_C}°C)`;
+    default:
+      return "no known capability";
+  }
+}
 
 /** A single error/notice line — never throw to the client. */
 export function errorFrame(message: string): RenderFrame {
@@ -31,9 +44,12 @@ export function renderHelp(): RenderFrame {
     ["land <i>", "move to another planet in this system"],
     ["mine <resource>", "harvest a resource from this planet"],
     ["inventory", "show cargo, credits and fuel"],
+    ["upgrades", "show installed ship upgrades + capabilities"],
+    ["craft <upgrade>", "synthesize an upgrade from mined components"],
     ["sell <resource> | sell all", "sell cargo at the global market"],
     ["buy fuel [n]", "refuel for credits"],
     ["buy <resource> [qty]", "buy minerals at 1.5× price (pushes price up)"],
+    ["buy <upgrade> | sell <upgrade>", "trade ship upgrades (1.5× / sell value)"],
     ["who", "see the shared-world leaderboards"],
   ];
   return frame([
@@ -64,6 +80,10 @@ export interface ScanView {
   justDiscovered: boolean;
   /** Handle of the original discoverer, if known and not this player. */
   discovererNote?: string;
+  /** Upgrade id required to land/mine here, or null if survivable bare. */
+  requiredUpgrade?: string | null;
+  /** Whether the player currently satisfies `requiredUpgrade`. */
+  hasRequiredUpgrade?: boolean;
 }
 
 /** Scan/look/arrival frame: describe the current planet + its system. */
@@ -104,6 +124,20 @@ export function renderScan(view: ScanView): RenderFrame {
       text(`${planet.temperature}°C`, "default"),
     ]),
   );
+
+  // Landing/mining requirement for this surface, when one applies.
+  if (view.requiredUpgrade) {
+    const up = getUpgrade(view.requiredUpgrade);
+    if (view.hasRequiredUpgrade) {
+      lines.push(
+        line(text(`Hostile surface — ${up.name} equipped ✓`, "success")),
+      );
+    } else {
+      lines.push(
+        line(text(`Hostile surface — requires ${up.name} to land/mine.`, "danger")),
+      );
+    }
+  }
 
   // Deposits with effective (post-depletion) abundance.
   if (planet.deposits.length === 0) {
@@ -233,6 +267,42 @@ export function renderInventory(view: InventoryView): RenderFrame {
       line([
         text("  ", "muted"),
         action("sell all", "sell all", { style: "link", title: "sell everything" }),
+      ]),
+    );
+  }
+  return frame(lines);
+}
+
+export interface UpgradesView {
+  owned: { upgradeId: string; qty: number }[];
+}
+
+/**
+ * Owned ship upgrades + the capability each one activates. When the player owns
+ * none, list the craftable catalog as a hint (each a clickable `craft` action).
+ */
+export function renderUpgrades(view: UpgradesView): RenderFrame {
+  const lines: RenderLine[] = [line(text("Ship upgrades", "heading"))];
+  if (view.owned.length === 0) {
+    lines.push(line(text("None installed. Craftable:", "muted")));
+    for (const u of UPGRADES) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          action(u.name, `craft ${u.id}`, { style: "link", title: `craft ${u.name}` }),
+          text(`  — ${capabilityOf(u.id)}`, "muted"),
+        ]),
+      );
+    }
+    return frame(lines);
+  }
+  for (const o of view.owned) {
+    const up = getUpgrade(o.upgradeId);
+    lines.push(
+      line([
+        text("  • ", "muted"),
+        text(`${up.name} ×${o.qty}  `, "default"),
+        text(`✓ ${capabilityOf(o.upgradeId)}`, "success"),
       ]),
     );
   }

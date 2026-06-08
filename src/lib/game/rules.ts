@@ -136,6 +136,70 @@ export function priceAfterPurchase(price: number, qtyBought: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Crafting / ship upgrades.
+//
+// The first synthesis vertical. The upgrade *catalog* (ids, names, recipes)
+// lives in `upgrades.ts` — these are just the pure knobs and predicates the
+// catalog and the handlers share. Owning ≥ 1 of an upgrade activates its
+// capability; the landing gate below is the only capability today.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sell-value markup of a crafted upgrade over its raw component cost
+ * ("a bit above"). Locked by tests to (1, 2): an upgrade sells for more than
+ * its parts but less than double. `upgradeValue` (in `upgrades.ts`) applies it.
+ */
+export const CRAFT_VALUE_MARKUP = 1.2;
+
+/** Below this surface temperature (°C) a world is freezing — needs Antifreeze. */
+export const FREEZING_C = 0;
+/** Above this surface temperature (°C) a world is boiling — needs Ablative Shields. */
+export const BOILING_C = 100;
+
+/**
+ * Whether the held resource quantities `have` cover every component of
+ * `recipe` (resourceId -> qty). Pure. A missing component reads as 0 held.
+ */
+export function canCraft(
+  have: Record<string, number>,
+  recipe: Record<string, number>,
+): boolean {
+  for (const [resourceId, qty] of Object.entries(recipe)) {
+    if ((have[resourceId] ?? 0) < qty) return false;
+  }
+  return true;
+}
+
+/**
+ * The upgrade id required to land at `temperature`, or `null` if a bare ship
+ * survives. `temp < FREEZING_C` → `"antifreeze_tanks"`; `temp > BOILING_C` →
+ * `"ablative_shields"`; otherwise null. The boundary temps themselves
+ * (FREEZING_C / BOILING_C) are survivable bare.
+ */
+export function landingRequirement(temperature: number): string | null {
+  if (temperature < FREEZING_C) return "antifreeze_tanks";
+  if (temperature > BOILING_C) return "ablative_shields";
+  return null;
+}
+
+/**
+ * Whether a player owning the upgrade ids in `owned` can land at `temperature`.
+ * `{ ok: true }` when no upgrade is required or the required one is owned;
+ * otherwise `{ ok: false, required }` naming the missing upgrade.
+ */
+export function canLand(
+  temperature: number,
+  owned: Iterable<string>,
+): { ok: true } | { ok: false; required: string } {
+  const required = landingRequirement(temperature);
+  if (required === null) return { ok: true };
+  for (const id of owned) {
+    if (id === required) return { ok: true };
+  }
+  return { ok: false, required };
+}
+
+// ---------------------------------------------------------------------------
 // Navigation.
 // ---------------------------------------------------------------------------
 
