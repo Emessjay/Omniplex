@@ -3,6 +3,7 @@ import { isDevLoginEnabled, devLoginEmail } from "@/lib/devAuth";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { getServerClient } from "@/lib/supabase/server";
 import { getSessionClient } from "@/lib/supabase/auth-server";
+import { publicOrigin } from "@/lib/url";
 
 /**
  * Env-gated DEV LOGIN — bypasses the magic-link email round-trip for solo
@@ -27,7 +28,7 @@ import { getSessionClient } from "@/lib/supabase/auth-server";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const { origin } = new URL(request.url);
+  const origin = publicOrigin(request);
 
   // Hard gate: when the flag is off, this route does not exist.
   if (!isDevLoginEnabled()) {

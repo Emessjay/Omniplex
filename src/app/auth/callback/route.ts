@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSessionClient } from "@/lib/supabase/auth-server";
+import { publicOrigin } from "@/lib/url";
 
 /**
  * Magic-link callback. Supabase redirects here with a one-time `code`; we
@@ -8,7 +9,8 @@ import { getSessionClient } from "@/lib/supabase/auth-server";
  * On any failure we bounce back to the login screen with an error flag.
  */
 export async function GET(request: NextRequest) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams } = new URL(request.url);
+  const origin = publicOrigin(request);
   const code = searchParams.get("code");
   // Only honor same-origin relative redirects to avoid an open redirect.
   const nextParam = searchParams.get("next");
