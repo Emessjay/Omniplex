@@ -29,6 +29,7 @@ import type { RenderFrame } from "@/lib/terminal/types";
 import { frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
+import { VERBS, USAGE, usageLine } from "./usage";
 import { getWorldSeed } from "./seed";
 import {
   effectiveAbundance,
@@ -52,6 +53,7 @@ import {
 } from "./upgrades";
 import {
   renderHelp,
+  renderCommandHelp,
   renderScan,
   renderMap,
   renderInventory,
@@ -59,6 +61,7 @@ import {
   renderWho,
   errorFrame,
   type MapNeighbor,
+  type CommandHelpSlotView,
 } from "./render";
 import * as world from "./world";
 
@@ -72,29 +75,6 @@ function toInt(token: string | undefined): number | null {
 function locOf(player: Player): PlanetCoord {
   return { sector: player.sector, system: player.system, planet: player.planet };
 }
-
-/**
- * Command vocabulary for prefix abbreviation. The canonical verbs the
- * dispatcher switch understands (plus the `look` alias, which is a distinct
- * word; `inv` is omitted because it already resolves as a prefix of
- * `inventory`). Typing a unique prefix of any of these expands to the full
- * verb before dispatch.
- */
-const VERBS = [
-  "scan",
-  "look",
-  "map",
-  "warp",
-  "land",
-  "mine",
-  "inventory",
-  "upgrades",
-  "craft",
-  "sell",
-  "buy",
-  "who",
-  "help",
-];
 
 /**
  * The resource ids minable on the current planet right now — present deposits
@@ -120,6 +100,63 @@ async function sellableHere(player: Player): Promise<string[]> {
   return [...stacks.map((s) => s.resourceId), "all", ...UPGRADE_IDS];
 }
 
+/**
+ * The contextual candidate sets the resolver/help need for a verb's resolvable
+ * arguments. Only `mine`/`sell` read world state; the rest are static, so we
+ * skip the DB for them. Prefetched (the resolver's `argDomain` is synchronous).
+ */
+interface ArgDomainContext {
+  mineCandidates: string[] | null;
+  sellCandidates: string[] | null;
+}
+
+const EMPTY_ARG_CONTEXT: ArgDomainContext = {
+  mineCandidates: null,
+  sellCandidates: null,
+};
+
+/**
+ * Fetch the contextual candidate sets needed to resolve `verb`'s args from
+ * authoritative state. Shared by `dispatch` (the resolution path) and the
+ * `help <command>` handler so the two NEVER disagree about valid arguments.
+ */
+async function loadArgDomainContext(
+  player: Player,
+  seed: string,
+  verb: string,
+): Promise<ArgDomainContext> {
+  if (verb === "mine") {
+    return { mineCandidates: await minableHere(player, seed), sellCandidates: null };
+  }
+  if (verb === "sell") {
+    return { mineCandidates: null, sellCandidates: await sellableHere(player) };
+  }
+  return EMPTY_ARG_CONTEXT;
+}
+
+/**
+ * Build the resolver spec from prefetched contextual candidates. This is the
+ * single source of truth for argument domains — both command resolution and
+ * `help` call the SAME `argDomain`, so help can never list an argument the
+ * parser would reject (or omit one it accepts). Resolvable positions return a
+ * `string[]`; opaque positions (warp coords, land index, quantities) return
+ * `null` and are passed through / shown as a placeholder.
+ */
+function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
+  return {
+    verbs: VERBS,
+    argDomain: (verb, argIndex) => {
+      if (verb === "mine" && argIndex === 0) return ctx.mineCandidates;
+      if (verb === "sell" && argIndex === 0) return ctx.sellCandidates;
+      if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS];
+      if (verb === "buy" && argIndex === 0) {
+        return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
+      }
+      return null; // opaque: warp coords, land index, buy/craft quantity, …
+    },
+  };
+}
+
 export async function dispatch(player: Player, input: string): Promise<RenderFrame> {
   const seed = getWorldSeed();
   const { verb: rawVerb } = parseCommand(input);
@@ -130,26 +167,10 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   // Resolve the verb first so we know which contextual candidate sets to fetch
   // for argument resolution (the candidate sets come from authoritative state).
   const verbRes = resolveToken(rawVerb, VERBS);
-  let mineCandidates: string[] | null = null;
-  let sellCandidates: string[] | null = null;
-  if (verbRes.ok && verbRes.value === "mine") {
-    mineCandidates = await minableHere(player, seed);
-  } else if (verbRes.ok && verbRes.value === "sell") {
-    sellCandidates = await sellableHere(player);
-  }
-
-  const spec: ResolveLineSpec = {
-    verbs: VERBS,
-    argDomain: (verb, argIndex) => {
-      if (verb === "mine" && argIndex === 0) return mineCandidates;
-      if (verb === "sell" && argIndex === 0) return sellCandidates;
-      if (verb === "craft" && argIndex === 0) return [...UPGRADE_IDS];
-      if (verb === "buy" && argIndex === 0) {
-        return ["fuel", ...RESOURCES.map((r) => r.id), ...UPGRADE_IDS];
-      }
-      return null; // opaque: warp coords, land index, buy/craft quantity, …
-    },
-  };
+  const ctx = verbRes.ok
+    ? await loadArgDomainContext(player, seed, verbRes.value)
+    : EMPTY_ARG_CONTEXT;
+  const spec = buildResolveSpec(ctx);
 
   const resolved = resolveCommandLine(input, spec);
   if (!resolved.ok) return errorFrame(resolved.error);
@@ -175,7 +196,7 @@ async function dispatchResolved(
 ): Promise<RenderFrame> {
   switch (verb) {
     case "help":
-      return renderHelp();
+      return handleHelp(player, seed, args);
     case "scan":
     case "look":
       return handleScan(player, seed);
@@ -202,6 +223,82 @@ async function dispatchResolved(
     default:
       return errorFrame(`Unknown command "${verb}". Type help for the list.`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// help  (no arg: command list; with arg: usage + live argument enumerations)
+// ---------------------------------------------------------------------------
+
+/** Contextual note when a resolvable position currently has no candidates. */
+function emptyDomainNote(verb: string): string {
+  switch (verb) {
+    case "mine":
+      return "nothing minable here — try `scan` or `warp` somewhere else";
+    case "sell":
+      return "your hold is empty — `mine` something first";
+    default:
+      return "nothing available right now";
+  }
+}
+
+/**
+ * `help` with no argument is the classic command list (unchanged). `help
+ * <command>` (abbreviation allowed: `help mi` → `mine`) shows the command's
+ * usage plus, for each argument slot, either the LIVE enumerated candidates
+ * (drawn from the same `argDomain` the parser uses) or an opaque `<placeholder>`
+ * + hint. Unknown / ambiguous command args produce a helpful error, never a
+ * throw.
+ */
+async function handleHelp(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  if (args.length === 0) return renderHelp();
+
+  const targetRaw = args[0]!;
+  const res = resolveToken(targetRaw, VERBS);
+  if (!res.ok) {
+    if (res.reason === "ambiguous") {
+      return errorFrame(
+        `Ambiguous command '${targetRaw}' — did you mean: ${res.matches.join(", ")}?`,
+      );
+    }
+    return errorFrame(`No command '${targetRaw}' — type \`help\` for the list.`);
+  }
+
+  const verb = res.value;
+  const usage = USAGE[verb];
+  // Defensive: every verb is expected to have a descriptor (unit-tested), but
+  // never throw to the client if one is somehow missing.
+  if (!usage) return errorFrame(`No help available for '${verb}'.`);
+
+  // Same contextual domains the resolver uses, so help can't disagree with it.
+  const ctx = await loadArgDomainContext(player, seed, verb);
+  const spec = buildResolveSpec(ctx);
+
+  const slots: CommandHelpSlotView[] = usage.slots.map((slot, i) => {
+    const domain = spec.argDomain(verb, i, []);
+    if (domain === null) {
+      // Opaque: a placeholder + hint, never a bogus enumeration.
+      return { name: slot.name, optional: !!slot.optional, hint: slot.hint };
+    }
+    // Resolvable: clickable only when filling THIS slot alone forms a complete
+    // command (no earlier arg required, every later slot optional).
+    const laterAllOptional = usage.slots.slice(i + 1).every((s) => s.optional);
+    const clickable = i === 0 && laterAllOptional;
+    return {
+      name: slot.name,
+      optional: !!slot.optional,
+      candidates: domain.map((c) => ({
+        label: c,
+        command: clickable ? `${verb} ${c}` : null,
+      })),
+      emptyNote: domain.length === 0 ? emptyDomainNote(verb) : undefined,
+    };
+  });
+
+  return renderCommandHelp({ verb, usage: usageLine(verb), desc: usage.desc, slots });
 }
 
 // ---------------------------------------------------------------------------

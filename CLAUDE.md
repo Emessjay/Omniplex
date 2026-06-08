@@ -248,9 +248,9 @@ gotchas) accrete here as workers surface things worth persisting. See
   arg 0 = inventory resource ids + the literal `all`; `buy` arg 0 = `["fuel"]`.
   `warp`/`land` args (and `buy`'s quantity) are **opaque**. New verticals plug
   their arg domains into the same `argDomain` switch.
-- **Verb vocabulary** is the `VERBS` array in `commands.ts` (canonical verbs +
-  the `look` alias; `inv` is omitted since it resolves as a prefix of
-  `inventory`). `dispatch` resolves the line, renders `error` as an error frame
+- **Verb vocabulary** is the `VERBS` array (now in `src/lib/game/usage.ts`;
+  canonical verbs + the `look` alias; `inv` is omitted since it resolves as a
+  prefix of `inventory`). `dispatch` resolves the line, renders `error` as an error frame
   on failure, otherwise dispatches the canonical verb/args via
   `dispatchResolved` and prepends a muted `» <canonical>` echo line whenever
   abbreviation expanded the typed input (so players learn the full form).
@@ -346,3 +346,28 @@ gotchas) accrete here as workers surface things worth persisting. See
   (validate `canCraft` first). `buy`/`sell` extended to upgrade ids (buy at
   `buyUnitCost(upgradeValue)`, sell at `upgradeValue`). Abbrev domains: `craft`
   → upgrade ids; `buy`/`sell` → resources + upgrade ids.
+
+### Load-bearing decisions from `help-args`
+
+- **`help <command>` shows live usage** drawn from the SAME `argDomain` the
+  parser uses, so help can never list an argument the parser rejects (or omit
+  one it accepts). `help` (no arg) is unchanged (`renderHelp` command list).
+- **Two registration points for a command** — keep them in lock-step:
+  1. `src/lib/game/usage.ts` (PURE, no `server-only`): `VERBS` (the
+     abbreviation vocabulary, moved here from `commands.ts`) + `USAGE`
+     (`verb → { desc, slots: { name, optional?, hint? }[] }`). A slot's `hint`
+     is shown for OPAQUE positions only. `usageLine(verb)` renders the canonical
+     usage string (`<required>` / `[optional]`). Every verb in `VERBS` MUST have
+     a `USAGE` entry (unit-tested in `help-args.test.ts`).
+  2. `commands.ts`: the contextual `argDomain` via the reusable
+     `buildResolveSpec(ctx)` + `loadArgDomainContext(player, seed, verb)` pair
+     (extracted from `dispatch`; only `mine`/`sell` hit the DB). Both `dispatch`
+     and `handleHelp` call these, so resolution and help share one domain.
+- **`handleHelp`** resolves its command arg by the same unique-prefix
+  `resolveToken` (so `help mi` → `mine`); unknown/ambiguous → an error frame,
+  never a throw. For each slot it calls `argDomain(verb, i, [])`: non-null →
+  enumerate candidates (clickable as `verb <candidate>` when arg 0 + all later
+  slots optional; empty → a contextual note like "nothing minable here");
+  null → a `<placeholder>` + the slot's `hint`. Rendering is
+  `renderCommandHelp(CommandHelpView)` in `render.ts` (pure; handler computes
+  candidates/clickability, renderer stays dumb).

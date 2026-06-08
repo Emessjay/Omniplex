@@ -66,6 +66,84 @@ export function renderHelp(): RenderFrame {
   ]);
 }
 
+/** One argument slot's resolved help info (built by the `help` handler). */
+export interface CommandHelpSlotView {
+  /** Placeholder label, e.g. `resource`, `sector`, `qty`. */
+  name: string;
+  optional: boolean;
+  /** Opaque position: show `<name>` + this hint (no enumeration). */
+  hint?: string;
+  /**
+   * Resolvable position: the live candidates from `argDomain`. Each carries the
+   * command its click submits, or `null` when filling this slot alone wouldn't
+   * form a complete command (so it renders as plain text, not a link).
+   */
+  candidates?: { label: string; command: string | null }[];
+  /** Resolvable but currently empty: a contextual note (e.g. "nothing minable here"). */
+  emptyNote?: string;
+}
+
+export interface CommandHelpView {
+  verb: string;
+  /** Canonical usage string, e.g. `mine <resource>`. */
+  usage: string;
+  /** One-line description of what the command does. */
+  desc: string;
+  /** Ordered argument slots; empty for no-argument commands. */
+  slots: CommandHelpSlotView[];
+}
+
+/**
+ * `help <command>`: a usage line + per-argument detail. Resolvable positions
+ * list their LIVE candidates (clickable when the click forms a complete
+ * command); opaque positions show a `<placeholder>` + hint. The candidate sets
+ * come from the same `argDomain` the parser uses, so help always matches what
+ * the command actually accepts.
+ */
+export function renderCommandHelp(view: CommandHelpView): RenderFrame {
+  const lines: RenderLine[] = [
+    line(text(view.usage, "heading")),
+    line(text(`  ${view.desc}`, "muted")),
+  ];
+
+  if (view.slots.length === 0) {
+    lines.push(line(text("  (no arguments)", "muted")));
+    return frame(lines);
+  }
+
+  for (const slot of view.slots) {
+    const placeholder = slot.optional ? `[${slot.name}]` : `<${slot.name}>`;
+    if (slot.candidates) {
+      if (slot.candidates.length === 0) {
+        lines.push(
+          line([
+            text(`  ${placeholder}: `, "muted"),
+            text(slot.emptyNote ?? "nothing available right now", "muted"),
+          ]),
+        );
+      } else {
+        const spans: RenderSpan[] = [text(`  ${placeholder}: `, "muted")];
+        slot.candidates.forEach((c, idx) => {
+          if (idx > 0) spans.push(text(" ", "muted"));
+          if (c.command) {
+            spans.push(action(c.label, c.command, { style: "link", title: c.command }));
+          } else {
+            spans.push(text(c.label, "accent"));
+          }
+        });
+        lines.push(line(spans));
+      }
+    } else {
+      // Opaque (free-form / numeric): placeholder + hint, never an enumeration.
+      const spans: RenderSpan[] = [text(`  ${placeholder}`, "default")];
+      if (slot.hint) spans.push(text(` — ${slot.hint}`, "muted"));
+      lines.push(line(spans));
+    }
+  }
+
+  return frame(lines);
+}
+
 function abundanceLabel(value: number): string {
   if (value <= 0) return "depleted";
   return `${Math.round(value * 100)}%`;

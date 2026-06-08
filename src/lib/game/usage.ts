@@ -1,0 +1,117 @@
+/**
+ * Static command vocabulary + per-command usage descriptors.
+ *
+ * Pure — no IO, no `server-only` — so the parser, the `help` handler, and unit
+ * tests can all share it. `VERBS` is the abbreviation vocabulary (the verbs the
+ * dispatcher understands); `USAGE` gives each verb its ordered argument slots
+ * (name, optional?, and a hint for OPAQUE/free-form positions).
+ *
+ * The CONTEXTUAL candidate enumerations are deliberately NOT here — those come
+ * from the `argDomain` builder in `commands.ts` so `help` and the resolver never
+ * disagree about what arguments are valid. Every verb in `VERBS` MUST have a
+ * `USAGE` entry (enforced by a unit test); register a new command in both this
+ * file (vocabulary + usage) and `commands.ts` (its `argDomain` + handler).
+ */
+
+/**
+ * Command vocabulary for prefix abbreviation — the canonical verbs the
+ * dispatcher switch understands (plus the `look` alias, which is a distinct
+ * word; `inv` is omitted because it already resolves as a prefix of
+ * `inventory`). Typing a unique prefix of any of these expands to the full
+ * verb before dispatch.
+ */
+export const VERBS: string[] = [
+  "scan",
+  "look",
+  "map",
+  "warp",
+  "land",
+  "mine",
+  "inventory",
+  "upgrades",
+  "craft",
+  "sell",
+  "buy",
+  "who",
+  "help",
+];
+
+/** One ordered argument position of a command. */
+export interface UsageSlot {
+  /** Placeholder label, e.g. `resource`, `sector`, `qty`. */
+  name: string;
+  /** True when the argument may be omitted (rendered as `[name]`). */
+  optional?: boolean;
+  /**
+   * Shown for OPAQUE positions (those whose `argDomain` returns `null` —
+   * free-form / numeric, never prefix-matched). Tells the player what to type.
+   */
+  hint?: string;
+}
+
+/** Usage descriptor for one command: a one-line description + arg slots. */
+export interface UsageDescriptor {
+  /** One-line description of what the command does. */
+  desc: string;
+  /** Ordered argument slots; empty for no-argument commands. */
+  slots: UsageSlot[];
+}
+
+/**
+ * Usage descriptor per verb. Resolvable slots (mine/sell/craft/buy arg 0) carry
+ * no hint — their candidates come from the live `argDomain`; opaque slots carry
+ * a hint so help can show a placeholder + guidance instead of a bogus list.
+ */
+export const USAGE: Record<string, UsageDescriptor> = {
+  scan: { desc: "describe the planet you're on", slots: [] },
+  look: { desc: "alias for scan", slots: [] },
+  map: { desc: "list nearby systems to warp to", slots: [] },
+  warp: {
+    desc: "travel to another system (burns fuel)",
+    slots: [
+      { name: "sector", hint: "see `map` for destinations" },
+      { name: "system", hint: "see `map` for destinations" },
+    ],
+  },
+  land: {
+    desc: "move to another planet in this system",
+    slots: [{ name: "planet", hint: "a planet # in this system; see `scan`" }],
+  },
+  mine: {
+    desc: "harvest a resource from this planet",
+    slots: [{ name: "resource" }],
+  },
+  inventory: { desc: "show cargo, credits and fuel", slots: [] },
+  upgrades: {
+    desc: "show installed ship upgrades + capabilities",
+    slots: [],
+  },
+  craft: {
+    desc: "synthesize an upgrade from mined components",
+    slots: [{ name: "upgrade" }],
+  },
+  sell: {
+    desc: "sell cargo (or an upgrade) at the global market",
+    slots: [{ name: "resource" }],
+  },
+  buy: {
+    desc: "buy fuel, minerals or upgrades",
+    slots: [
+      { name: "item" },
+      { name: "qty", optional: true, hint: "a number (default 1)" },
+    ],
+  },
+  who: { desc: "see the shared-world leaderboards", slots: [] },
+  help: {
+    desc: "list commands, or show usage for one",
+    slots: [{ name: "command", optional: true, hint: "a command name; see `help`" }],
+  },
+};
+
+/** Build the canonical usage string, e.g. `buy <item> [qty]` or `scan`. */
+export function usageLine(verb: string): string {
+  const u = USAGE[verb];
+  if (!u) return verb;
+  const parts = u.slots.map((s) => (s.optional ? `[${s.name}]` : `<${s.name}>`));
+  return [verb, ...parts].join(" ");
+}
