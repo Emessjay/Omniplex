@@ -154,6 +154,7 @@ export function Terminal({ player }: { player?: Player } = {}) {
     // through the seam.
     if (cmd.toLowerCase() === "clear") {
       setLines([]);
+      inputRef.current?.focus();
       return;
     }
 
@@ -247,7 +248,10 @@ export function Terminal({ player }: { player?: Player } = {}) {
   return (
     <div
       className="mx-auto flex h-[calc(100vh-1rem)] w-full max-w-4xl flex-col overflow-hidden rounded-md border border-term-muted/30 bg-term-bg text-sm sm:h-[calc(100vh-2rem)]"
-      onClick={() => inputRef.current?.focus()}
+      onClick={(e) => {
+        if (!(e.target as HTMLElement).closest("button, a, input, textarea, [role='button']"))
+          inputRef.current?.focus();
+      }}
     >
       {/* Scrollback */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2" aria-live="polite">
