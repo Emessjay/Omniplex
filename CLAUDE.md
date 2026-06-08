@@ -84,3 +84,39 @@ by the `scaffold` worker. See Nimbus's `AUDITOR.md` §"Critic review".
 Project-specific conventions (file layout, naming, schema patterns,
 gotchas) accrete here as workers surface things worth persisting. See
 `DESIGN.md` for the product shape, MVP scope, and architecture sketch.
+
+### Load-bearing decisions from `scaffold`
+
+- **Render-frame model** lives in `src/lib/terminal/types.ts`
+  (`RenderFrame = { lines: RenderLine[] }`; a `RenderLine` is an array of
+  `RenderSpan`s; a span is a `TextSpan` or a clickable `ActionSpan` whose
+  `command` string is submitted on click). This is the client⇄server wire
+  format — extend it **additively**; do not reshape existing fields without
+  an auditor decision. Build frames with the pure helpers in
+  `src/lib/terminal/helpers.ts` (`text`, `action`, `line`, `frame`,
+  `textFrame`, plus `lineToText`/`frameToText`).
+- **Span styling is color-only.** `SpanStyle` maps to a color class in the
+  renderer (`STYLE_CLASS` in `Terminal.tsx`); never encode geometry in a
+  style (theme-parity rule). Add new intents to the `SpanStyle` union.
+- **Command-pipeline seam**: `submitCommand(input: string): Promise<RenderFrame>`
+  in `src/lib/terminal/pipeline.ts` is the single attach point for the real
+  server pipeline (today a client-side echo stub). Keep that exact signature;
+  `<Terminal>` depends on it. Tab-completion source is
+  `completeCommand(partial) => string[]` in `completion.ts`. `clear` is a
+  client-side meta-command handled in `Terminal.tsx`, not via the seam.
+- **Supabase clients**: `getServerClient()` (service-role, authoritative,
+  `import "server-only"`) in `src/lib/supabase/server.ts`;
+  `getBrowserClient()` (anon, RLS-scoped reads + Realtime) in
+  `src/lib/supabase/client.ts`. Both are **lazy + memoized** — never touch
+  env at import time (so `npm run build` / CI work without secrets); they
+  throw only when called unconfigured.
+- **Migrations** live in `supabase/migrations/`, named
+  `<UTC YYYYMMDDHHMMSS>_<slug>.sql`, forward-only — add new files, never edit
+  landed ones. RLS is enabled on every table: public read for
+  world/catalog/leaderboard rows, per-player read for own rows, and **no**
+  anon/authenticated write policies (all writes go through the service role,
+  which bypasses RLS). Public leaderboard data is exposed via the
+  `public.leaderboard` view (no `user_id`), not by loosening `players` RLS.
+- **Path alias**: `@/*` → `src/*` (mirrored in `tsconfig.json` and
+  `vitest.config.ts`). Tests are `src/**/*.{test,spec}.ts(x)`, run with
+  `npx vitest run`.
