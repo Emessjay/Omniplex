@@ -45,8 +45,22 @@ export interface Player {
    * `false` = on foot in the current region (mining enabled, hazard can wound).
    */
   embarked: boolean;
+  /**
+   * Active-combat state: `null` when not fighting, otherwise the creature you're
+   * facing (`faunaId` indexes the `wildlife.ts` catalog) and its remaining HP.
+   * Set on a fauna encounter while exploring; cleared on kill / flee / death.
+   */
+  encounter: PlayerEncounter | null;
   /** ISO timestamp the row was created. */
   createdAt: string;
+}
+
+/** The combat state stored in `players.encounter` (jsonb). */
+export interface PlayerEncounter {
+  /** Id of the creature being faced (key into the `wildlife.ts` FAUNA catalog). */
+  faunaId: string;
+  /** The creature's current hit points. */
+  hp: number;
 }
 
 /**
@@ -68,5 +82,6 @@ export interface PlayerRow {
   region: number;
   health: number;
   embarked: boolean;
+  encounter: PlayerEncounter | null;
   created_at: string;
 }

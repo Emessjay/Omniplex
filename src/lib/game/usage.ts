@@ -32,6 +32,9 @@ export const VERBS: string[] = [
   "embark",
   "mine",
   "explore",
+  "harvest",
+  "attack",
+  "flee",
   "inventory",
   "upgrades",
   "craft",
@@ -112,7 +115,19 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "resource" }],
   },
   explore: {
-    desc: "search the surface for life and salvage (coming soon)",
+    desc: "search the surface for salvage, plants and creatures (on foot)",
+    slots: [],
+  },
+  harvest: {
+    desc: "harvest a plant from this region (on foot)",
+    slots: [],
+  },
+  attack: {
+    desc: "strike the creature you're facing (one combat round)",
+    slots: [],
+  },
+  flee: {
+    desc: "break off combat and slip away",
     slots: [],
   },
   inventory: { desc: "show cargo, credits, fuel and status", slots: [] },

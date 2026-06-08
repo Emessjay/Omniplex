@@ -18,7 +18,7 @@ import "server-only";
  */
 
 import { getServerClient } from "@/lib/supabase/server";
-import type { Player, PlayerRow } from "@/lib/players/types";
+import type { Player, PlayerRow, PlayerEncounter } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
 import { getResource } from "@/lib/universe";
 import { regeneratedDepletion, priceTowardBase } from "./rules";
@@ -309,6 +309,52 @@ export async function removeInventory(
 }
 
 // ---------------------------------------------------------------------------
+// Materials (player_materials) — harvested/looted/dropped goods. Ownership
+// counts only; the catalog (names, values) lives in code (`materials.ts`).
+// Direct mirror of the player_upgrades adapters above.
+// ---------------------------------------------------------------------------
+
+export interface MaterialStack {
+  materialId: string;
+  qty: number;
+}
+
+/** A player's owned materials (qty > 0), ascending by id for stable display. */
+export async function getPlayerMaterials(playerId: string): Promise<MaterialStack[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("player_materials")
+    .select("material_id, qty")
+    .eq("player_id", playerId)
+    .gt("qty", 0)
+    .order("material_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    materialId: (r as { material_id: string }).material_id,
+    qty: (r as { qty: number }).qty,
+  }));
+}
+
+/**
+ * Atomically adjust a material count by `delta` (negative to sell); returns the
+ * new qty. Clamped at 0 in SQL, but handlers validate ownership first.
+ */
+export async function addPlayerMaterial(
+  playerId: string,
+  materialId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_player_material", {
+    p_player: playerId,
+    p_material: materialId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Markets (single global market for MVP).
 // ---------------------------------------------------------------------------
 
@@ -482,6 +528,23 @@ export async function setHealth(playerId: string, health: number): Promise<void>
   const { error } = await db
     .from("players")
     .update({ health })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
+ * Set (or clear) the player's combat encounter. `null` ends combat (kill / flee
+ * / death); a `{ faunaId, hp }` object starts or updates it. Stored in the
+ * nullable `players.encounter` jsonb column.
+ */
+export async function setEncounter(
+  playerId: string,
+  encounter: PlayerEncounter | null,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ encounter })
     .eq("id", playerId);
   if (error) throw error;
 }

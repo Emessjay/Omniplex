@@ -28,8 +28,8 @@ import {
   type SystemCoord,
   type PlanetCoord,
 } from "@/lib/universe";
-import type { RenderFrame } from "@/lib/terminal/types";
-import { frame, line, text } from "@/lib/terminal/helpers";
+import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
+import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
 import { VERBS, USAGE, usageLine } from "./usage";
@@ -47,6 +47,9 @@ import {
   landingRequirement,
   rollHazardDamage,
   creditsAfterDeath,
+  combatRound,
+  exploreOutcome,
+  PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
   FUEL_PRICE_PER_UNIT,
@@ -57,6 +60,18 @@ import {
   getUpgrade,
   upgradeValue,
 } from "./upgrades";
+import {
+  isMaterialId,
+  getMaterial,
+  materialValue,
+  pickScavenge,
+} from "./materials";
+import {
+  FLORA,
+  FAUNA,
+  getFauna,
+  pickForBiome,
+} from "./wildlife";
 import {
   renderHelp,
   renderCommandHelp,
@@ -71,6 +86,7 @@ import {
   type RegionListEntry,
   type CommandHelpSlotView,
   type CommandHelpGroup,
+  type EncounterView,
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import * as world from "./world";
@@ -136,7 +152,24 @@ async function regionScanFrame(
     health: player.health,
     maxHealth: MAX_HEALTH,
     embarked: player.embarked,
+    encounter: encounterView(player),
   });
+}
+
+/**
+ * Build the scan-side view of the player's active combat encounter (or null when
+ * not fighting). Resolves the creature's catalog name + max HP for display.
+ */
+function encounterView(player: Player): EncounterView | null {
+  if (!player.encounter) return null;
+  const fauna = getFauna(player.encounter.faunaId);
+  if (!fauna) return null;
+  return {
+    name: fauna.name,
+    hp: player.encounter.hp,
+    maxHp: fauna.maxHp,
+    hostile: fauna.hostile,
+  };
 }
 
 /**
@@ -155,12 +188,22 @@ async function minableHere(player: Player, seed: string): Promise<string[]> {
 
 /**
  * Sellable arg candidates: resource ids carried in the hold, the literal `all`,
- * and every upgrade id (so `sell ab` abbreviates even before the ownership
- * check; the handler validates you actually own it).
+ * every upgrade id, and the material ids the player currently owns (so `sell ab`
+ * / `sell prec` abbreviate; the handler validates you actually own each). Upgrade
+ * ids are always included since they're code-priced; materials are listed only
+ * when held so the abbreviation surface stays small.
  */
 async function sellableHere(player: Player): Promise<string[]> {
-  const stacks = await world.getInventory(player.id);
-  return [...stacks.map((s) => s.resourceId), "all", ...UPGRADE_IDS];
+  const [stacks, materials] = await Promise.all([
+    world.getInventory(player.id),
+    world.getPlayerMaterials(player.id),
+  ]);
+  return [
+    ...stacks.map((s) => s.resourceId),
+    "all",
+    ...UPGRADE_IDS,
+    ...materials.map((m) => m.materialId),
+  ];
 }
 
 /**
@@ -257,11 +300,12 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
 const EMBARKED_ONLY = new Set(["buy", "sell", "warp", "land"]);
 
 /**
- * Commands that require being ON FOOT in the region: surface work. Attempting
- * them from the ship is blocked with a message naming the fix (`disembark`).
- * (Exploration joins this set in P5; today only mining is gated this way.)
+ * Commands that require being ON FOOT in the region: surface work (mining and
+ * the P5 exploration/combat loop). Attempting them from the ship is blocked with
+ * a message naming the fix (`disembark`). `attack`/`flee` additionally require an
+ * active encounter — their handlers check that after this gate.
  */
-const DISEMBARKED_ONLY = new Set(["mine"]);
+const DISEMBARKED_ONLY = new Set(["mine", "explore", "harvest", "attack", "flee"]);
 
 /** Dispatch an already-resolved (canonical verb, expanded args) command. */
 async function dispatchResolved(
@@ -276,7 +320,7 @@ async function dispatchResolved(
     return errorFrame("You must `embark` your ship first.");
   }
   if (DISEMBARKED_ONLY.has(verb) && player.embarked) {
-    return errorFrame("You must `disembark` onto the surface to mine.");
+    return errorFrame("You must `disembark` onto the surface first.");
   }
 
   switch (verb) {
@@ -302,7 +346,13 @@ async function dispatchResolved(
     case "mine":
       return handleMine(player, seed, args);
     case "explore":
-      return handleExplore();
+      return handleExplore(player, seed);
+    case "harvest":
+      return handleHarvest(player, seed);
+    case "attack":
+      return handleAttack(player);
+    case "flee":
+      return handleFlee(player);
     case "inventory":
       return handleInventory(player);
     case "upgrades":
@@ -847,37 +897,301 @@ async function handleMine(
     ]);
   }
 
-  // Death: lose 10% of credits (atomic delta via the credits RPC), restore
-  // health, and wake aboard the ship (location unchanged). Balances never go
-  // negative — `creditsAfterDeath` floors at 0.
+  // Death: the shared sequence (lose 10% credits, restore HP, wake aboard).
+  const deathLines = await runDeath(
+    player,
+    `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
+  );
+  return frame([mineLine, ...deathLines]);
+}
+
+/**
+ * The shared death sequence (P4): lose `DEATH_GOLD_PENALTY` of credits (atomic
+ * delta via the credits RPC, floored at 0 by `creditsAfterDeath`), clear any
+ * active combat encounter, restore full health, and wake aboard the ship
+ * (location unchanged). Returns the two report lines (a danger cause line + a
+ * muted balance line); the caller prepends whatever action line preceded death.
+ */
+async function runDeath(player: Player, causeText: string): Promise<RenderLine[]> {
   const after = creditsAfterDeath(player.credits);
   const lost = player.credits - after;
   if (lost > 0) await world.addPlayerCredits(player.id, -lost);
+  if (player.encounter) await world.setEncounter(player.id, null);
   await world.setHealthAndEmbarked(player.id, MAX_HEALTH, true);
-  return frame([
-    mineLine,
-    line(
-      text(
-        `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
-        "danger",
-      ),
-    ),
-    line(
-      text(
-        `Lost ${lost} cr (balance ${after}). HP restored to ${MAX_HEALTH}.`,
-        "muted",
-      ),
-    ),
-  ]);
+  return [
+    line(text(causeText, "danger")),
+    line(text(`Lost ${lost} cr (balance ${after}). HP restored to ${MAX_HEALTH}.`, "muted")),
+  ];
 }
 
 // ---------------------------------------------------------------------------
-// explore  (P5 stub — surface scavenging/flora/fauna arrive next phase)
+// explore / harvest / attack / flee — the on-foot wildlife & combat loop (P5).
+// All disembarked-only (gated in `dispatchResolved`). `explore` rolls a scavenge
+// / flora / fauna outcome then takes a hazard hit (it can kill you → death
+// sequence); `harvest` collects a biome plant; `attack`/`flee` act on the
+// current `encounter`. The math is pure (`rules.ts` / `wildlife.ts` / catalogs);
+// these handlers supply the real `Math.random()` rolls and persist via `world`.
 // ---------------------------------------------------------------------------
 
-function handleExplore(): RenderFrame {
+/**
+ * `explore` — search the current region on foot. Rolls `exploreOutcome`:
+ *  - scavenge → award a scavenged material (relics rare & valuable);
+ *  - flora    → describe a biome plant and offer `harvest`;
+ *  - fauna    → describe a biome creature; a hostile one starts an `encounter`
+ *               (you must `attack`/`flee`), a placid one is merely attackable.
+ * Then the surface hazard rolls (exploring is dangerous): on a hit, subtract
+ * health, and run the death sequence if it reaches 0. Gated like `mine` — a
+ * hostile (freezing/boiling) surface needs the matching upgrade.
+ */
+async function handleExplore(player: Player, seed: string): Promise<RenderFrame> {
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+
+  // Same surface gate as `mine`/`land`: you can't safely roam a hostile world
+  // without the matching upgrade. No state change when blocked.
+  const owned = await world.getOwnedUpgradeIds(player.id);
+  const gate = canLand(planet.temperature, owned);
+  if (!gate.ok) {
+    const up = getUpgrade(gate.required);
+    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    return errorFrame(
+      `${planet.name} is ${why} (${planet.temperature}°C) — exploring requires ${up.name}. \`craft\` or \`buy\` it first.`,
+    );
+  }
+
+  const region = regionAt(seed, coord, player.region);
+  const biome = region.biome;
+  const outcome = exploreOutcome(Math.random());
+  const lines: RenderLine[] = [];
+
+  if (outcome === "scavenge") {
+    const material = pickScavenge(Math.random());
+    const qty = 1;
+    await world.addPlayerMaterial(player.id, material.id, qty);
+    const relic = material.category === "relic";
+    lines.push(
+      line([
+        text(relic ? "You unearth a " : "You scavenge ", relic ? "success" : "default"),
+        text(`${material.name}`, relic ? "accent" : "default"),
+        text(relic ? "! A rare relic — worth a fortune." : ` (${material.category}).`, "muted"),
+      ]),
+    );
+    lines.push(
+      line([
+        text(`+${qty} ${material.name}. `, "success"),
+        text("`embark` then `sell` it at market.", "muted"),
+      ]),
+    );
+  } else if (outcome === "flora") {
+    const flora = pickForBiome(FLORA, biome, Math.random());
+    if (flora) {
+      lines.push(
+        line([
+          text("You find ", "default"),
+          text(`${flora.name}`, "accent"),
+          text(` growing across the ${biome}. `, "muted"),
+          action("harvest", "harvest", { style: "link", title: `harvest ${flora.name}` }),
+          text(" it.", "muted"),
+        ]),
+      );
+    } else {
+      lines.push(line(text(`Nothing worth harvesting in this ${biome}.`, "muted")));
+    }
+  } else {
+    const fauna = pickForBiome(FAUNA, biome, Math.random());
+    if (fauna) {
+      // Setting the encounter for BOTH hostile and placid fauna gives `attack` a
+      // target either way; only hostile creatures are framed as a forced fight.
+      await world.setEncounter(player.id, { faunaId: fauna.id, hp: fauna.maxHp });
+      if (fauna.hostile) {
+        lines.push(
+          line([
+            text("A hostile ", "danger"),
+            text(`${fauna.name}`, "accent"),
+            text(` lunges at you! (HP ${fauna.maxHp}, attack ${fauna.attack})`, "muted"),
+          ]),
+        );
+      } else {
+        lines.push(
+          line([
+            text("You come across a ", "default"),
+            text(`${fauna.name}`, "accent"),
+            text(`. It eyes you warily but doesn't attack. (HP ${fauna.maxHp})`, "muted"),
+          ]),
+        );
+      }
+      lines.push(
+        line([
+          action("attack", "attack", { style: "link", title: `attack the ${fauna.name}` }),
+          text(" it for its materials, or ", "muted"),
+          action("flee", "flee", { style: "link", title: "break off" }),
+          text(".", "muted"),
+        ]),
+      );
+    } else {
+      lines.push(line(text(`No creatures stir in this ${biome}.`, "muted")));
+    }
+  }
+
+  // Surface hazard: exploring exposes you to harm exactly like mining does.
+  const damage = rollHazardDamage(planet.hazard, Math.random(), Math.random());
+  if (damage <= 0) return frame(lines);
+
+  const hazardPct = Math.round(planet.hazard * 100);
+  const newHealth = player.health - damage;
+  if (newHealth > 0) {
+    await world.setHealth(player.id, newHealth);
+    lines.push(
+      line(
+        text(
+          `${planet.name} wounds you for ${damage} (hazard ${hazardPct}%). HP ${newHealth}/${MAX_HEALTH}.`,
+          "danger",
+        ),
+      ),
+    );
+    return frame(lines);
+  }
+
+  const deathLines = await runDeath(
+    player,
+    `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
+  );
+  return frame([...lines, ...deathLines]);
+}
+
+/**
+ * `harvest` — collect a biome-appropriate plant from the current region and
+ * award its `harvest` material. Re-rolls a region-valid flora (spec allows
+ * harvesting the most-recent / a fresh biome plant); gentle — no hazard roll.
+ */
+async function handleHarvest(player: Player, seed: string): Promise<RenderFrame> {
+  const coord = locOf(player);
+  const region = regionAt(seed, coord, player.region);
+  const flora = pickForBiome(FLORA, region.biome, Math.random());
+  if (!flora) {
+    return errorFrame(`No harvestable plants in this ${region.biome}. Try \`explore\`.`);
+  }
+  const mat = getMaterial(flora.harvest.materialId);
+  const qty = flora.harvest.qty;
+  await world.addPlayerMaterial(player.id, flora.harvest.materialId, qty);
   return frame([
-    line(text("Surface exploration is coming soon.", "muted")),
+    line([
+      text(`You harvest ${flora.name} — `, "success"),
+      text(`+${qty} ${mat.name}`, "accent"),
+      text(`. \`embark\` then \`sell\` to cash it in.`, "muted"),
+    ]),
+  ]);
+}
+
+/**
+ * `attack` — one simultaneous `combatRound` against the creature in the active
+ * `encounter`, using `PLAYER_BASE_ATTACK` vs the creature's `attack`. Both take
+ * damage at once. If the creature dies you take its `drop` and the encounter
+ * ends; if you die the death sequence runs (and clears the encounter); otherwise
+ * both HPs are reported and combat continues.
+ */
+async function handleAttack(player: Player): Promise<RenderFrame> {
+  const enc = player.encounter;
+  if (!enc) {
+    return errorFrame("Nothing to attack — `explore` to find creatures.");
+  }
+  const fauna = getFauna(enc.faunaId);
+  if (!fauna) {
+    // Defensive: stale/unknown encounter id — clear it rather than throw.
+    await world.setEncounter(player.id, null);
+    return errorFrame("The creature is gone. `explore` to find another.");
+  }
+
+  const round = combatRound({
+    playerHp: player.health,
+    playerAtk: PLAYER_BASE_ATTACK,
+    creatureHp: enc.hp,
+    creatureAtk: fauna.attack,
+  });
+
+  const youHit = line([
+    text(`You strike the ${fauna.name} for ${PLAYER_BASE_ATTACK}. `, "default"),
+    text(
+      fauna.attack > 0 ? `It hits back for ${fauna.attack}.` : "It doesn't fight back.",
+      fauna.attack > 0 ? "danger" : "muted",
+    ),
+  ]);
+
+  if (round.creatureDead) {
+    // Victory: grant the drop and end the encounter. (If you ALSO died this
+    // round, the death sequence below still runs — you slew it as you fell.)
+    const mat = getMaterial(fauna.drop.materialId);
+    await world.addPlayerMaterial(player.id, fauna.drop.materialId, fauna.drop.qty);
+    await world.setEncounter(player.id, null);
+
+    if (round.playerDead) {
+      const deathLines = await runDeath(
+        player,
+        `You killed the ${fauna.name} but fell with it. You wake aboard your ship, 10% of your gold lost.`,
+      );
+      return frame([
+        youHit,
+        line([
+          text(`The ${fauna.name} dies. `, "success"),
+          text(`You loot +${fauna.drop.qty} ${mat.name}.`, "accent"),
+        ]),
+        ...deathLines,
+      ]);
+    }
+
+    if (player.health !== round.playerHp) {
+      await world.setHealth(player.id, round.playerHp);
+    }
+    return frame([
+      youHit,
+      line([
+        text(`You slay the ${fauna.name}! `, "success"),
+        text(`Loot: +${fauna.drop.qty} ${mat.name}. `, "accent"),
+        text(`HP ${round.playerHp}/${MAX_HEALTH}.`, "muted"),
+      ]),
+    ]);
+  }
+
+  if (round.playerDead) {
+    const deathLines = await runDeath(
+      player,
+      `The ${fauna.name} kills you. You wake aboard your ship, 10% of your gold lost.`,
+    );
+    return frame([youHit, ...deathLines]);
+  }
+
+  // Both survive: update the creature's HP and your health, fight continues.
+  await world.setEncounter(player.id, { faunaId: enc.faunaId, hp: round.creatureHp });
+  await world.setHealth(player.id, round.playerHp);
+  return frame([
+    youHit,
+    line([
+      text(`${fauna.name} HP ${round.creatureHp}/${fauna.maxHp}. `, "default"),
+      text(`Your HP ${round.playerHp}/${MAX_HEALTH}. `, "muted"),
+      action("attack", "attack", { style: "link", title: "strike again" }),
+      text(" or ", "muted"),
+      action("flee", "flee", { style: "link", title: "break off" }),
+      text(".", "muted"),
+    ]),
+  ]);
+}
+
+/**
+ * `flee` — break off the active encounter and clear it. Gentle: no parting hit.
+ * Errors helpfully when you're not in combat.
+ */
+async function handleFlee(player: Player): Promise<RenderFrame> {
+  const enc = player.encounter;
+  if (!enc) {
+    return errorFrame("You're not in combat. `explore` to find creatures.");
+  }
+  const fauna = getFauna(enc.faunaId);
+  await world.setEncounter(player.id, null);
+  return frame([
+    line([
+      text("You break off and slip away", "success"),
+      text(fauna ? ` from the ${fauna.name}.` : ".", "muted"),
+    ]),
   ]);
 }
 
@@ -886,9 +1200,10 @@ function handleExplore(): RenderFrame {
 // ---------------------------------------------------------------------------
 
 async function handleInventory(player: Player): Promise<RenderFrame> {
-  const [stacks, prices] = await Promise.all([
+  const [stacks, prices, materials] = await Promise.all([
     world.getInventory(player.id),
     world.getMarketPrices(),
+    world.getPlayerMaterials(player.id),
   ]);
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const cargoUsed = stacks.reduce((sum, s) => sum + s.qty, 0);
@@ -897,6 +1212,14 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
       resourceId: s.resourceId,
       qty: s.qty,
       price: prices[s.resourceId] ?? null,
+    })),
+    // Materials are sellable but not in the cargo hold (no space cost), like
+    // upgrades — listed with their fixed value so you know what they fetch.
+    materials: materials.map((m) => ({
+      materialId: m.materialId,
+      qty: m.qty,
+      name: getMaterial(m.materialId).name,
+      value: materialValue(m.materialId),
     })),
     cargoUsed,
     cargoCap: fresh.cargoCap,
@@ -975,9 +1298,10 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
   const target = args[0]?.toLowerCase();
   if (!target) return errorFrame("Usage: sell <resource>  or  sell all");
 
-  // Selling an upgrade is code-priced (no market drift); resource selling below
-  // is unchanged.
+  // Selling an upgrade or a material is code-priced (no market drift); resource
+  // selling below is unchanged.
   if (isUpgradeId(target)) return handleSellUpgrade(player, target, args[1]);
+  if (isMaterialId(target)) return handleSellMaterial(player, target, args[1]);
 
   const stacks = await world.getInventory(player.id);
   if (stacks.length === 0) return errorFrame("Nothing to sell — your hold is empty.");
@@ -1066,6 +1390,54 @@ async function handleSellUpgrade(
   return frame([
     line([
       text(`Sold ${qty} ${upgrade.name} `, "success"),
+      text(`for ${total} cr `, "accent"),
+      text(`(${unit}/u). `, "muted"),
+      text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
+    ]),
+  ]);
+}
+
+/**
+ * Sell materials (scavenged/harvested/dropped goods) for `materialValue` per
+ * unit — code-priced, no market drift, no cargo (mirrors `handleSellUpgrade`).
+ * No `qty` arg sells the whole stack; a positive `qty` sells that many. Validates
+ * ownership before mutating; you can't sell what you don't carry.
+ */
+async function handleSellMaterial(
+  player: Player,
+  materialId: string,
+  qtyArg: string | undefined,
+): Promise<RenderFrame> {
+  const material = getMaterial(materialId);
+
+  const stacks = await world.getPlayerMaterials(player.id);
+  const ownedNow = stacks.find((s) => s.materialId === materialId)?.qty ?? 0;
+  if (ownedNow <= 0) {
+    return errorFrame(`You aren't carrying any ${material.name}.`);
+  }
+
+  let qty: number;
+  if (qtyArg === undefined) {
+    qty = ownedNow; // sell the whole stack by default
+  } else {
+    const requested = toInt(qtyArg);
+    if (requested === null || requested <= 0) {
+      return errorFrame("Usage: sell <material> [qty]  — qty must be a positive whole number.");
+    }
+    qty = requested;
+  }
+  if (ownedNow < qty) {
+    return errorFrame(`You only own ${ownedNow} ${material.name} — can't sell ${qty}.`);
+  }
+
+  const unit = materialValue(materialId);
+  const total = unit * qty;
+  const remaining = await world.addPlayerMaterial(player.id, materialId, -qty);
+  const newBalance = await world.addPlayerCredits(player.id, total);
+
+  return frame([
+    line([
+      text(`Sold ${qty} ${material.name} `, "success"),
       text(`for ${total} cr `, "accent"),
       text(`(${unit}/u). `, "muted"),
       text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),

@@ -22,6 +22,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     region: row.region,
     health: row.health,
     embarked: row.embarked,
+    encounter: row.encounter ?? null,
     createdAt: row.created_at,
   };
 }

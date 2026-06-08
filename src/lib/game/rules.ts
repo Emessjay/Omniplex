@@ -286,6 +286,68 @@ export function creditsAfterDeath(credits: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Wildlife — exploring, and on-foot combat with fauna (P5).
+//
+// Exploring a region (on foot) rolls one of three outcomes; encountering a
+// hostile creature drops you into a simultaneous-damage combat loop. As with the
+// hazard model above, the math is PURE: the handlers in `commands.ts` supply the
+// real `Math.random()` rolls and the creature stats (from the `wildlife.ts`
+// catalog), so these functions stay deterministic and unit-testable.
+// ---------------------------------------------------------------------------
+
+/**
+ * Flat player attack power per combat round. A constant for now — no weapon /
+ * attack upgrades yet (that's a later phase). Tuned so a bare pilot can kill the
+ * weaker fauna in a few rounds but a savage beast is a real threat.
+ */
+export const PLAYER_BASE_ATTACK = 12;
+
+/**
+ * Outcome thresholds for one `explore`, partitioning the roll range `[0, 1)`:
+ *   - `[0, 0.30)`   → scavenge (loot a material)
+ *   - `[0.30, 0.65)`→ flora    (a harvestable plant)
+ *   - `[0.65, 1)`   → fauna    (a creature)
+ * Tunable here. (The bands are deliberately close so all three are common.)
+ */
+export const EXPLORE_SCAVENGE_MAX = 0.3;
+export const EXPLORE_FLORA_MAX = 0.65;
+
+/**
+ * Map an explore roll in `[0, 1)` to its outcome. Pure & total: every roll
+ * yields exactly one of the three outcomes (out-of-range rolls clamp to the
+ * nearest band). See the threshold constants above.
+ */
+export function exploreOutcome(roll: number): "scavenge" | "flora" | "fauna" {
+  if (roll < EXPLORE_SCAVENGE_MAX) return "scavenge";
+  if (roll < EXPLORE_FLORA_MAX) return "flora";
+  return "fauna";
+}
+
+/**
+ * Resolve ONE simultaneous combat round: the player and the creature deal their
+ * damage at the SAME time, so both can die in a single round. New HPs are
+ * clamped to `≥ 0`; the `*Dead` flags report who (possibly both) hit 0. Pure —
+ * no RNG (combat damage is flat in this phase). The handler reads
+ * `PLAYER_BASE_ATTACK` and the creature's `attack` from the catalog and feeds
+ * them in.
+ */
+export function combatRound(args: {
+  playerHp: number;
+  playerAtk: number;
+  creatureHp: number;
+  creatureAtk: number;
+}): { playerHp: number; creatureHp: number; playerDead: boolean; creatureDead: boolean } {
+  const playerHp = Math.max(0, args.playerHp - Math.max(0, args.creatureAtk));
+  const creatureHp = Math.max(0, args.creatureHp - Math.max(0, args.playerAtk));
+  return {
+    playerHp,
+    creatureHp,
+    playerDead: playerHp <= 0,
+    creatureDead: creatureHp <= 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Navigation.
 // ---------------------------------------------------------------------------
 

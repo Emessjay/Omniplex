@@ -198,6 +198,18 @@ export interface ScanView {
   maxHealth: number;
   /** True = aboard ship; false = on foot in this region. */
   embarked: boolean;
+  /** Active combat encounter to surface (with `attack`/`flee` options), or null. */
+  encounter?: EncounterView | null;
+}
+
+/** The creature the player is currently facing, for the scan readout. */
+export interface EncounterView {
+  name: string;
+  /** The creature's current hit points. */
+  hp: number;
+  /** The creature's maximum hit points. */
+  maxHp: number;
+  hostile: boolean;
 }
 
 /**
@@ -234,6 +246,27 @@ export function renderScan(view: ScanView): RenderFrame {
         : text("on foot", "warning"),
     ]),
   );
+
+  // Active combat encounter: name the creature, its HP, and the attack/flee
+  // options. Surfaced on scan so a player who steps away mid-fight can see it.
+  if (view.encounter) {
+    const enc = view.encounter;
+    lines.push(
+      line([
+        text(enc.hostile ? "⚔ Fighting " : "Facing ", enc.hostile ? "danger" : "warning"),
+        text(`${enc.name}`, "accent"),
+        text(`  HP ${enc.hp}/${enc.maxHp}`, "default"),
+      ]),
+    );
+    lines.push(
+      line([
+        text("  ", "muted"),
+        action("attack", "attack", { style: "link", title: `attack the ${enc.name}` }),
+        text("  ", "muted"),
+        action("flee", "flee", { style: "link", title: "break off combat" }),
+      ]),
+    );
+  }
 
   // Current region: which region of how many, and its biome.
   lines.push(
@@ -482,6 +515,8 @@ export function renderMap(
 
 export interface InventoryView {
   stacks: { resourceId: string; qty: number; price: number | null }[];
+  /** Owned materials (sellable, no cargo cost), with name + fixed sell value. */
+  materials?: { materialId: string; qty: number; name: string; value: number }[];
   cargoUsed: number;
   cargoCap: number;
   credits: number;
@@ -533,6 +568,25 @@ export function renderInventory(view: InventoryView): RenderFrame {
         action("sell all", "sell all", { style: "link", title: "sell everything" }),
       ]),
     );
+  }
+
+  // Materials (sellable salvage; not in the hold). Listed only when held.
+  const materials = view.materials ?? [];
+  if (materials.length > 0) {
+    lines.push(line(text("Materials (sell while embarked):", "heading")));
+    for (const m of materials) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${m.name} ×${m.qty}  `, "default"),
+          text(`@ ${m.value}/u  `, "muted"),
+          action(`sell ${m.materialId}`, `sell ${m.materialId}`, {
+            style: "link",
+            title: `sell ${m.name}`,
+          }),
+        ]),
+      );
+    }
   }
   return frame(lines);
 }

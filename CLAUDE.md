@@ -560,3 +560,58 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **`scan` and `inventory` show survival status** — an `HP n/100` readout (red
   when ≤30%) + `aboard ship`/`on foot`, threaded through `ScanView`/
   `InventoryView` (`render.ts`). Disembarked surfacing only; the rules stay pure.
+
+### Load-bearing decisions from `wildlife`
+
+- **Materials subsystem** (the spoils of the on-foot loop) mirrors `upgrades`
+  exactly: code catalog `src/lib/game/materials.ts` (`MATERIALS` =
+  `{ id, name, category: "flora"|"animal"|"relic"|"mineral", value }`, helpers
+  `isMaterialId`/`getMaterial`/`materialValue`), code-priced (NOT in `markets`,
+  no drift, like upgrades). Ownership in `public.player_materials`
+  (`player_id, material_id, qty`, pk, qty≥0 check, RLS read-own, service-role
+  writes) + atomic `add_player_material(player, material, delta)` RPC, both added
+  in migration `20260608093000_wildlife.sql` (forward-only/idempotent). World
+  adapters `getPlayerMaterials`/`addPlayerMaterial` in `world.ts`. Relics
+  (`precursor_relic`, `void_idol`) are the rare high-value tier.
+- **Flora/fauna catalogs** in `src/lib/game/wildlife.ts` (code, no DB): `FLORA`
+  (`{ id, name, biomes: Biome[], harvest: { materialId, qty } }`) and `FAUNA`
+  (`{ id, name, biomes, maxHp, attack, hostile, drop: { materialId, qty } }`).
+  Every one of the 10 `BIOMES` has ≥1 flora AND ≥1 fauna so `explore` always
+  finds something (guarded in `wildlife-catalog.test.ts`). Helpers
+  `floraForBiome`/`faunaForBiome`/`getFauna`/`getFlora` and the PURE selector
+  `pickForBiome(list, biome, roll)` — filters to biome-valid entries then indexes
+  by roll, so a pick is ALWAYS biome-appropriate (AC#2); `null` if none.
+- **Combat is PURE in `rules.ts`**: `PLAYER_BASE_ATTACK = 12` (flat — no weapon
+  upgrades yet), `combatRound({playerHp, playerAtk, creatureHp, creatureAtk})`
+  deals damage to BOTH sides at once (clamped ≥0, `playerDead`/`creatureDead`
+  flags; both can die in one round). `exploreOutcome(roll)` partitions `[0,1)` →
+  `scavenge` `[0,0.30)` / `flora` `[0.30,0.65)` / `fauna` `[0.65,1)` (thresholds
+  `EXPLORE_SCAVENGE_MAX`/`EXPLORE_FLORA_MAX`). Handlers supply the real
+  `Math.random()` rolls (same pattern as the P4 hazard model).
+- **Combat state** is `players.encounter jsonb` (nullable; `null` = not fighting,
+  else `{ faunaId, hp }`), on `Player`/`PlayerRow`/`PlayerEncounter` +
+  `rowToPlayer`. `world.setEncounter(id, enc|null)` is the mutator. Set on a fauna
+  encounter (hostile AND placid — so `attack` always has a target), cleared on
+  kill / `flee` / death.
+- **Commands** (`commands.ts`): `explore`/`harvest`/`attack`/`flee` joined
+  `VERBS`+`USAGE` (P4 explore stub replaced; help parity green).
+  `explore`/`harvest`/`attack`/`flee` are all in `DISEMBARKED_ONLY`;
+  `attack`/`flee` additionally need an `encounter` (handler-checked, helpful
+  error else). `explore` rolls `exploreOutcome` → scavenge (`pickScavenge` award)
+  / flora (offer `harvest`) / fauna (set `encounter`), then takes the P4
+  hazard roll (can kill → death). Gated by `canLand` like `mine` (hostile
+  surface needs the upgrade). `harvest` re-rolls a biome flora (no hazard).
+  `attack` = one `combatRound`: creature dies → award `drop` + clear encounter;
+  player dies → death sequence; else update both HPs. `flee` clears the
+  encounter (no parting hit). The P4 death sequence was extracted to the shared
+  `runDeath(player, causeText)` helper (also clears any encounter); `mine` now
+  uses it too.
+- **Selling**: `sell <material> [qty]` (embarked-only, like all economy) pays
+  `materialValue`/u via `handleSellMaterial` (code-priced, no cargo, no `all`
+  inclusion — default qty = whole stack). `sell`'s abbrev domain now appends
+  OWNED material ids. `scan` shows an active encounter (creature + HP +
+  `attack`/`flee`) via `ScanView.encounter`/`EncounterView`; `inventory` lists
+  owned materials with their fixed value (`InventoryView.materials`).
+- **For P6 (food)**: animal/flora materials become healing items there. P9's
+  market-supply ideas may extend material selling. Combat is one-creature-at-a-
+  time; no flee-into-new-encounter chains.
