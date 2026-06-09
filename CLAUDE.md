@@ -1406,10 +1406,9 @@ gotchas) accrete here as workers surface things worth persisting. See
   Hazard still couples to temperature extremity (`hazardFor`), now off the new
   temperature. `orbitalRadius`/period/phase are KEPT (interplanetary `land` fuel,
   P2) but no longer drive temperature, so a system's temps are not a distance
-  gradient. **Planets are NOT re-sorted by orbital radius** — `planetAt` stays a
-  TOTAL single-planet function (the load-bearing "regionIndex not range-checked"
-  invariant extends to planet index), which a distance-sort would break; index =
-  generation order as before.
+  gradient. (Planets ARE re-sorted by orbital radius so index = distance — see
+  `planet-distance-order` below, which superseded this phase's generation-order
+  indexing.)
 - **Gas giants are ORBIT-ONLY: no surface.** `biomePalette` is exactly `["gas"]`,
   `regionCount` is **0**, and **`regionAt` THROWS on a gas planet** (a loud guard;
   callers branch on `planet.isGas` first). `biomePaletteFor` is now rocky-only and
@@ -1443,6 +1442,37 @@ gotchas) accrete here as workers surface things worth persisting. See
   warp_fuel), cargo (`inventory`/`player_materials`/`player_parts`/
   `player_upgrades`), `handle`, and per-system `markets`/`system_supply` (systems
   are unchanged in identity). SQL can't run the TS generator, so the relocate
-  coordinate is `startingWorld("omniplex-prod-1")` = `(0,0,0,1,0,0)` baked in (the
-  production seed, matching the test SEED); new players are seed-correct at
-  runtime. Re-point the baked coord if a deployment runs a different `WORLD_SEED`.
+  coordinate is `startingWorld("omniplex-prod-1")` baked in (the production seed,
+  matching the test SEED); new players are seed-correct at runtime. Re-point the
+  baked coord if a deployment runs a different `WORLD_SEED`. (After
+  `planet-distance-order` re-sorted planets, this baked coord is `(0,0,0,1,3,0)` —
+  the starting world's planet moved to sorted index 3.)
+
+### Load-bearing decisions from `planet-distance-order`
+
+- **Planets within a system are ordered by orbital distance — index 0 = innermost
+  (closest), highest index = outermost.** This REVERSED `planet-taxonomy`'s
+  generation-order indexing (the prior "planets are NOT re-sorted" note is void).
+  The reorder is the same set of planets relabeled by distance — sizes, temps,
+  biomes, deposits all unchanged, only the `planet` index changes.
+- **`systemAt` sorts after generation**: it generates the `planetCount` planets
+  (each from its generation-index RNG stream, as before), then **sorts ascending
+  by `orbitalRadius` with a STABLE tiebreak on the original generation index** (so
+  ties are reproducible), then reassigns each planet's `coord.planet` to its
+  sorted position ⇒ `planets[i].coord.planet === i`. A planet's ATTRIBUTES still
+  come from its generation stream (orbitalRadius must exist before we can sort by
+  it); only its public index changes. `regionAt` keys regions by the planet coord,
+  i.e. the stable sorted index — consistent because the sort is deterministic.
+- **`planetAt` no longer O(1)**: it now DELEGATES to
+  `systemAt(seed, systemOf(coord)).planets[coord.planet]` (regenerate the system —
+  ≤ `MAX_PLANETS` planets — sort, index), so it agrees exactly with the system's
+  list. It **THROWS on an out-of-range planet index** (no longer total over the
+  integers); all navigation callers (`warp`/`land`/`scan`/`map`) already validate
+  `planet < planetCount`, so in-range is guaranteed in normal play.
+- **`startingWorld` + the reset migration follow the sort**: `startingWorld` scans
+  the now-sorted `systemAt(...).planets`, so the production seed's starting world
+  is `(0,0,0,1,3,0)` (planet at sorted index 3). The `planet-taxonomy` reset
+  migration's baked relocation coord was updated to match (editing that
+  unapplied-everywhere migration was an explicit auditor decision, not landed-
+  history rewriting). `map`/`scan`/the `land` sibling list now read innermost→
+  outermost naturally.
