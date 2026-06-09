@@ -784,7 +784,20 @@ function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Plan
 
 /**
  * The star system at `coord`: its name, star class, planet count, and the
- * full list of planets (each planet's `coord.planet` equals its index).
+ * full list of planets ORDERED BY ORBITAL DISTANCE — closest first, so
+ * `planets[0]` is the innermost planet and the highest index the outermost
+ * (planet-distance-order). Each planet's `coord.planet` (and its name letter)
+ * equals its index in this sorted list.
+ *
+ * The reorder happens AFTER generation: each planet is first generated from its
+ * own generation-index RNG stream (we need every planet's `orbitalRadius` before
+ * we can sort by it), then the array is sorted ascending by `orbitalRadius` and
+ * each planet's public index is reassigned to its sorted position. The sort is
+ * STABLE — ties on `orbitalRadius` break by the original generation index — so
+ * the ordering is byte-identical across runs and JS engines. Only a planet's
+ * public index (its `coord.planet` and the `name` letter derived from it) changes;
+ * every RNG-derived attribute (radius, temperature, biome palette, deposits,
+ * orbit) still comes from its generation stream.
  */
 export function systemAt(seed: string, coord: SystemCoord): StarSystem {
   const rng = makeRng(
@@ -800,32 +813,59 @@ export function systemAt(seed: string, coord: SystemCoord): StarSystem {
   const starClass = starClassFor(rng);
   const planetCount = randInt(rng, 1, MAX_PLANETS);
 
-  const planets: Planet[] = [];
+  // Generate every planet from its generation-index stream first (orbitalRadius
+  // must exist before we can sort by it), tracking that index for a stable tiebreak.
+  const generated = [];
   for (let p = 0; p < planetCount; p++) {
-    planets.push(generatePlanet(seed, { ...coord, planet: p }, name));
+    generated.push({
+      planet: generatePlanet(seed, { ...coord, planet: p }, name),
+      genIndex: p,
+    });
   }
+
+  // Sort closest-first by orbital radius; equal radii keep generation order
+  // (deterministic, reproducible across engines). Then relabel each planet to its
+  // sorted index — both its `coord.planet` and its name letter follow the new
+  // position, so index 0 is the innermost world named `…b`.
+  const planets: Planet[] = generated
+    .sort(
+      (a, b) =>
+        a.planet.orbitalRadius - b.planet.orbitalRadius || a.genIndex - b.genIndex,
+    )
+    .map(({ planet }, i) => ({
+      ...planet,
+      coord: { ...planet.coord, planet: i },
+      name: planetName(name, i),
+    }));
 
   return { coord, name, starClass, planetCount, planets };
 }
 
 /**
- * The planet at `coord`. Equivalent to `systemAt(seed, coord).planets[planet]`
- * — it regenerates the system's name (cheap, deterministic) and the one
- * requested planet from its own stream, so it agrees exactly with the system's
- * planet list. Total over the integers: a planet index out of `[0, planetCount)`
- * still generates a (deterministic) planet — callers validate the index.
+ * The planet at `coord`. Because a planet's public index is its position in the
+ * system's orbital-distance ordering (planet-distance-order), this can no longer
+ * shortcut to a single RNG stream — the planet sitting at sorted index
+ * `coord.planet` depends on the whole system's ordering. So it DELEGATES to
+ * `systemAt` (regenerating the system — cheap, ≤ `MAX_PLANETS` planets — then
+ * sorting + relabeling) and returns `planets[coord.planet]`, agreeing exactly
+ * with `systemAt(seed, coord).planets[coord.planet]`.
+ *
+ * This is NO LONGER O(1) / single-stream, and NO LONGER total over the integers:
+ * after the sort, an index outside `[0, planetCount)` has no planet. All
+ * navigation callers (`warp`/`land`/`scan`/`map`) validate `planet < planetCount`
+ * before calling, so in-range is guaranteed in normal play; an out-of-range index
+ * is a caller bug and THROWS a clear error rather than returning `undefined`.
  */
 export function planetAt(seed: string, coord: PlanetCoord): Planet {
-  const sysRng = makeRng(
-    seed,
-    "system",
-    coord.galaxy,
-    coord.arm,
-    coord.cluster,
-    coord.system,
-  );
-  const name = systemName(sysRng);
-  return generatePlanet(seed, coord, name);
+  const system = systemAt(seed, coord);
+  const planet = system.planets[coord.planet];
+  if (!planet) {
+    throw new Error(
+      `planetAt: planet index ${coord.planet} out of range for ${systemKey(coord)} ` +
+        `(system has ${system.planetCount}, valid 0–${system.planetCount - 1})`,
+    );
+  }
+  return planet;
 }
 
 /**

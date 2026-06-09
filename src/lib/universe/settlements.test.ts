@@ -6,6 +6,7 @@ import {
   hasOutpost,
   planetAt,
   regionAt,
+  systemAt,
   BIOMES,
 } from "@/lib/universe";
 import { FREEZING_C, BOILING_C } from "@/lib/game/rules";
@@ -35,8 +36,8 @@ describe("HABITABLE_BIOMES", () => {
 describe("settlements only on temperate planets + habitable regions", () => {
   it("never appears on extreme planets or non-habitable biomes", () => {
     for (const sc of systems(SEED)) {
-      const sys = (planetAt(SEED, { ...sc, planet: 0 }), null); // touch determinism
-      for (let planet = 0; planet < 4; planet++) {
+      const planetCount = systemAt(SEED, sc).planetCount;
+      for (let planet = 0; planet < planetCount; planet++) {
         const p = planetAt(SEED, { ...sc, planet });
         for (let i = 0; i < 6; i++) {
           const region = { ...sc, planet, region: i % p.regionCount };
@@ -55,7 +56,8 @@ describe("settlement frequency varies heavily per system and per planet", () => 
     const rates: number[] = [];
     for (const sc of systems(SEED)) {
       let hits = 0, total = 0;
-      for (let planet = 0; planet < 4; planet++) {
+      const planetCount = systemAt(SEED, sc).planetCount;
+      for (let planet = 0; planet < planetCount; planet++) {
         const p = planetAt(SEED, { ...sc, planet });
         if (!moderate(p.temperature)) continue;
         for (let i = 0; i < 8; i++) {
@@ -66,9 +68,12 @@ describe("settlement frequency varies heavily per system and per planet", () => 
       if (total > 0) rates.push(hits / total);
     }
     expect(rates.length).toBeGreaterThan(10);
-    // High variance: some systems near-empty, some dense.
+    // High variance: some systems near-empty, some dense. (The dense-end
+    // threshold is 0.35 rather than 0.4 since planet-distance-order relabels
+    // planets by orbital distance — a planet's regions are keyed by its new
+    // sorted index, so this seed's densest system now tops out at ~0.375.)
     expect(Math.min(...rates)).toBeLessThan(0.1);
-    expect(Math.max(...rates)).toBeGreaterThan(0.4);
+    expect(Math.max(...rates)).toBeGreaterThan(0.35);
   });
 });
 

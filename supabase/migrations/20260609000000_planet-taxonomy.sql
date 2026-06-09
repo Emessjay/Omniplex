@@ -25,7 +25,9 @@
 -- The destination coordinate below is `startingWorld(WORLD_SEED)` — the first
 -- rocky, moderate-temperature, low-hazard planet scanning outward from the
 -- origin. It is computed FOR THE PRODUCTION SEED `omniplex-prod-1`
--- (galaxy 0 · arm 0 · cluster 0 · system 1 · planet 0 · region 0). New players
+-- (galaxy 0 · arm 0 · cluster 0 · system 1 · planet 3 · region 0). The planet
+-- index is the planet's position in its system's orbital-distance ordering
+-- (planet-distance-order: planets are sorted closest-first). New players
 -- spawn at the seed-correct `startingWorld(seed)` at runtime (in
 -- `getOrCreatePlayer`); this baked coordinate covers the one-time relocation of
 -- EXISTING players. If a deployment runs a different WORLD_SEED, re-point this
@@ -55,7 +57,7 @@ set
   arm = 0,
   cluster = 0,
   system = 1,
-  planet = 0,
+  planet = 3,
   region = 0,
   embarked = true,
   health = 100,
