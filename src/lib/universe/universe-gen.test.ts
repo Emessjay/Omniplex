@@ -36,12 +36,15 @@ function samplePlanets(seed: string): Planet[] {
 }
 
 // Deterministic sample of regions: the first `perPlanet` regions of every
-// sampled planet. Biome + deposit coverage that used to live on the planet now
-// lives here, so the variety / rarity-coupling / abundance assertions sample
-// these regions instead of `planet.deposits` / `planet.biome`.
+// sampled ROCKY planet. Biome + deposit coverage that used to live on the planet
+// now lives here, so the variety / rarity-coupling / abundance assertions sample
+// these regions instead of `planet.deposits` / `planet.biome`. GAS giants
+// (planet-taxonomy) have no surface regions (`regionCount === 0`), so they are
+// skipped — `regionAt` on one throws by design.
 function sampleRegions(seed: string, perPlanet = 8): Region[] {
   const out: Region[] = [];
   for (const p of samplePlanets(seed)) {
+    if (p.isGas) continue;
     for (let i = 0; i < perPlanet; i++) {
       out.push(regionAt(seed, p.coord, i % p.regionCount));
     }
@@ -135,16 +138,27 @@ describe("structural validity (AC#3, AC#4)", () => {
   it("planets have valid fields in range", () => {
     expect(planets.length).toBeGreaterThan(100);
     for (const p of planets) {
+      // Physical size (planet-taxonomy): radius in [0.5, 14.3], gas iff ≥ 1.75.
+      expect(p.radius).toBeGreaterThanOrEqual(0.5);
+      expect(p.radius).toBeLessThanOrEqual(14.3);
+      expect(p.isGas).toBe(p.radius >= 1.75);
       // Biome moved to the region tier: a planet now carries a distinct, valid
       // palette of size PALETTE_MIN..MAX (the only biomes its regions can be).
-      expect(p.biomePalette.length).toBeGreaterThanOrEqual(PALETTE_MIN);
-      expect(p.biomePalette.length).toBeLessThanOrEqual(PALETTE_MAX);
+      // A GAS giant is the exclusive single-biome `["gas"]` palette with no
+      // surface regions; a ROCKY world carries a non-gas palette + real regions.
       expect(new Set(p.biomePalette).size).toBe(p.biomePalette.length);
       for (const b of p.biomePalette) expect(BIOMES).toContain(b);
-      // Region count is an integer in the documented bounds.
       expect(Number.isInteger(p.regionCount)).toBe(true);
-      expect(p.regionCount).toBeGreaterThanOrEqual(REGION_COUNT_MIN);
-      expect(p.regionCount).toBeLessThanOrEqual(REGION_COUNT_MAX);
+      if (p.isGas) {
+        expect(p.biomePalette).toEqual(["gas"]);
+        expect(p.regionCount).toBe(0);
+      } else {
+        expect(p.biomePalette.length).toBeGreaterThanOrEqual(PALETTE_MIN);
+        expect(p.biomePalette.length).toBeLessThanOrEqual(PALETTE_MAX);
+        expect(p.biomePalette).not.toContain("gas");
+        expect(p.regionCount).toBeGreaterThanOrEqual(REGION_COUNT_MIN);
+        expect(p.regionCount).toBeLessThanOrEqual(REGION_COUNT_MAX);
+      }
       expect(ATMOSPHERES).toContain(p.atmosphere);
       expect(p.gravity).toBeGreaterThan(0);
       expect(p.gravity).toBeLessThanOrEqual(10);
@@ -181,7 +195,9 @@ describe("structural validity (AC#3, AC#4)", () => {
 });
 
 describe("rarity coupling — savage planets carry rare resources (AC#5)", () => {
-  const planets = samplePlanets(SEED);
+  // Deposits live on the region tier (ROCKY worlds only — gas giants have no
+  // surface), so restrict to rocky planets before sampling their regions.
+  const planets = samplePlanets(SEED).filter((p) => !p.isGas);
   const savage = planets.filter((p) => p.hazard >= 0.7);
   const calm = planets.filter((p) => p.hazard <= 0.3);
 

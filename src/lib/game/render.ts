@@ -8,7 +8,7 @@
  * exact string the click submits (AC: "use clickable actions generously").
  */
 import type { Biome, Planet, Region, StarSystem } from "@/lib/universe";
-import { getResource } from "@/lib/universe";
+import { getResource, SIZE_CLASS_LABELS } from "@/lib/universe";
 import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { effectiveAbundance, warpFuelCost, FREEZING_C, BOILING_C } from "./rules";
@@ -357,6 +357,16 @@ export function renderScan(view: ScanView): RenderFrame {
       ),
     ]),
   );
+  // Planet physical size: class + radius (R⊕). Rocky worlds (this is a
+  // rocky-only scan path) sit below the gas threshold.
+  lines.push(
+    line([
+      text("size ", "muted"),
+      text(SIZE_CLASS_LABELS[planet.sizeClass], "accent"),
+      text("   radius ", "muted"),
+      text(`${planet.radius} R⊕`, "default"),
+    ]),
+  );
   // Planet context: the biome palette its regions draw from + atmosphere.
   lines.push(
     line([
@@ -466,6 +476,19 @@ export function renderScan(view: ScanView): RenderFrame {
       if (i === planet.coord.planet) {
         lines.push(
           line([text(`  ${i}: `, "muted"), text(`${sib.name} (here)`, "accent")]),
+        );
+      } else if (sib.isGas) {
+        // A gas giant can't be landed on (planet-taxonomy) — `land i` would be
+        // rejected, so the action reads red (P9b) and is labeled as such.
+        lines.push(
+          line([
+            text(`  ${i}: `, "muted"),
+            action(`${sib.name} (gas giant)`, `land ${i}`, {
+              style: "link",
+              title: "gas giant — no surface to land on",
+              disabled: true,
+            }),
+          ]),
         );
       } else {
         // `land` is embarked-only (you fly the ship) AND burns regular fuel
@@ -618,6 +641,12 @@ export interface MapLocation {
   region: number;
   /** Hyperwarp Condensate the player owns — drives the galaxy-jump affordance. */
   condensate?: number;
+  /** Current planet's size class label (e.g. "Rocky", "Jovian"). */
+  planetSize?: string;
+  /** Current planet's radius (R⊕). */
+  planetRadius?: number;
+  /** Whether the current planet is a gas giant (orbit-only). */
+  planetIsGas?: boolean;
 }
 
 /**
@@ -645,6 +674,19 @@ export function renderMap(
       ),
     ]),
   ];
+  // Current planet's physical size (planet-taxonomy), when known.
+  if (loc.planetSize !== undefined) {
+    lines.push(
+      line([
+        text("this planet  ", "muted"),
+        text(loc.planetSize, "accent"),
+        text(loc.planetIsGas ? " (gas giant)" : "", "muted"),
+        loc.planetRadius !== undefined
+          ? text(`  ${loc.planetRadius} R⊕`, "default")
+          : text("", "muted"),
+      ]),
+    );
+  }
 
   // Galaxy jump (P3): `hyperwarp` consumes a Hyperwarp Condensate to leave this
   // galaxy. The action reads RED (P9b) when you hold none — clicking it still
@@ -715,6 +757,8 @@ export interface InventoryView {
   health: number;
   maxHealth: number;
   embarked: boolean;
+  /** The planet you're currently at — name + physical size (planet-taxonomy). */
+  planet?: { name: string; size: string; radius: number; isGas: boolean };
 }
 
 export function renderInventory(view: InventoryView): RenderFrame {
@@ -735,6 +779,18 @@ export function renderInventory(view: InventoryView): RenderFrame {
       embarked ? text("aboard ship", "accent") : text("on foot", "warning"),
     ]),
   ];
+  // Current planet + its physical size (planet-taxonomy).
+  if (view.planet) {
+    lines.push(
+      line([
+        text("at ", "muted"),
+        text(view.planet.name, "accent"),
+        text(`  ${view.planet.size}`, "default"),
+        text(view.planet.isGas ? " (gas giant)" : "", "muted"),
+        text(`  ${view.planet.radius} R⊕`, "muted"),
+      ]),
+    );
+  }
   if (stacks.length === 0) {
     lines.push(line(text("Hold is empty. Find a planet and `mine`.", "muted")));
   } else {

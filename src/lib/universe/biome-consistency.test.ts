@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { planetAt, regionAt, BIOMES, biomeTempOffset, biomeHazardOffset } from "@/lib/universe";
+import {
+  planetAt,
+  regionAt,
+  BIOMES,
+  biomeTempOffset,
+  biomeHazardOffset,
+  TEMP_MIN,
+  TEMP_MAX,
+} from "@/lib/universe";
 import { FREEZING_C, BOILING_C } from "@/lib/game/rules";
-import type { PlanetCoord } from "@/lib/universe";
 
 const SEED = "omniplex-biome-consistency-test";
 
@@ -30,16 +37,39 @@ describe("gas is exclusive (rule 1)", () => {
   });
 });
 
-describe("temperature ← star brightness + closeness (rule 2)", () => {
-  // Sample correlations across the population (radius/star are in the planet).
-  it("hotter outcomes correlate with smaller orbitalRadius", () => {
-    const ps = samplePlanets(SEED).filter((p) => !p.biomePalette.includes("gas"));
+describe("temperature ← physical radius, not orbital distance (rule 2, planet-taxonomy)", () => {
+  // The old star-brightness/orbital-closeness physics was DROPPED: temperature is
+  // now derived from the planet's physical RADIUS via the paper's per-size zone
+  // mix, INDEPENDENT of orbital distance. So we no longer assert a temp/orbital
+  // correlation; instead we lock the new model's invariants.
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+
+  it("temperature is bounded to [TEMP_MIN, TEMP_MAX]", () => {
+    for (const p of samplePlanets(SEED)) {
+      expect(p.temperature).toBeGreaterThanOrEqual(TEMP_MIN);
+      expect(p.temperature).toBeLessThanOrEqual(TEMP_MAX);
+    }
+  });
+
+  it("is NOT a function of orbital distance (close ≈ far on average)", () => {
+    const ps = samplePlanets(SEED);
     const close = ps.filter((p) => p.orbitalRadius < 3);
     const far = ps.filter((p) => p.orbitalRadius > 20);
-    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
     expect(close.length).toBeGreaterThan(5);
     expect(far.length).toBeGreaterThan(5);
-    expect(mean(close.map((p) => p.temperature))).toBeGreaterThan(mean(far.map((p) => p.temperature)));
+    // No insolation gradient anymore — the two groups' means are within a band,
+    // not systematically ordered as the old `1/radius` model required.
+    expect(Math.abs(mean(close.map((p) => p.temperature)) - mean(far.map((p) => p.temperature)))).toBeLessThan(60);
+  });
+
+  it("larger (gas) planets skew colder than smaller (rocky) ones (paper trend)", () => {
+    const ps = samplePlanets(SEED);
+    const gas = ps.filter((p) => p.isGas);
+    const rocky = ps.filter((p) => !p.isGas);
+    const coldFrac = (xs: typeof ps) => xs.filter((p) => p.temperature < FREEZING_C).length / Math.max(1, xs.length);
+    expect(gas.length).toBeGreaterThan(5);
+    expect(rocky.length).toBeGreaterThan(5);
+    expect(coldFrac(gas)).toBeGreaterThan(coldFrac(rocky));
   });
 });
 
@@ -87,7 +117,8 @@ describe("no oceans on boiling/freezing worlds (rule 5)", () => {
 
 describe("per-region temp/hazard never cross 0/100; biome variation (rule 6)", () => {
   it("each region stays on the planet's side of 0 and 100, hazard in [0,1]", () => {
-    for (const p of samplePlanets(SEED)) {
+    // Gas giants (planet-taxonomy) have no surface regions — skip them.
+    for (const p of samplePlanets(SEED).filter((x) => !x.isGas)) {
       const planetBand = band(p.temperature);
       for (let i = 0; i < 6; i++) {
         const r = regionAt(SEED, p.coord, i % p.regionCount);

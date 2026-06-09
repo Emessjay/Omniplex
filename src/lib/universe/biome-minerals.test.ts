@@ -58,6 +58,8 @@ describe("biome-specific deposits are confined to their biomes", () => {
       for (let system = 0; system < 15; system++) {
         const pc: PlanetCoord = { galaxy: 0, arm: 0, cluster, system, planet: 0 };
         const planet = planetAt(SEED, pc);
+        // Gas giants (planet-taxonomy) have no surface regions/deposits — skip.
+        if (planet.isGas) continue;
         const samples = [0, 1, 2, Math.floor(planet.regionCount / 2)];
         for (const i of samples) {
           const r = regionAt(SEED, pc, i);

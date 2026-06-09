@@ -1380,3 +1380,69 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **Out of scope (extension points noted)**: no brownout/partial power, no
   batteries, no plant beyond thermal/solar — but `basePower` is shaped to add more
   supply/demand terms, and metered (over-time) production is still a noted future.
+
+### Load-bearing decisions from `planet-taxonomy`
+
+- **Planets now have a PHYSICAL SIZE, grounded in Kopparapu (2018, ApJ 856), and
+  the rocky/gas split + temperature both follow from it.** This SUPERSEDES
+  `biome-consistency`'s temperature source (star brightness + orbital closeness)
+  AND its gas-as-a-random-biome-roll. All gen stays PURE & deterministic in
+  `src/lib/universe/gen.ts` (planet RNG stream; no `Date`/`Math.random`).
+- **`Planet` gained `radius` (R⊕), `sizeClass`, `isGas`** (`types.ts`; exported
+  `SIZE_CLASSES`/`SizeClass`/`SIZE_CLASS_LABELS`/`GAS_RADIUS_THRESHOLD = 1.75`).
+  `sampleSize(rng)` picks a size class weighted by the paper's occurrence `share`,
+  then a radius LOG-uniform within the class's `[rLo,rHi]` band: Rocky 0.5–1,
+  Super-Earth 1–1.75, Sub-Neptune 1.75–3.5, Sub-Jovian 3.5–6, Jovian 6–14.3.
+  **`isGas = radius >= 1.75`** ⇒ population ≈ **49% rocky / 51% gas**.
+- **Temperature is derived from RADIUS (orbital-distance physics DROPPED).** Each
+  size class carries a normalized cold/warm/hot zone mix (Table 3); a planet's mix
+  is interpolated smoothly by `log10(radius)` between per-class anchors (the band
+  geometric means), and a uniform draw `u` is mapped through an inverse-CDF with
+  breakpoints at **0°C and 100°C** (`u<c → [TEMP_MIN,0)`, `[c,c+w) → [0,100)`,
+  else `(100,TEMP_MAX]`), linear within each segment — so realized zone
+  proportions match the mix exactly while temperature stays smooth + bounded to
+  **`[TEMP_MIN(-160), TEMP_MAX(520)]`** (both exported from `@/lib/universe`).
+  Overall ≈ cold 77 / warm 8 / hot 15; gas giants skew much colder than rocky.
+  Hazard still couples to temperature extremity (`hazardFor`), now off the new
+  temperature. `orbitalRadius`/period/phase are KEPT (interplanetary `land` fuel,
+  P2) but no longer drive temperature, so a system's temps are not a distance
+  gradient. **Planets are NOT re-sorted by orbital radius** — `planetAt` stays a
+  TOTAL single-planet function (the load-bearing "regionIndex not range-checked"
+  invariant extends to planet index), which a distance-sort would break; index =
+  generation order as before.
+- **Gas giants are ORBIT-ONLY: no surface.** `biomePalette` is exactly `["gas"]`,
+  `regionCount` is **0**, and **`regionAt` THROWS on a gas planet** (a loud guard;
+  callers branch on `planet.isGas` first). `biomePaletteFor` is now rocky-only and
+  never yields `gas`. `hasSettlement` returns false for gas (no surface
+  settlement) — but `hasOutpost`/`systemOutpostPlanets` are unchanged, so a gas
+  giant MAY still host an ORBITAL outpost. Rocky worlds keep the full
+  biome-consistency palette + planet-regions deposits, now off the new temperature.
+- **Gameplay (commands.ts): every surface path guards `planet.isGas`.**
+  `disembark`/`mine`/`explore`/`harvest`/`build`/`land <n>`/`jump <n>` are rejected
+  with `gasGiantError` ("X is a gas giant — no surface to land on…"); `scan` of a
+  gas giant uses `gasGiantScanFrame` (size class, radius, temp, atmosphere, no
+  deposits) and `warp`/`hyperwarp` arrival use the gas-aware `planetScanFrame`
+  (arrive in orbit at a gas planet 0, region nominally 0 — never passed to
+  `regionAt`). `jump O` to a gas giant's orbital outpost still works. The
+  regionAt-calling helpers (`minableHere`, `baseHere`, the `withdraw` arg domain)
+  also short-circuit on gas. `scan`/`map`/`inventory` surface the planet's size
+  class + radius (gas siblings in the `land` list read RED via the P9b
+  `disabled`-action convention).
+- **Safe starting world (`startingWorld(seed)`, pure):** scans systems outward
+  from the origin (galaxy 0 · arm 0 · cluster 0 · system 0,1,2…) for the FIRST
+  rocky, moderate-temperature (`0 < T < 100`), low-hazard planet, returning its
+  `PlanetCoord`. Shared by BOTH new-player spawn (`getOrCreatePlayer` now sets the
+  spawn location explicitly instead of the old hardcoded `(0,0,0,0,0,0)`, which
+  could be a gas giant) AND the reset migration.
+- **Migration `20260609000000_planet-taxonomy.sql` is a PRAGMATIC RESET**
+  (forward-only, runs once): the universe was fundamentally reshaped (new sizes,
+  ~half non-landable, planet/region identity changed), so it WIPES planet/region-
+  scoped state (`world_deltas`, `discoveries`, `bases` + cascading
+  `base_buildings`/`base_storage`) and RELOCATES every player to the safe starting
+  world, fully healed + aboard + encounter cleared. **KEEPS** wallet (credits/fuel/
+  warp_fuel), cargo (`inventory`/`player_materials`/`player_parts`/
+  `player_upgrades`), `handle`, and per-system `markets`/`system_supply` (systems
+  are unchanged in identity). SQL can't run the TS generator, so the relocate
+  coordinate is `startingWorld("omniplex-prod-1")` = `(0,0,0,1,0,0)` baked in (the
+  production seed, matching the test SEED); new players are seed-correct at
+  runtime. Re-point the baked coord if a deployment runs a different `WORLD_SEED`.

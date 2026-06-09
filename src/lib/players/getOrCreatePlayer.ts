@@ -18,6 +18,8 @@ import "server-only";
  * generated, non-identifying callsign instead of the email local-part.
  */
 import { getServerClient } from "@/lib/supabase/server";
+import { startingWorld } from "@/lib/universe";
+import { getWorldSeed } from "@/lib/game/seed";
 import { rowToPlayer } from "./mapping";
 import { generateCallsign, uniqueHandle } from "./handle";
 import type { Player, PlayerRow } from "./types";
@@ -37,19 +39,37 @@ export async function getOrCreatePlayer(
   const existing = await findByUserId(userId);
   if (existing) return existing;
 
+  // New players spawn at the deterministic SAFE STARTING WORLD for this seed —
+  // a rocky, moderate-temperature world (planet-taxonomy). Since ~half of all
+  // planets are now non-landable gas giants, the old hardcoded `(0,0,0,0,0,0)`
+  // spawn could drop a player in orbit of a gas giant with nothing to do, so we
+  // set the location explicitly instead of relying on the DB column defaults.
+  // The same `startingWorld(seed)` backs the reset migration's relocation, so a
+  // fresh player and a relocated one land on the same world.
+  const spawn = startingWorld(getWorldSeed());
+
   // Insert, retrying on handle collisions. New players take the DB column
-  // defaults (1000 credits, 100 fuel, 50 cargo_cap, location 0/0/0). The
-  // handle is a NON-IDENTIFYING generated callsign — never derived from the
-  // email, since handles are public (leaderboard / `who` / bases). A fresh
-  // callsign is rolled per attempt so a collision picks a new random base;
-  // `uniqueHandle` still guards against the just-read taken set.
+  // defaults for everything EXCEPT location (1000 credits, 100 fuel, 50
+  // cargo_cap). The handle is a NON-IDENTIFYING generated callsign — never
+  // derived from the email, since handles are public (leaderboard / `who` /
+  // bases). A fresh callsign is rolled per attempt so a collision picks a new
+  // random base; `uniqueHandle` still guards against the just-read taken set.
   for (let attempt = 0; attempt < MAX_HANDLE_ATTEMPTS; attempt += 1) {
     const taken = await fetchTakenHandles();
     const handle = uniqueHandle(generateCallsign(), taken);
 
     const { data, error } = await db
       .from("players")
-      .insert({ user_id: userId, handle })
+      .insert({
+        user_id: userId,
+        handle,
+        galaxy: spawn.galaxy,
+        arm: spawn.arm,
+        cluster: spawn.cluster,
+        system: spawn.system,
+        planet: spawn.planet,
+        region: 0,
+      })
       .select("*")
       .single();
 

@@ -29,6 +29,7 @@ import {
   hasSettlement,
   hasOutpost,
   RESOURCES,
+  SIZE_CLASS_LABELS,
   type SystemCoord,
   type PlanetCoord,
   type Region,
@@ -181,6 +182,92 @@ function outpostSurfaceError(): RenderFrame {
   );
 }
 
+/**
+ * The clear error for a surface action attempted at a GAS GIANT (planet-taxonomy).
+ * Gas giants are orbit-only — no surface to land on, mine, build on, or explore.
+ * You can still `scan`/`map`/`warp` away, or `jump O` to its orbital outpost.
+ */
+function gasGiantError(planet: Planet): RenderFrame {
+  const outpost = " (or `jump O` to its orbital outpost, if it has one)";
+  return errorFrame(
+    `${planet.name} is a gas giant — no surface to land on. \`scan\`/\`map\`/\`warp\` away${outpost}.`,
+  );
+}
+
+/**
+ * Scan frame for a GAS GIANT you're orbiting (region is nominal; there is no
+ * surface region). Describes the world — size class, radius, temperature,
+ * atmosphere — and notes it has no surface, offering `map`/`warp` and (when it
+ * exists) docking at its orbital outpost.
+ */
+function gasGiantScanFrame(player: Player, seed: string, planet: Planet): RenderFrame {
+  const system = systemAt(seed, locOf(player));
+  const lines: RenderLine[] = [
+    line([
+      text(planet.name, "heading"),
+      text(`  (${system.name}, class-${system.starClass})`, "muted"),
+    ]),
+    line([
+      text("HP ", "muted"),
+      text(`${player.health}/${MAX_HEALTH}`, player.health <= MAX_HEALTH * 0.3 ? "danger" : "default"),
+      text("   ", "muted"),
+      text("in orbit", "accent"),
+    ]),
+    line([
+      text("fuel ", "muted"),
+      text(`${player.fuel}`, "default"),
+      text("   warp fuel ", "muted"),
+      text(`${player.warpFuel}`, "default"),
+    ]),
+    line([
+      text("size ", "muted"),
+      text(`${SIZE_CLASS_LABELS[planet.sizeClass]} (gas giant)`, "accent"),
+      text("   radius ", "muted"),
+      text(`${planet.radius} R⊕`, "default"),
+    ]),
+    line([
+      text("atmosphere ", "muted"),
+      text(planet.atmosphere, "accent"),
+      text("   temp ", "muted"),
+      text(`${planet.temperature}°C`, "default"),
+    ]),
+    line(text("A gas giant — no surface to land on, no deposits to mine.", "muted")),
+  ];
+  if (hasOutpost(seed, locOf(player))) {
+    lines.push(
+      line([
+        text("An orbital station hangs nearby — ", "muted"),
+        action("jump O", "jump O", { style: "link", title: "dock at the orbital outpost" }),
+        text(" to dock.", "muted"),
+      ]),
+    );
+  }
+  lines.push(
+    line([
+      action("map", "map", { style: "link", title: "show nearby systems" }),
+      text(" to find somewhere to go.", "muted"),
+    ]),
+  );
+  return frame(lines);
+}
+
+/**
+ * The gas-aware arrival/scan dispatcher for the player's CURRENT planet+region.
+ * A gas giant has no surface region, so it gets `gasGiantScanFrame`; a rocky
+ * world goes through the normal `regionScanFrame`. Used by `scan` and by warp /
+ * hyperwarp arrival (which always touch down at region 0).
+ */
+async function planetScanFrame(
+  player: Player,
+  seed: string,
+  coord: PlanetCoord,
+  regionIndex: number,
+): Promise<RenderFrame> {
+  const planet = planetAt(seed, coord);
+  if (planet.isGas) return gasGiantScanFrame(player, seed, planet);
+  return regionScanFrame(player, seed, coord, regionIndex);
+}
+
 function locOf(player: Player): PlanetCoord {
   return {
     galaxy: player.galaxy,
@@ -308,6 +395,8 @@ async function minableHere(player: Player, seed: string): Promise<string[]> {
   // At the orbital outpost there is no surface region to mine — nothing minable.
   if (atOutpost(player)) return [];
   const coord = locOf(player);
+  // A gas giant has no surface region either — nothing minable.
+  if (planetAt(seed, coord).isGas) return [];
   const region = regionAt(seed, coord, player.region);
   const depletionMap = await world.getEffectiveDepletionMap(regionKey(region.coord));
   return region.deposits
@@ -401,6 +490,8 @@ async function loadArgDomainContext(
     // ship parts (P12b lifted the old parts-stay-siloed block; parts now move
     // back into the ship's parts store). No base/storage at the orbital outpost.
     if (atOutpost(player)) return { ...EMPTY_ARG_CONTEXT, withdrawCandidates: [] };
+    // No surface region (and no base) on a gas giant.
+    if (planetAt(seed, locOf(player)).isGas) return { ...EMPTY_ARG_CONTEXT, withdrawCandidates: [] };
     const base = await world.getBaseInRegion(player.id, regionKey(regionAt(seed, locOf(player), player.region).coord));
     const stored = base ? await world.getBaseStorage(base.id) : [];
     return {
@@ -563,7 +654,7 @@ async function dispatchResolved(
     case "flee":
       return handleFlee(player);
     case "inventory":
-      return handleInventory(player);
+      return handleInventory(player, seed);
     case "upgrades":
       return handleUpgrades(player);
     case "craft":
@@ -816,7 +907,8 @@ function tradeAnnotation(
 
 async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
   if (atOutpost(player)) return outpostScanFrame(player, seed);
-  return regionScanFrame(player, seed, locOf(player), player.region);
+  // A gas giant has no surface region — describe it from orbit instead.
+  return planetScanFrame(player, seed, locOf(player), player.region);
 }
 
 /**
@@ -897,6 +989,9 @@ async function handleJump(
   const n = toInt(args[0]);
   if (n === null) return errorFrame("Usage: jump <region|O>  (see `regions`)");
 
+  // A gas giant has no surface regions to jump to (only `jump O`, handled above).
+  if (planet.isGas) return gasGiantError(planet);
+
   if (n < 0 || n >= planet.regionCount) {
     return errorFrame(
       `No region ${n} on ${planet.name} — it has ${planet.regionCount} (0–${planet.regionCount - 1}). Try \`regions\`.`,
@@ -917,6 +1012,28 @@ async function handleJump(
 function handleRegions(player: Player, seed: string, args: string[]): RenderFrame {
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
+
+  // A gas giant has no surface regions (planet-taxonomy) — describe it as such,
+  // and offer its orbital outpost when one exists.
+  if (planet.isGas) {
+    const lines: RenderLine[] = [
+      line([
+        text(planet.name, "heading"),
+        text(`  (${SIZE_CLASS_LABELS[planet.sizeClass]} gas giant)`, "muted"),
+      ]),
+      line(text("A gas giant — no surface regions to explore.", "muted")),
+    ];
+    if (hasOutpost(seed, coord)) {
+      lines.push(
+        line([
+          action("jump O", "jump O", { style: "link", title: "dock at the orbital outpost" }),
+          text(" to dock at its orbital outpost.", "muted"),
+        ]),
+      );
+    }
+    return frame(lines);
+  }
+
   const pageCount = Math.max(1, Math.ceil(planet.regionCount / REGIONS_PAGE_SIZE));
 
   const requested = toInt(args[0]);
@@ -1011,6 +1128,7 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
     .slice(0, 8);
   // `map` lists `warp` targets, which burn WARP fuel — affordability is checked
   // against the warp-fuel pool.
+  const here = planetAt(seed, locOf(player));
   return renderMap(neighbors, player.warpFuel, {
     galaxyName: galaxy.name,
     armCount: galaxy.armCount,
@@ -1021,6 +1139,9 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
     planet: player.planet,
     region: player.region,
     condensate,
+    planetSize: SIZE_CLASS_LABELS[here.sizeClass],
+    planetRadius: here.radius,
+    planetIsGas: here.isGas,
   });
 }
 
@@ -1081,7 +1202,9 @@ async function handleWarp(
   // (or `land` a survivable sibling), so this can never softlock you.
   const arrivalCoord: PlanetCoord = { ...dest, planet: 0 };
   const destSystem = systemAt(seed, dest);
-  const scan = await regionScanFrame(player, seed, arrivalCoord, 0);
+  // Planet 0 may be a gas giant — arrive in orbit (no surface region) in that
+  // case; `planetScanFrame` picks the right view.
+  const scan = await planetScanFrame(player, seed, arrivalCoord, 0);
   return frame([
     line([
       text(`Warped to ${destSystem.name}. `, "success"),
@@ -1149,7 +1272,8 @@ async function handleHyperwarp(
   await world.setGalaxyLocation(player.id, arrivalCoord);
 
   const remaining = owned - 1;
-  const scan = await regionScanFrame(player, seed, arrivalCoord, 0);
+  // The entry planet may be a gas giant — arrive in orbit in that case.
+  const scan = await planetScanFrame(player, seed, arrivalCoord, 0);
   return frame([
     line([
       text(`Hyperwarp engaged — you tear into ${destGalaxy.name}. `, "success"),
@@ -1181,6 +1305,11 @@ async function handleLand(
 
   const coord: PlanetCoord = { ...systemOf(player), planet: idx };
   const planet = planetAt(seed, coord);
+
+  // Gas giants have no surface to land on (planet-taxonomy). You can `warp` into
+  // a system and orbit its planet 0 if it's gas, or dock its outpost, but `land`
+  // touches down on a surface — blocked here.
+  if (planet.isGas) return gasGiantError(planet);
 
   // Landing gate: a hostile surface needs the matching upgrade. No move, no
   // state change when blocked — naming the gear the player is missing.
@@ -1242,10 +1371,12 @@ async function handleDisembark(player: Player, seed: string): Promise<RenderFram
       "You're docked at the orbital outpost — `jump <n>` down to a surface region before you disembark.",
     );
   }
-  await world.setEmbarked(player.id, false);
-
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
+  // A gas giant has no surface to step onto.
+  if (planet.isGas) return gasGiantError(planet);
+  await world.setEmbarked(player.id, false);
+
   const region = regionAt(seed, coord, player.region);
   // Hazard is per-region now — you're standing in THIS region, so its hazard
   // (not the planet mean) is what threatens you.
@@ -1302,6 +1433,9 @@ async function handleMine(
 
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
+
+  // A gas giant has no surface to mine (planet-taxonomy).
+  if (planet.isGas) return gasGiantError(planet);
 
   // Same gate as `land`: you can't work a hostile surface without the gear.
   const owned = await world.getOwnedUpgradeIds(player.id);
@@ -1426,6 +1560,9 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
 
+  // A gas giant has no surface to explore (planet-taxonomy).
+  if (planet.isGas) return gasGiantError(planet);
+
   // Same surface gate as `mine`/`land`: you can't safely roam a hostile world
   // without the matching upgrade. No state change when blocked.
   const owned = await world.getOwnedUpgradeIds(player.id);
@@ -1547,6 +1684,9 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
 async function handleHarvest(player: Player, seed: string): Promise<RenderFrame> {
   if (atOutpost(player)) return outpostSurfaceError();
   const coord = locOf(player);
+  // A gas giant has no surface to harvest from (planet-taxonomy).
+  const planet = planetAt(seed, coord);
+  if (planet.isGas) return gasGiantError(planet);
   const region = regionAt(seed, coord, player.region);
   const flora = pickForBiome(FLORA, region.biome, Math.random());
   if (!flora) {
@@ -1680,7 +1820,8 @@ async function handleFlee(player: Player): Promise<RenderFrame> {
 // inventory
 // ---------------------------------------------------------------------------
 
-async function handleInventory(player: Player): Promise<RenderFrame> {
+async function handleInventory(player: Player, seed: string): Promise<RenderFrame> {
+  const here = planetAt(seed, locOf(player));
   const [stacks, prices, materials, parts] = await Promise.all([
     world.getInventory(player.id),
     // Prices are per-system now — show the prices of the system you're in.
@@ -1721,6 +1862,12 @@ async function handleInventory(player: Player): Promise<RenderFrame> {
     health: fresh.health,
     maxHealth: MAX_HEALTH,
     embarked: fresh.embarked,
+    planet: {
+      name: here.name,
+      size: SIZE_CLASS_LABELS[here.sizeClass],
+      radius: here.radius,
+      isGas: here.isGas,
+    },
   });
 }
 
@@ -2039,6 +2186,9 @@ async function handleBuild(
   args: string[],
 ): Promise<RenderFrame> {
   if (atOutpost(player)) return outpostSurfaceError();
+  // A gas giant has no surface to build on (planet-taxonomy).
+  const here = planetAt(seed, locOf(player));
+  if (here.isGas) return gasGiantError(here);
   const structure = args[0]?.toLowerCase();
   if (!structure) {
     return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array> [name]");
@@ -2308,6 +2458,8 @@ async function baseHere(
 ): Promise<{ id: string; name: string | null; rKey: string } | null> {
   // No base/region at the orbital outpost — there is no surface here.
   if (atOutpost(player)) return null;
+  // A gas giant has no surface region, so no base can exist there.
+  if (planetAt(seed, locOf(player)).isGas) return null;
   const region = regionAt(seed, locOf(player), player.region);
   const rKey = regionKey(region.coord);
   const base = await world.getBaseInRegion(player.id, rKey);
@@ -2325,8 +2477,12 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       "You're docked at the orbital outpost — there's no base here. `jump <n>` to a surface region.",
     );
   }
-  const base = await baseHere(player, seed);
   const planet = planetAt(seed, locOf(player));
+  // A gas giant has no surface — no base can exist there.
+  if (planet.isGas) {
+    return errorFrame(`${planet.name} is a gas giant — no surface, so no base here.`);
+  }
+  const base = await baseHere(player, seed);
   if (!base) {
     return errorFrame(
       `No base in region ${player.region} of ${planet.name}. \`disembark\` then \`build base\`.`,

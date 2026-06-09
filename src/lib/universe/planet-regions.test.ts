@@ -42,18 +42,23 @@ describe("planet biome palette + region count (AC#1)", () => {
     }
   });
 
-  it("regionCount is an integer within [100, 100000]", () => {
+  it("regionCount is an integer within [100, 100000] for rocky worlds (0 for gas)", () => {
     expect(REGION_COUNT_MIN).toBe(100);
     expect(REGION_COUNT_MAX).toBe(100000);
     for (const p of planets) {
       expect(Number.isInteger(p.regionCount)).toBe(true);
-      expect(p.regionCount).toBeGreaterThanOrEqual(REGION_COUNT_MIN);
-      expect(p.regionCount).toBeLessThanOrEqual(REGION_COUNT_MAX);
+      if (p.isGas) {
+        // Gas giants have no surface (planet-taxonomy) — 0 regions.
+        expect(p.regionCount).toBe(0);
+      } else {
+        expect(p.regionCount).toBeGreaterThanOrEqual(REGION_COUNT_MIN);
+        expect(p.regionCount).toBeLessThanOrEqual(REGION_COUNT_MAX);
+      }
     }
   });
 
-  it("regionCount varies a lot across planets (log-uniform spread)", () => {
-    const counts = planets.map((p) => p.regionCount);
+  it("regionCount varies a lot across rocky planets (log-uniform spread)", () => {
+    const counts = planets.filter((p) => !p.isGas).map((p) => p.regionCount);
     expect(Math.min(...counts)).toBeLessThan(2000); // some small planets
     expect(Math.max(...counts)).toBeGreaterThan(20000); // some huge ones
     expect(new Set(counts).size).toBeGreaterThan(20); // not all identical
@@ -66,14 +71,15 @@ describe("determinism (AC#1, AC#2)", () => {
     expect(planetAt(SEED, c)).toStrictEqual(planetAt(SEED, c));
   });
   it("regionAt is deterministic", () => {
-    const c: PlanetCoord = { galaxy: 0, arm: 0, cluster: 1, system: 4, planet: 0 };
+    // Use a rocky world — gas giants have no surface region (`regionAt` throws).
+    const c = samplePlanets(SEED).find((p) => !p.isGas)!.coord;
     expect(regionAt(SEED, c, 17)).toStrictEqual(regionAt(SEED, c, 17));
   });
 });
 
 describe("regions draw biome from the planet palette + valid deposits (AC#2)", () => {
   it("every sampled region's biome is in its planet's palette", () => {
-    const planets = samplePlanets(SEED);
+    const planets = samplePlanets(SEED).filter((p) => !p.isGas);
     for (const p of planets) {
       const palette = new Set(p.biomePalette);
       const idxs = [0, 1, 2, Math.floor(p.regionCount / 2), p.regionCount - 1];
@@ -91,7 +97,8 @@ describe("regions draw biome from the planet palette + valid deposits (AC#2)", (
   });
 
   it("hazard→rarity coupling carries to region deposits", () => {
-    const planets = samplePlanets(SEED);
+    // Deposits are on rocky surfaces only; gas giants have no regions.
+    const planets = samplePlanets(SEED).filter((p) => !p.isGas);
     const savage = planets.filter((p) => p.hazard >= 0.7);
     const calm = planets.filter((p) => p.hazard <= 0.3);
     expect(savage.length).toBeGreaterThan(3);

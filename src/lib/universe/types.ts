@@ -40,6 +40,39 @@ export type Atmosphere = (typeof ATMOSPHERES)[number];
 export const STAR_CLASSES = ["O", "B", "A", "F", "G", "K", "M"] as const;
 export type StarClass = (typeof STAR_CLASSES)[number];
 
+/**
+ * Physical planet size classes, grounded in the Kopparapu (2018, ApJ 856)
+ * occurrence data. Ordered small → large; the radius (R⊕) boundaries are:
+ * Rocky 0.5–1, Super-Earth 1–1.75, Sub-Neptune 1.75–3.5, Sub-Jovian 3.5–6,
+ * Jovian 6–14.3. A planet's `radius` is sampled from the paper's size
+ * occurrence and its class follows from which band it lands in. Worlds at
+ * `radius >= 1.75 R⊕` (Sub-Neptune and up) are GAS giants — orbit-only, with no
+ * surface (no biomes/regions/deposits); smaller worlds are ROCKY.
+ */
+export const SIZE_CLASSES = [
+  "rocky",
+  "super_earth",
+  "sub_neptune",
+  "sub_jovian",
+  "jovian",
+] as const;
+export type SizeClass = (typeof SIZE_CLASSES)[number];
+
+/** Human-readable size-class labels for display (`scan`/`map`/`inventory`). */
+export const SIZE_CLASS_LABELS: Record<SizeClass, string> = {
+  rocky: "Rocky",
+  super_earth: "Super-Earth",
+  sub_neptune: "Sub-Neptune",
+  sub_jovian: "Sub-Jovian",
+  jovian: "Jovian",
+};
+
+/**
+ * The radius (R⊕) at and above which a planet is a GAS giant rather than a
+ * ROCKY world. Sub-Neptune and larger (≥ 1.75) are gas: orbit-only, no surface.
+ */
+export const GAS_RADIUS_THRESHOLD = 1.75;
+
 /** Largest number of planets a system may hold (AC#4). */
 export const MAX_PLANETS = 8;
 
@@ -138,11 +171,31 @@ export interface Planet {
   /** Deterministic, human-readable name, e.g. "KEPLER-442b". */
   readonly name: string;
   /**
+   * Physical radius in Earth radii (R⊕), sampled from the Kopparapu (2018) size
+   * occurrence; in `[0.5, 14.3]`. Drives `sizeClass`, the rocky/gas split, and
+   * (via the paper's per-size zone mix) the planet's `temperature`.
+   */
+  readonly radius: number;
+  /** Size class implied by `radius` (Rocky … Jovian). */
+  readonly sizeClass: SizeClass;
+  /**
+   * Whether this is a GAS giant (`radius >= GAS_RADIUS_THRESHOLD`). Gas giants
+   * are ORBIT-ONLY: `biomePalette` is exactly `["gas"]`, `regionCount` is 0, and
+   * they carry no surface regions/deposits — you orbit and `scan` them but can't
+   * disembark/mine/build there. Rocky worlds (`isGas === false`) have a full
+   * surface (palette / regions / deposits) as before.
+   */
+  readonly isGas: boolean;
+  /**
    * The distinct subset of `BIOMES` (size `[PALETTE_MIN, PALETTE_MAX]`) that
-   * this planet's regions may draw their biome from.
+   * this planet's regions may draw their biome from. For a gas giant this is
+   * exactly `["gas"]` and there are no regions to draw it for.
    */
   readonly biomePalette: readonly Biome[];
-  /** Number of regions on this planet; integer in `[REGION_COUNT_MIN, REGION_COUNT_MAX]`. */
+  /**
+   * Number of surface regions on this planet. A rocky world has an integer in
+   * `[REGION_COUNT_MIN, REGION_COUNT_MAX]`; a GAS giant has 0 (no surface).
+   */
   readonly regionCount: number;
   readonly atmosphere: Atmosphere;
   /** Surface gravity in g; (0, 10]. */

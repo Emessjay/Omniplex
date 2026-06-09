@@ -19,6 +19,7 @@ import {
   ARM_COUNT_MIN,
   ATMOSPHERES,
   BIOMES,
+  GAS_RADIUS_THRESHOLD,
   MAX_PLANETS,
   PALETTE_MAX,
   PALETTE_MIN,
@@ -33,6 +34,7 @@ import {
   type Region,
   type RegionCoord,
   type ResourceDeposit,
+  type SizeClass,
   type StarClass,
   type StarSystem,
   type SystemCoord,
@@ -232,60 +234,135 @@ const STAR_CLASS_WEIGHTS: Record<StarClass, number> = {
   M: 30,
 };
 
-/** Rough relative surface-temperature offset (°C) contributed by the star. */
-const STAR_TEMP_BASE: Record<StarClass, number> = {
-  O: 600,
-  B: 450,
-  A: 300,
-  F: 180,
-  G: 90,
-  K: 20,
-  M: -40,
-};
-
 function starClassFor(rng: Rng): StarClass {
   const weights = STAR_CLASSES.map((c) => STAR_CLASS_WEIGHTS[c]);
   return STAR_CLASSES[weightedIndex(rng, weights)]!;
 }
 
 // ---------------------------------------------------------------------------
-// Planet temperature ← star brightness + orbital closeness (biome-consistency).
+// Planet size & temperature ← Kopparapu (2018, ApJ 856) occurrence data
+// (planet-taxonomy).
 //
-// A planet's mean temperature rises with BOTH its star's brightness
-// (`STAR_TEMP_BASE`, hotter spectral class ⇒ hotter) AND its closeness to that
-// star (smaller `orbitalRadius` ⇒ hotter, via a `1/radius` insolation term).
-// This replaces the old `STAR_TEMP_BASE + jitter` model — `orbitalRadius` is now
-// generated BEFORE temperature so the planet's distance can drive its climate.
+// A planet's PHYSICAL SIZE (`radius`, R⊕) is sampled from the paper's size
+// occurrence: pick a size class weighted by its share, then a radius log-uniform
+// within that class's radius band. The rocky/gas split follows from the radius
+// (`radius >= GAS_RADIUS_THRESHOLD` ⇒ gas), giving ≈49% rocky / ≈51% gas.
 //
-// The deterministic part (star base + closeness) is strictly MONOTONIC: holding
-// the jitter draw fixed, temperature rises as the star gets brighter and as the
-// radius shrinks. A bounded random jitter rides on top so two otherwise-similar
-// worlds still differ (and the population keeps a wide spread for the hazard
-// coupling). `1/radius` concentrates the heating on the rare close-in worlds,
-// leaving the bulk distribution star-driven as before.
+// TEMPERATURE is derived from the radius (the old star-brightness/orbital-
+// closeness physics was DROPPED): each size class carries a cold/warm/hot zone
+// MIX from the paper's Table 3, and a planet's mix is INTERPOLATED smoothly by
+// `log10(radius)` between the per-class anchors. A uniform draw `u` is mapped
+// through an inverse-CDF with breakpoints at 0°C and 100°C — `u < c` lands in
+// the COLD band `[TEMP_MIN, 0)`, `[c, c+w)` in the WARM band `[0, 100)`, and the
+// rest in the HOT band `(100, TEMP_MAX]` — linear within each segment, so the
+// realized zone proportions exactly match `(c, w, h)` while temperature stays a
+// smooth, bounded, continuous function. Temperature is INDEPENDENT of orbital
+// distance now (a system's temps are not a distance gradient — expected).
 // ---------------------------------------------------------------------------
 
-/** Insolation coefficient: the closeness term is `RADIUS_TEMP_COEF / orbitalRadius` (°C). */
-const RADIUS_TEMP_COEF = 120;
-/** Max ± random jitter (°C) on top of the deterministic star+closeness temperature. */
-const TEMP_JITTER = 120;
+/** Coldest / hottest mean surface temperature a planet can take (°C). */
+export const TEMP_MIN = -160;
+export const TEMP_MAX = 520;
 
 /**
- * A planet's mean surface temperature (°C) from its star class and orbital
- * radius, plus a bounded jitter. PURE: deterministic given (starClass, radius,
- * rng draw). Monotonic in both inputs for a fixed jitter — increasing star
- * brightness raises it, and decreasing `orbitalRadius` (moving closer to the
- * sun) raises it via the `1/radius` insolation term.
+ * Per-size-class occurrence + zone mix (Kopparapu 2018). `share` is the relative
+ * occurrence weight; `[rLo, rHi]` the radius band (R⊕); `logMid` the log10 of the
+ * band's geometric mean (the interpolation anchor); `(cold, warm, hot)` the
+ * normalized zone fractions from the paper's Table 3. Rocky/Super-Earth are
+ * rocky; Sub-Neptune and up are gas. Shares sum to ≈100; the rocky classes sum
+ * to ≈49.3, so the population is ≈49% rocky / ≈51% gas.
  */
-function planetTemperatureFor(
-  starClass: StarClass,
-  orbitalRadius: number,
-  rng: Rng,
-): number {
-  const star = STAR_TEMP_BASE[starClass];
-  const closeness = RADIUS_TEMP_COEF / orbitalRadius; // smaller radius ⇒ hotter
-  const jitter = randFloat(rng, -TEMP_JITTER, TEMP_JITTER);
-  return star + closeness + jitter;
+interface SizeClassDef {
+  id: SizeClass;
+  rLo: number;
+  rHi: number;
+  logMid: number;
+  share: number;
+  cold: number;
+  warm: number;
+  hot: number;
+}
+
+const SIZE_DEFS: readonly SizeClassDef[] = [
+  { id: "rocky", rLo: 0.5, rHi: 1.0, logMid: log10mid(0.5, 1.0), share: 30.1, cold: 0.664, warm: 0.104, hot: 0.232 },
+  { id: "super_earth", rLo: 1.0, rHi: 1.75, logMid: log10mid(1.0, 1.75), share: 19.2, cold: 0.772, warm: 0.114, hot: 0.114 },
+  { id: "sub_neptune", rLo: 1.75, rHi: 3.5, logMid: log10mid(1.75, 3.5), share: 23.2, cold: 0.731, warm: 0.054, hot: 0.215 },
+  { id: "sub_jovian", rLo: 3.5, rHi: 6.0, logMid: log10mid(3.5, 6.0), share: 16.1, cold: 0.871, warm: 0.084, hot: 0.045 },
+  { id: "jovian", rLo: 6.0, rHi: 14.3, logMid: log10mid(6.0, 14.3), share: 11.3, cold: 0.928, warm: 0.021, hot: 0.051 },
+];
+
+/** log10 of the geometric mean of a radius band (the per-class interpolation anchor). */
+function log10mid(lo: number, hi: number): number {
+  return (Math.log10(lo) + Math.log10(hi)) / 2;
+}
+
+/**
+ * Sample a planet's physical size: choose a size class by `share`, then a radius
+ * log-uniformly within that class's `[rLo, rHi]` band (so the radius distribution
+ * matches the paper's). Pure given the rng draws. Radius is rounded to 3 decimals
+ * and stays within `[0.5, 14.3)` (so always ≥ 0.5 and < the top of the range).
+ */
+function sampleSize(rng: Rng): { sizeClass: SizeClass; radius: number } {
+  const def = SIZE_DEFS[weightedIndex(rng, SIZE_DEFS.map((d) => d.share))]!;
+  const logR = randFloat(rng, Math.log10(def.rLo), Math.log10(def.rHi));
+  const radius = Number((10 ** logR).toFixed(3));
+  return { sizeClass: def.id, radius };
+}
+
+/**
+ * The (cold, warm, hot) zone mix for a planet of the given radius: piecewise-
+ * linear interpolation of the per-class anchors by `log10(radius)`, clamped to the
+ * first/last anchor outside the anchor range. Normalized to sum to 1.
+ */
+function zoneMix(radius: number): { c: number; w: number; h: number } {
+  const x = Math.log10(radius);
+  const first = SIZE_DEFS[0]!;
+  const last = SIZE_DEFS[SIZE_DEFS.length - 1]!;
+  let c: number, w: number, h: number;
+  if (x <= first.logMid) {
+    [c, w, h] = [first.cold, first.warm, first.hot];
+  } else if (x >= last.logMid) {
+    [c, w, h] = [last.cold, last.warm, last.hot];
+  } else {
+    let lo = first;
+    let hi = last;
+    for (let i = 0; i < SIZE_DEFS.length - 1; i++) {
+      if (x >= SIZE_DEFS[i]!.logMid && x <= SIZE_DEFS[i + 1]!.logMid) {
+        lo = SIZE_DEFS[i]!;
+        hi = SIZE_DEFS[i + 1]!;
+        break;
+      }
+    }
+    const t = (x - lo.logMid) / (hi.logMid - lo.logMid);
+    c = lo.cold + (hi.cold - lo.cold) * t;
+    w = lo.warm + (hi.warm - lo.warm) * t;
+    h = lo.hot + (hi.hot - lo.hot) * t;
+  }
+  const sum = c + w + h;
+  return { c: c / sum, w: w / sum, h: h / sum };
+}
+
+/**
+ * A planet's mean surface temperature (°C) from its radius, via the paper's
+ * per-radius zone mix and an inverse-CDF with breakpoints at 0°C and 100°C
+ * (cold `[TEMP_MIN, 0)`, warm `[0, 100)`, hot `(100, TEMP_MAX]`). PURE and
+ * deterministic given the radius + the rng draw; smooth + bounded to
+ * `[TEMP_MIN, TEMP_MAX]`.
+ */
+function temperatureFromRadius(radius: number, rng: Rng): number {
+  const { c, w } = zoneMix(radius);
+  const u = rng();
+  if (u < c) {
+    // Cold band: linearly across [TEMP_MIN, 0).
+    return TEMP_MIN + (u / c) * (0 - TEMP_MIN);
+  }
+  if (u < c + w) {
+    // Warm band: linearly across [0, 100).
+    return ((u - c) / w) * 100;
+  }
+  // Hot band: linearly across (100, TEMP_MAX]. `h = 1 - c - w`.
+  const h = 1 - c - w;
+  return 100 + ((u - c - w) / h) * (TEMP_MAX - 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -514,12 +591,6 @@ const BIOME_WEIGHTS: Record<Biome, number> = {
 };
 
 /**
- * Chance a planet is a GAS GIANT — an exclusive `["gas"]` palette. Drawn up
- * front so `gas` never mixes into a multi-biome palette (rule 1).
- */
-const GAS_GIANT_CHANCE = 0.12;
-
-/**
  * How temperature affinity bends palette selection. The weight multiplier for a
  * biome is `exp(AFFINITY_STRENGTH · affinity · tNorm)`, where `tNorm` is the
  * planet's temperature normalized around the comfort mid. So on a hot world
@@ -549,10 +620,12 @@ function tempExtremity(temperature: number): number {
 }
 
 /**
- * The planet's biome palette: a DISTINCT subset of `BIOMES` whose composition
- * and size are coupled to the planet's `temperature` (biome-consistency):
- *  - rule 1: a `GAS_GIANT_CHANCE` fraction are gas giants → exactly `["gas"]`;
- *    otherwise `gas` is excluded from the pool entirely.
+ * The biome palette for a ROCKY planet: a DISTINCT subset of `BIOMES` whose
+ * composition and size are coupled to the planet's `temperature`
+ * (biome-consistency). `gas` is NEVER a member — gas is now purely a SIZE
+ * outcome (`isGas`), handled in `generatePlanet` (gas giants get the exclusive
+ * `["gas"]` palette and 0 regions), so this is only ever called for rocky worlds
+ * and `gas` is excluded from the candidate pool entirely:
  *  - rule 4: SIZE declines with `tempExtremity` — moderate worlds reach
  *    `PALETTE_MAX`, extreme worlds collapse toward 1.
  *  - rule 3: members are drawn weighted by `BIOME_WEIGHTS` bent by temperature
@@ -563,10 +636,7 @@ function tempExtremity(temperature: number): number {
  * only set of biomes a planet's regions can ever exhibit.
  */
 function biomePaletteFor(rng: Rng, temperature: number): Biome[] {
-  // (1) Gas giants: rolled first, exclusive, single-biome.
-  if (rng() < GAS_GIANT_CHANCE) return ["gas"];
-
-  // (4) Size from temperature extremity: 4 at moderate → 1 at extreme, plus a
+  // Size from temperature extremity: 4 at moderate → 1 at extreme, plus a
   // small jitter so similar worlds still vary; clamped to [1, PALETTE_MAX].
   const extremity = tempExtremity(temperature);
   const sizeBase = PALETTE_MAX - (PALETTE_MAX - PALETTE_MIN) * extremity;
@@ -655,18 +725,17 @@ const ORBIT_PERIOD_MAX_MS = 30 * 24 * 60 * 60 * 1000; // 30d
 const TWO_PI = Math.PI * 2;
 
 /**
- * Generate a single planet. Pure in (seed, coord, starClass): the star class
- * is passed in (derived once per system) so the planet's temperature can
- * reflect its sun while the planet keeps its own independent RNG stream keyed
- * by its planet key — that independence is what lets `planetAt` reproduce a
- * planet without regenerating sibling planets.
+ * Generate a single planet. Pure in (seed, coord): the planet keeps its own
+ * independent RNG stream keyed by its planet coord — that independence is what
+ * lets `planetAt` reproduce a planet without regenerating sibling planets.
+ *
+ * Size is sampled first (the paper's occurrence) and decides rocky vs gas;
+ * temperature is derived from the radius (orbital-distance physics dropped).
+ * A GAS giant (`radius >= GAS_RADIUS_THRESHOLD`) is orbit-only — its palette is
+ * exactly `["gas"]` and it has 0 surface regions; a ROCKY world gets the full
+ * temperature-coupled palette + region count.
  */
-function generatePlanet(
-  seed: string,
-  coord: PlanetCoord,
-  sysName: string,
-  starClass: StarClass,
-): Planet {
+function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Planet {
   const rng = makeRng(
     seed,
     "planet",
@@ -679,24 +748,28 @@ function generatePlanet(
 
   const atmosphere = atmosphereFor(rng);
   const gravity = Number(randFloat(rng, 0.1, 2.8).toFixed(3)); // g, (0,10]
-  // Orbital RADIUS is drawn BEFORE temperature now (biome-consistency): a
-  // planet's temperature rises with closeness to its sun, so we need the radius
-  // first. Period/phase are still time-only orbital shape and follow later.
+  // Orbital RADIUS — distance from the sun; no longer drives temperature, but
+  // still drives interplanetary `land` fuel (P2). Time-only period/phase follow.
   const orbitalRadius = Number(randFloat(rng, ORBIT_RADIUS_MIN, ORBIT_RADIUS_MAX).toFixed(4));
-  // Temperature from star brightness + closeness; hazard derives from it
-  // (extreme temps ⇒ savage); the palette's composition + size derive from it too.
-  const temperature = Number(
-    planetTemperatureFor(starClass, orbitalRadius, rng).toFixed(1),
-  );
+  // Physical size from the paper's occurrence → size class + rocky/gas split.
+  const { sizeClass, radius } = sampleSize(rng);
+  const isGas = radius >= GAS_RADIUS_THRESHOLD;
+  // Temperature from radius (paper-based per-size zone mix); hazard derives from
+  // it (extreme temps ⇒ savage). For rocky worlds the palette's composition +
+  // size derive from it too; a gas giant is orbit-only (`["gas"]`, 0 regions).
+  const temperature = Number(temperatureFromRadius(radius, rng).toFixed(1));
   const hazard = Number(hazardFor(rng, temperature).toFixed(4));
-  const biomePalette = biomePaletteFor(rng, temperature);
-  const regionCount = regionCountFor(rng);
+  const biomePalette: Biome[] = isGas ? ["gas"] : biomePaletteFor(rng, temperature);
+  const regionCount = isGas ? 0 : regionCountFor(rng);
   const orbitalPeriod = Math.round(randFloat(rng, ORBIT_PERIOD_MIN_MS, ORBIT_PERIOD_MAX_MS));
   const orbitalPhase = Number(randFloat(rng, 0, TWO_PI).toFixed(6));
 
   return {
     coord,
     name: planetName(sysName, coord.planet),
+    radius,
+    sizeClass,
+    isGas,
     biomePalette,
     regionCount,
     atmosphere,
@@ -729,9 +802,7 @@ export function systemAt(seed: string, coord: SystemCoord): StarSystem {
 
   const planets: Planet[] = [];
   for (let p = 0; p < planetCount; p++) {
-    planets.push(
-      generatePlanet(seed, { ...coord, planet: p }, name, starClass),
-    );
+    planets.push(generatePlanet(seed, { ...coord, planet: p }, name));
   }
 
   return { coord, name, starClass, planetCount, planets };
@@ -739,8 +810,10 @@ export function systemAt(seed: string, coord: SystemCoord): StarSystem {
 
 /**
  * The planet at `coord`. Equivalent to `systemAt(seed, coord).planets[planet]`
- * — it regenerates the system's name/star (cheap, deterministic) and the one
- * requested planet, so it agrees exactly with the system's planet list.
+ * — it regenerates the system's name (cheap, deterministic) and the one
+ * requested planet from its own stream, so it agrees exactly with the system's
+ * planet list. Total over the integers: a planet index out of `[0, planetCount)`
+ * still generates a (deterministic) planet — callers validate the index.
  */
 export function planetAt(seed: string, coord: PlanetCoord): Planet {
   const sysRng = makeRng(
@@ -752,8 +825,7 @@ export function planetAt(seed: string, coord: PlanetCoord): Planet {
     coord.system,
   );
   const name = systemName(sysRng);
-  const starClass = starClassFor(sysRng);
-  return generatePlanet(seed, coord, name, starClass);
+  return generatePlanet(seed, coord, name);
 }
 
 /**
@@ -772,6 +844,16 @@ export function regionAt(
   regionIndex: number,
 ): Region {
   const planet = planetAt(seed, planetCoord);
+  // Gas giants have NO surface — they carry the exclusive `["gas"]` palette and
+  // 0 regions, so a region can never exist for one. Guard it: callers must
+  // branch on `planet.isGas` before reaching for a region (every game-layer
+  // surface path does). This makes a stray `regionAt` on a gas giant a loud bug
+  // rather than a silently-bogus region.
+  if (planet.isGas) {
+    throw new Error(
+      `regionAt: ${planetKey(planetCoord)} is a gas giant — no surface regions`,
+    );
+  }
   const rng = makeRng(
     seed,
     "region",
@@ -899,6 +981,9 @@ function planetSettlementDensity(seed: string, coord: PlanetCoord): number {
  */
 export function hasSettlement(seed: string, coord: RegionCoord): boolean {
   const planet = planetAt(seed, coord);
+  // Gas giants have no surface, so no surface settlement (and `regionAt` would
+  // throw on one). They may still host an ORBITAL outpost (`hasOutpost`).
+  if (planet.isGas) return false;
   if (!(planet.temperature > FREEZING_C && planet.temperature < BOILING_C)) {
     return false;
   }
@@ -958,4 +1043,49 @@ export function hasOutpost(seed: string, coord: PlanetCoord): boolean {
     cluster: coord.cluster,
     system: coord.system,
   }).includes(coord.planet);
+}
+
+// ---------------------------------------------------------------------------
+// Safe starting world (planet-taxonomy).
+//
+// Since ~half of all planets are now non-landable gas giants, the old hardcoded
+// `(0,0,0,0,0,0)` spawn may land a player in orbit of a gas giant with nothing
+// to do. `startingWorld(seed)` deterministically finds a genuinely safe spawn —
+// a ROCKY, MODERATE-temperature, low-hazard world — by scanning outward from the
+// origin. Shared by BOTH the reset migration's player relocation and
+// `getOrCreatePlayer`'s new-player spawn, so the two never disagree.
+// ---------------------------------------------------------------------------
+
+/** Hazard ceiling for a "safe" starting world (moderate worlds always sit below this). */
+const STARTING_WORLD_MAX_HAZARD = 0.4;
+/** How many systems out from the origin to scan before giving up (a match is found early). */
+const STARTING_WORLD_SCAN_LIMIT = 10000;
+
+/**
+ * The deterministic safe starting world for `seed`: the FIRST planet — scanning
+ * systems outward from the origin (galaxy 0, arm 0, cluster 0, system 0, 1, 2…),
+ * and planets in index order within each — that is ROCKY (not a gas giant),
+ * MODERATE-temperature (`0 < T < 100`), and low-hazard. Pure & deterministic.
+ * Moderate-temperature rocky worlds are common, so the scan terminates within a
+ * handful of systems; the bounded limit + origin fallback guarantee it returns.
+ */
+export function startingWorld(seed: string): PlanetCoord {
+  for (let system = 0; system < STARTING_WORLD_SCAN_LIMIT; system++) {
+    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system };
+    const sys = systemAt(seed, sysCoord);
+    for (let p = 0; p < sys.planetCount; p++) {
+      const planet = sys.planets[p]!;
+      if (
+        !planet.isGas &&
+        planet.temperature > FREEZING_C &&
+        planet.temperature < BOILING_C &&
+        planet.hazard <= STARTING_WORLD_MAX_HAZARD
+      ) {
+        return { galaxy: 0, arm: 0, cluster: 0, system, planet: p };
+      }
+    }
+  }
+  // Unreachable in practice (moderate rocky worlds are plentiful); the origin is
+  // a deterministic last resort.
+  return { galaxy: 0, arm: 0, cluster: 0, system: 0, planet: 0 };
 }
