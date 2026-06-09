@@ -66,8 +66,8 @@ describe("gas planets have no surface", () => {
   it("gas planets carry the gas biome and zero deposits / no regions", () => {
     for (const p of sample(SEED).filter((x) => x.isGas)) {
       expect(p.biomePalette).toEqual(["gas"]);
-      // no surface: either regionCount 0 or no deposits anywhere
-      expect(p.regionCount === 0 || true).toBe(true);
+      // no surface: a gas giant carries zero regions to land on / mine.
+      expect(p.regionCount).toBe(0);
     }
   });
 
