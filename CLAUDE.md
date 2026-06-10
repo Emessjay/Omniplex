@@ -1715,3 +1715,15 @@ gotchas) accrete here as workers surface things worth persisting. See
   validate-before-mutate, double-fulfill-guarded). Registered in `VERBS`/`USAGE`/
   `applicability`; `scan` at a hub surfaces a `contracts` hint. Seeded:
   `factions-core.test.ts` (+ `factions-extra.test.ts`).
+
+### Load-bearing decisions from `random-spawn`
+
+- **New players now spawn on a RANDOM habitable world in cluster 0**, not the
+  single deterministic `startingWorld`. `randomStartingWorld(seed, rand)`
+  (`gen.ts`, exported) picks a random rocky + temperate (0<T<100) + low-hazard
+  planet in galaxy 0 · arm 0 · cluster 0 via bounded random retry (falls back to
+  `startingWorld(seed)` if the budget is exhausted). `rand` is INJECTED (gen
+  stays pure/no-`Math.random`); `getOrCreatePlayer` passes `Math.random` at the
+  impure boundary, only on the INSERT path (existing players keep their
+  location). `startingWorld(seed)` is UNCHANGED — the reset migration's
+  deterministic relocation still uses it. Seeded: `random-spawn.test.ts`.
