@@ -1790,3 +1790,30 @@ gotchas) accrete here as workers surface things worth persisting. See
   verbs (help-parity/applicability unchanged). Seeded: `faction-ranks.test.ts`.
 - **Deferred (1b-cont / 1c)**: rank-based price discounts, rank-locked goods,
   faction politics/rivalry.
+
+### Load-bearing decisions from `player-guidance`
+
+- **Two player-assistance commands, no migration.** `guide` (soft-tutorial
+  advisor) + `distress` (emergency rescue / anti-softlock).
+- **`guide`** — pure advice engine `nextStep(snapshot) → {message,
+  suggestedCommand?, stage}` in `src/lib/game/advisor.ts` (no IO; the handler
+  builds a `GuideSnapshot` from live state). Returns the FIRST unmet rung of an
+  ordered ladder: combat→attack/flee → orbiting-gas→`orbit <n>` →
+  orbiting-rocky→`land` → landed→`disembark` → on-foot-no-ore→`scan`/`mine` →
+  goods-off-hub→`map`/`regions`/`jump O` → at-hub→`contracts`/`fulfill`/`sell` →
+  credits-no-base→`build base` → has-base→grow it → established→open-ended. Each
+  nudges the player to re-run `guide` when done. **INFORMATIONAL — usable in
+  EVERY state incl. combat.** New players are pointed to it via a boot-banner
+  hint (`Terminal.tsx`). `renderGuide` in `render.ts`.
+- **`distress`** — always-available rescue. `distressCost(credits) =
+  min(credits, DISTRESS_FEE=5000)` (pure, `rules.ts`) — never fails for lack of
+  funds (true safety net) yet stings the wealthy; broke players are rescued for
+  the credits they have. Teleports to the **nearest outpost in the CURRENT
+  system** (`systemOutpostPlanets`, nearest by `interplanetaryDistance`, lowest-
+  index tiebreak — every system has ≥1), docking there (`region=-1`,
+  `embarked=true`, `landed=false`), heals to `MAX_HEALTH`, clears any encounter,
+  deducts the cost (atomic, validate-before-mutate, never negative).
+  **ANYTIME_OUT_OF_COMBAT** (works stranded on a surface; `flee` covers combat).
+  `world.setDistressLocation` is the single-write mutator. Only rescues to the
+  current system, so the broke-free rescue isn't exploitable as free travel.
+  Seeded: `player-guidance.test.ts`.
