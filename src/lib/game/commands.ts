@@ -123,6 +123,9 @@ import {
   factionAt,
   contractsAt,
   CONTRACT_ROTATION_MS,
+  rankFor,
+  RANKS,
+  MAX_RANK_TIER,
 } from "./factions";
 import {
   isMaterialId,
@@ -4741,16 +4744,34 @@ async function consumeGood(player: Player, itemId: string, qty: number): Promise
   }
 }
 
-/** `standing` — the player's reputation with each faction (flat list; ranks = 1b). */
+/**
+ * The reputation needed to reach the NEXT rank above `rep` — `null` once the
+ * player is at the top of the ladder (`MAX_RANK_TIER`). Pure helper off `RANKS`.
+ */
+function nextRankRep(rep: number): number | null {
+  const tier = rankFor(rep).tier;
+  if (tier >= MAX_RANK_TIER) return null;
+  return RANKS[tier + 1]!.minRep;
+}
+
+/**
+ * `standing` — the player's reputation, rank title, and next-tier threshold with
+ * each faction. Rank is a pure function of stored rep (`rankFor`); no stored rank.
+ */
 async function handleStanding(player: Player): Promise<RenderFrame> {
   const reps = await world.getReputation(player.id);
   const byId = new Map(reps.map((r) => [r.factionId, r.rep]));
   return renderStanding({
-    factions: FACTIONS.map((f) => ({
-      name: f.name,
-      blurb: f.blurb,
-      rep: byId.get(f.id) ?? 0,
-    })),
+    factions: FACTIONS.map((f) => {
+      const rep = byId.get(f.id) ?? 0;
+      return {
+        name: f.name,
+        blurb: f.blurb,
+        rep,
+        rankTitle: rankFor(rep).title,
+        nextRep: nextRankRep(rep),
+      };
+    }),
   });
 }
 
@@ -4767,7 +4788,11 @@ async function handleContracts(player: Player, seed: string): Promise<RenderFram
   const hubKey = hubKeyOf(player);
   const factionId = factionAt(seed, hubKey);
   const faction = getFaction(factionId);
-  const contracts = contractsAt(seed, hubKey, factionId, currentContractBucket());
+  const rep = await world.getReputation(player.id).then(
+    (reps) => reps.find((r) => r.factionId === factionId)?.rep ?? 0,
+  );
+  const rank = rankFor(rep);
+  const contracts = contractsAt(seed, hubKey, factionId, currentContractBucket(), rank.tier);
   const [inv, mats, parts, completed] = await Promise.all([
     world.getInventory(player.id),
     world.getPlayerMaterials(player.id),
@@ -4801,6 +4826,9 @@ async function handleContracts(player: Player, seed: string): Promise<RenderFram
     atHub: true,
     factionName: faction.name,
     factionBlurb: faction.blurb,
+    rep,
+    rankTitle: rank.title,
+    nextRep: nextRankRep(rep),
     contracts: entries,
   });
 }
@@ -4826,7 +4854,10 @@ async function handleFulfill(
   const hubKey = hubKeyOf(player);
   const factionId = factionAt(seed, hubKey);
   const faction = getFaction(factionId);
-  const contracts = contractsAt(seed, hubKey, factionId, currentContractBucket());
+  const rep = await world.getReputation(player.id).then(
+    (reps) => reps.find((r) => r.factionId === factionId)?.rep ?? 0,
+  );
+  const contracts = contractsAt(seed, hubKey, factionId, currentContractBucket(), rankFor(rep).tier);
   const contract = contracts[n - 1];
   if (!contract) {
     return errorFrame(`No contract #${n} here — see \`contracts\`.`);

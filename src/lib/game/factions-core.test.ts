@@ -49,8 +49,8 @@ describe("contract generation — deterministic, rotating, premium", () => {
   const fac = factionAt(SEED, hub);
 
   it("is deterministic per (hub, bucket) and yields a bounded valid set", () => {
-    const a = contractsAt(SEED, hub, fac, 1000);
-    const b = contractsAt(SEED, hub, fac, 1000);
+    const a = contractsAt(SEED, hub, fac, 1000, 0);
+    const b = contractsAt(SEED, hub, fac, 1000, 0);
     expect(a).toStrictEqual(b);
     expect(a.length).toBeGreaterThan(0);
     expect(a.length).toBeLessThanOrEqual(8);
@@ -63,14 +63,14 @@ describe("contract generation — deterministic, rotating, premium", () => {
   });
 
   it("rotates across time buckets (keys differ bucket-to-bucket)", () => {
-    const k1 = contractsAt(SEED, hub, fac, 1000).map((c) => c.key);
-    const k2 = contractsAt(SEED, hub, fac, 1001).map((c) => c.key);
+    const k1 = contractsAt(SEED, hub, fac, 1000, 0).map((c) => c.key);
+    const k2 = contractsAt(SEED, hub, fac, 1001, 0).map((c) => c.key);
     // no contract key from bucket 1000 reappears in bucket 1001
     expect(k1.some((k) => k2.includes(k))).toBe(false);
   });
 
   it("rewardCredits is a strict PREMIUM over dumping the goods on the market", () => {
-    for (const c of contractsAt(SEED, hub, fac, 1000)) {
+    for (const c of contractsAt(SEED, hub, fac, 1000, 0)) {
       const market = unitValue(c.want.itemId) * c.want.qty;
       expect(c.rewardCredits).toBeGreaterThan(market);
       expect(c.rewardRep).toBeGreaterThan(0);
