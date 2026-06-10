@@ -1955,3 +1955,14 @@ gotchas) accrete here as workers surface things worth persisting. See
   next-tier threshold. The first-discovery scan line shows the updated count/
   rank; `who`/leaderboard surface the cartography title. Seeded:
   `cartography.test.ts`. (3c: orbital derelicts, payout scaling by rank.)
+
+### Load-bearing decisions from `base-power-tiers` (2c-cont)
+
+- **Base tier ALSO boosts power supply** (extends `base-tiers`, which gave
+  capacity). NO migration (reuses `bases.tier`). `baseTierPowerBonus(tier)`
+  (`rules.ts`, pure): 0 at tier 1, strictly increasing per tier (~one extra
+  production line's worth each). `basePower` gained a `tier` arg; `supply +=
+  baseTierPowerBonus(tier)` (every call site — produce gate, excavator accrual,
+  build echo, storage — passes the base tier). So leveling a base runs more
+  industry without more plants. `storage` shows the tier power contribution.
+  Seeded: `base-power-tiers.test.ts`.
