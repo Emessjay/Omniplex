@@ -1206,6 +1206,99 @@ export function siteLoot(
 }
 
 // ---------------------------------------------------------------------------
+// Orbital derelicts (Keystone 3c) — the orbital counterpart to the surface
+// exploration sites above: a drifting wreck/hulk you find while ORBITING a
+// planet, salvageable from the safety of your ship (no surface, no hazard). One
+// per PLANET (unlike surface sites, which are per-region), on DISTINCT RNG
+// streams (`"orbital-site"` / `"orbital-loot"`) so reading one never perturbs
+// `planetAt`/`regionAt`/`siteAt`. Works for ALL planets — INCLUDING gas giants,
+// which have no surface and so otherwise carry no findable content. RARE: only a
+// small fraction of planets drift a derelict, so finding one is a real discovery.
+// ---------------------------------------------------------------------------
+
+/**
+ * Probability a given planet drifts an orbital derelict in its orbit. Tuned LOW
+ * (~6%) so an orbital find is a genuine discovery, not a given. The seeded suite
+ * asserts the realized fraction stays a small-but-present slice (and that gas
+ * giants get them too).
+ */
+export const ORBITAL_SITE_SPAWN_CHANCE = 0.06;
+
+/**
+ * The site kinds an orbital wreck can be: a `derelict` (an abandoned ship — the
+ * natural orbital find) or an `anomaly` (an exotic phenomenon adrift). Ruins are
+ * SURFACE-only (they sit on the ground), so they're excluded here.
+ */
+const ORBITAL_SITE_TYPES = ["derelict", "anomaly"] as const satisfies readonly Site["type"][];
+
+/** Smallest/largest loot tier an orbital wreck rolls — pitched a tier above the
+ * surface range (`SITE_LOOT_TIER_MAX = 3`) so orbital hulks out-reward surface
+ * sites (bigger hauls; AC#1). */
+const ORBITAL_LOOT_TIER_MIN = 2;
+const ORBITAL_LOOT_TIER_MAX = 4;
+
+/** Extra credit-cache multiplier for orbital wrecks over a surface site of the
+ * same type/tier — orbital hulks are the richer haul. */
+const ORBITAL_LOOT_CREDIT_BONUS = 1.5;
+
+/**
+ * Whether — and what kind of — orbital derelict the planet at `coord` carries.
+ * RARE and deterministic: a single `rng()` draw against `ORBITAL_SITE_SPAWN_CHANCE`
+ * decides presence, then the wreck's `type` and `lootTier` are rolled from the
+ * SAME `"orbital-site"` stream (keyed by the PLANET coord — one slot per planet).
+ * Returns `null` for the (vast) majority of planets. Works for gas giants too
+ * (it's in orbit, not on a surface). Pure — no `Date`, no `Math.random`. The
+ * `"orbital-site"` namespace is distinct from `planetAt`/`regionAt`/`siteAt`, so
+ * reading it never changes any other generation.
+ */
+export function orbitalSiteAt(seed: string, coord: PlanetCoord): Site | null {
+  const rng = makeRng(
+    seed,
+    "orbital-site",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+  );
+  if (rng() >= ORBITAL_SITE_SPAWN_CHANCE) return null;
+  const type = pick(rng, ORBITAL_SITE_TYPES);
+  const lootTier = randInt(rng, ORBITAL_LOOT_TIER_MIN, ORBITAL_LOOT_TIER_MAX);
+  return { type, lootTier };
+}
+
+/**
+ * The deterministic loot an orbital derelict holds: `{ id, qty }` materials (real
+ * `materials.ts` ids — relics + rare minerals, the same per-type tables surface
+ * sites draw from) plus a `credits` cache (always > 0). Pitched RICHER than a
+ * surface site of the same type: a bigger per-material `qty` (`lootTier + 1`) and
+ * a credit cache scaled by `ORBITAL_LOOT_CREDIT_BONUS`. Higher `lootTier` ⇒
+ * better loot. PURE: the per-planet jitter is keyed on the planet coord only
+ * (drawn before any tier scaling), so tier-monotonicity holds. The
+ * `"orbital-loot"` stream is distinct from `"orbital-site"`/`"site"`/`"region"`.
+ */
+export function orbitalSiteLoot(
+  seed: string,
+  coord: PlanetCoord,
+  site: Site,
+): { materials: { id: string; qty: number }[]; credits: number } {
+  const rng = makeRng(
+    seed,
+    "orbital-loot",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+  );
+  const table = SITE_LOOT_TABLE[site.type];
+  const jitter = randInt(rng, 0, 400);
+  const materials = table.materials.map((id) => ({ id, qty: site.lootTier + 1 }));
+  const credits = Math.round(table.baseCredits * site.lootTier * ORBITAL_LOOT_CREDIT_BONUS) + jitter;
+  return { materials, credits };
+}
+
+// ---------------------------------------------------------------------------
 // Settlements & orbital outposts (P11) — the inhabited places of the universe.
 //
 // Two kinds of populated location, both PURE & deterministic (seed + coords ⇒

@@ -135,7 +135,6 @@ const SURFACE_ABOARD_ACTIONS = new Set([
 const DISEMBARKED_ACTIONS = new Set([
   "mine",
   "explore",
-  "salvage",
   "harvest",
   "plant",
   "ranch",
@@ -168,6 +167,17 @@ const ANYTIME_OUT_OF_COMBAT = new Set([
 ]);
 
 /**
+ * Salvage actions usable while ORBITING (`embarked && !landed`) OR ON FOOT
+ * (`!embarked`), but NOT while landed-aboard, and never in combat (Keystone 3c).
+ * `salvage` works in two contexts: an ORBITAL derelict (read while orbiting — no
+ * surface, no hazard) and an on-foot SURFACE site (the original, with a hazard
+ * roll). The one excluded aboard state is Landed: you've put down on the surface
+ * but not stepped off — `disembark` to work the ground, or `launch` to reach the
+ * orbital wreck.
+ */
+const ORBIT_OR_FOOT = new Set(["salvage"]);
+
+/**
  * `eat` is allowed in EVERY state (including combat) — you can always snack to
  * heal — so it joins the always-applicable set.
  */
@@ -195,6 +205,9 @@ export function isApplicable(verb: string, state: PlayerStateView): boolean {
   // Out of combat:
   if (COMBAT_ONLY.has(verb)) return false; // nothing to fight
   if (ANYTIME_OUT_OF_COMBAT.has(verb)) return true;
+  // Salvage: orbital derelict (orbiting) OR surface site (on foot) — anything
+  // but landed-aboard. Checked before the embark split because it spans states.
+  if (ORBIT_OR_FOOT.has(verb)) return !state.embarked || !state.landed;
   // Economy is gated by LOCATION (a settlement/outpost), not embark state.
   if (ECONOMY.has(verb)) return state.atTradeLocation;
   if (!state.embarked) return DISEMBARKED_ACTIONS.has(verb); // on foot ⇒ landed

@@ -35,6 +35,8 @@ import {
   systemOutpostPlanets,
   siteAt,
   siteLoot,
+  orbitalSiteAt,
+  orbitalSiteLoot,
   RESOURCES,
   SIZE_CLASS_LABELS,
   type SystemCoord,
@@ -88,7 +90,7 @@ import {
   LIVESTOCK_PEN_CAPACITY,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
-  DISCOVERY_BOUNTY,
+  discoveryBountyFor,
   DEPLETION_PER_UNIT,
   REGULAR_FUEL_PRICE_PER_UNIT,
   WARP_FUEL_PRICE_PER_UNIT,
@@ -298,6 +300,13 @@ async function orbitalScanFrame(
   const owned = requiredUpgrade ? await world.getOwnedUpgradeIds(player.id) : new Set<string>();
   const canDescend = !planet.isGas && (requiredUpgrade === null || owned.has(requiredUpgrade));
   const lowHealth = player.health <= MAX_HEALTH * 0.3;
+  // Orbital derelict (Keystone 3c): a RARE drifting wreck in this orbit (works on
+  // gas giants too — orbit, not surface). Show whether the player has already
+  // picked it clean so the `salvage` hint reads red (P9b).
+  const orbitalSite = orbitalSiteAt(seed, planet.coord);
+  const orbitalSalvaged = orbitalSite
+    ? await world.hasSalvaged(player.id, planetKey(planet.coord))
+    : false;
 
   const lines: RenderLine[] = [
     line([
@@ -373,6 +382,35 @@ async function orbitalScanFrame(
           text(`  ${sib.coord.planet}: `, "muted"),
           action(label, `orbit ${sib.coord.planet}`, { style: "link", title, disabled: !affordable }),
           text(`  fuel ${cost}`, affordable ? "muted" : "danger"),
+        ]),
+      );
+    }
+  }
+
+  // A drifting orbital derelict — salvageable right here from orbit (no need to
+  // land). The `salvage` action reads red once you've picked it clean (P9b).
+  if (orbitalSite) {
+    if (orbitalSalvaged) {
+      lines.push(
+        line([
+          text(`A picked-clean ${siteLabel(orbitalSite.type)} drifts nearby — `, "muted"),
+          action("salvage", "salvage", {
+            style: "link",
+            title: "already picked clean",
+            disabled: true,
+          }),
+          text(" (nothing left).", "muted"),
+        ]),
+      );
+    } else {
+      lines.push(
+        line([
+          text(`A drifting ${siteLabel(orbitalSite.type)} hangs in orbit — `, "success"),
+          action("salvage", "salvage", {
+            style: "link",
+            title: "strip the derelict for salvage",
+          }),
+          text(" it for a haul.", "muted"),
         ]),
       );
     }
@@ -488,8 +526,14 @@ async function regionScanFrame(
   // you already charted never re-pays.
   let chartedCount: number | undefined;
   let chartedRankTitle: string | undefined;
+  let discoveryBountyPaid: number | undefined;
   if (justDiscovered) {
-    await world.addPlayerCredits(player.id, DISCOVERY_BOUNTY);
+    // Rank-scaled bounty (Keystone 3c): the payout scales with the player's
+    // CURRENT cartography rank (computed from `player.charted` BEFORE this
+    // discovery bumps it), so a higher-ranked explorer earns more for the same
+    // first find — the tangible payoff for ranking up.
+    discoveryBountyPaid = discoveryBountyFor(cartographyRank(player.charted).tier);
+    await world.addPlayerCredits(player.id, discoveryBountyPaid);
     // Cartography (Keystone 3b): bump the explorer's worlds-charted count inside
     // the SAME once-only gate, so it tracks the bounty exactly (once per planet,
     // never on re-scan). Surface the new count + rank in the discovery message.
@@ -519,7 +563,7 @@ async function regionScanFrame(
     site: siteView,
     depletionMap,
     justDiscovered,
-    discoveryBounty: justDiscovered ? DISCOVERY_BOUNTY : undefined,
+    discoveryBounty: discoveryBountyPaid,
     chartedCount,
     chartedRankTitle,
     requiredUpgrade,
@@ -877,6 +921,10 @@ function inapplicableReason(verb: string, state: PlayerStateView): string {
   // launch), so they're only inapplicable when you're on foot.
   if (verb === "orbit" || verb === "land") {
     return "You must `embark` your ship first.";
+  }
+  // Salvage spans orbiting + on-foot; the only excluded aboard state is landed.
+  if (verb === "salvage") {
+    return "You're landed — `disembark` to salvage a surface site, or `launch` to reach an orbital wreck.";
   }
   // Remaining (surface/base) actions need you ON FOOT.
   if (state.embarked) {
@@ -2320,24 +2368,37 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
 }
 
 /**
- * `salvage` (Keystone 3) — investigate the exploration site in the current
- * region (a `derelict`/`ruin`/`anomaly` found via `siteAt`) for its loot:
- * relics, rare materials, and a credit cache (`siteLoot`). Once per player per
- * site (tracked in `salvaged_sites`). Validate-before-mutate: refuse when
- * there's no site here or you've already picked it clean, BEFORE granting
- * anything. On success, award the loot atomically (each material + the credit
- * cache), mark the site salvaged, THEN take the standard surface hazard roll —
- * picking through a wreck on a savage world can wound or kill you (death
- * sequence), exactly like `mine`/`explore`. Disembarked + gas/outpost guarded.
+ * `salvage` (Keystone 3 / 3c) — strip a site for the loot you can't mine
+ * (relics, rare materials, a credit cache). Works in TWO contexts, branched on
+ * the player's orbit/surface state (applicability admits orbiting OR on-foot):
+ *
+ *  - ORBITING (`embarked && !landed`) → an ORBITAL DERELICT (`orbitalSiteAt`, one
+ *    per PLANET incl. gas giants). Salvaged from the safety of your ship — NO
+ *    hazard roll. Tracked in `salvaged_sites` keyed by the 5-seg `planetKey`.
+ *  - ON FOOT (`!embarked`) → a SURFACE site (`siteAt`, per-region). Takes the
+ *    standard region hazard roll afterward (can wound/kill, like `mine`).
+ *    Tracked by the 6-seg `regionKey`. (planetKey and regionKey are both just
+ *    text keys; the `(player_id, key)` PK distinguishes them — no schema change.)
+ *
+ * Once per player per site either way. Validate-before-mutate: refuse when
+ * there's no site in the current context or you've already picked it clean,
+ * BEFORE granting anything. Gas/outpost guarded for the surface path.
  */
 async function handleSalvage(player: Player, seed: string): Promise<RenderFrame> {
-  // No surface to salvage while docked at the orbital outpost.
+  // No salvage while docked at the orbital outpost (you're at the station, not
+  // free-orbiting a derelict; surface salvage has no surface here either).
   if (atOutpost(player)) return outpostSurfaceError();
 
   const coord = locOf(player);
   const planet = planetAt(seed, coord);
 
-  // A gas giant has no surface, hence no surface site to salvage (planet-taxonomy).
+  // ORBITING → orbital derelict (no surface gate, no hazard, works on gas giants).
+  if (player.embarked && !player.landed) {
+    return handleOrbitalSalvage(player, seed, coord, planet);
+  }
+
+  // ON FOOT → surface site. A gas giant has no surface (but you can't be on foot
+  // at one anyway — disembark is blocked there); guard defensively.
   if (planet.isGas) return gasGiantError(planet);
 
   // Same surface gate as `mine`/`explore`: a hostile (freezing/boiling) surface
@@ -2419,6 +2480,64 @@ async function handleSalvage(player: Player, seed: string): Promise<RenderFrame>
     `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
   );
   return frame([...lines, ...deathLines]);
+}
+
+/**
+ * The ORBITING branch of `salvage` (Keystone 3c): strip a drifting orbital
+ * derelict (`orbitalSiteAt`, one per planet) for its richer haul. NO hazard roll
+ * — you work it from aboard your ship. Once per player per planet, keyed by the
+ * 5-seg `planetKey` in `salvaged_sites`. Validate-before-mutate: refuse when
+ * there's no wreck here or it's already picked clean, BEFORE granting anything.
+ */
+async function handleOrbitalSalvage(
+  player: Player,
+  seed: string,
+  coord: PlanetCoord,
+  planet: Planet,
+): Promise<RenderFrame> {
+  const site = orbitalSiteAt(seed, coord);
+  if (!site) {
+    return errorFrame(
+      "Nothing to salvage here — no derelict drifts in this orbit. `orbit` other planets to find one.",
+    );
+  }
+
+  const pKey = planetKey(coord);
+  if (await world.hasSalvaged(player.id, pKey)) {
+    return errorFrame("You've already picked this derelict clean.");
+  }
+
+  // Award the deterministic loot atomically (each material + the credit cache),
+  // then mark it salvaged so it can't be picked twice.
+  const loot = orbitalSiteLoot(seed, coord, site);
+  for (const m of loot.materials) {
+    await world.addPlayerMaterial(player.id, m.id, m.qty);
+  }
+  if (loot.credits > 0) await world.addPlayerCredits(player.id, loot.credits);
+  await world.markSalvaged(player.id, pKey);
+
+  const lines: RenderLine[] = [];
+  lines.push(
+    line([
+      text("You match velocity with the drifting ", "default"),
+      text(siteLabel(site.type), "accent"),
+      text(` orbiting ${planet.name} and strip it for salvage.`, "muted"),
+    ]),
+  );
+  for (const m of loot.materials) {
+    const mat = getMaterial(m.id);
+    lines.push(
+      line([
+        text(`+${m.qty} ${mat.name}`, mat.category === "relic" ? "success" : "default"),
+        text(mat.category === "relic" ? "  — a rare relic!" : ` (${mat.category})`, "muted"),
+      ]),
+    );
+  }
+  if (loot.credits > 0) {
+    lines.push(line(text(`+${loot.credits} cr (a stashed credit cache).`, "success")));
+  }
+  // No hazard roll — you never left your ship.
+  return frame(lines);
 }
 
 /** Human-readable noun for a site type, for `salvage` / `scan` output. */

@@ -157,7 +157,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   salvage: {
-    desc: "investigate the exploration site in this region for loot (on foot)",
+    desc: "strip a derelict for loot — an orbital wreck (orbiting) or a surface site (on foot)",
     slots: [],
   },
   harvest: {

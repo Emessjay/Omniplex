@@ -294,8 +294,28 @@ export function distressCost(credits: number, fee: number = DISTRESS_FEE): numbe
 // existing once-only discovery gate, so it can never double-pay.
 // ---------------------------------------------------------------------------
 
-/** Flat credit reward for being the first to chart a planet. */
+/** Base credit reward for being the first to chart a planet (the tier-0 bounty). */
 export const DISCOVERY_BOUNTY = 250;
+
+/**
+ * How much each cartography RANK TIER adds to the first-discovery bounty, as a
+ * fraction of the base (Keystone 3c). At +0.5/tier, a tier-1 explorer earns
+ * 1.5×, tier-2 2×, … the base bounty — so ranking up as an explorer pays off
+ * (the tangible payoff mirroring the faction-rank trade discounts). Tunable.
+ */
+export const DISCOVERY_RANK_BONUS = 0.5;
+
+/**
+ * The first-discovery bounty for a player at cartography rank `cartoRankTier`:
+ * the base `DISCOVERY_BOUNTY` scaled UP by the rank tier. Equals the base at tier
+ * 0 and STRICTLY INCREASES with tier (so a higher-ranked explorer always earns
+ * more for the same first discovery). Pure; negative tiers (never occur — tiers
+ * are `≥ 0`) clamp to the base.
+ */
+export function discoveryBountyFor(cartoRankTier: number): number {
+  const tier = Math.max(0, cartoRankTier);
+  return Math.round(DISCOVERY_BOUNTY * (1 + tier * DISCOVERY_RANK_BONUS));
+}
 
 /**
  * The most damage a single disembarked action can deal, on a maximally hostile
