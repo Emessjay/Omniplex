@@ -1916,3 +1916,42 @@ gotchas) accrete here as workers surface things worth persisting. See
   gate, reported in `scan`. `scan` (surface frame) surfaces a present site +
   P9b-red salvage state + the bounty line. Seeded: `exploration-sites.test.ts`
   (gen + game). 3b (cartography ranks) + orbital derelicts build on this.
+
+### Load-bearing decisions from `base-tiers` (Keystone 2c)
+
+- **Bases have a TIER (1..`MAX_BASE_TIER`) that multiplies storage capacity** —
+  the ongoing production sink. `bases.tier integer default 1 check (tier>=1)`
+  (migration `20260610020000_base-tiers.sql`, forward-only/idempotent; existing
+  bases → tier 1, no behavior change), carried on base reads.
+- **Pure tier math** (`rules.ts`/`bases.ts`): `baseTierMultiplier(tier)` (1 at
+  tier 1, strictly increasing), `baseCapacity(siloCount, tier) = SILO_CAPACITY ×
+  siloCount × baseTierMultiplier(tier)` (the tier arg threaded through EVERY
+  capacity check — deposit/withdraw/produce/excavator accrual),
+  `baseUpgradeCost(currentTier)` (credits + PART/INGOT ids, scaling up per tier;
+  `upgradeCredits`/`upgradeMinerals` splitters).
+- **`upgrade base`** (NEW verb `upgrade`, arg domain `["base"]`; DISTINCT from
+  the ship-`upgrades` screen / `produce`-d upgrades; DISEMBARKED, own a base
+  in-region, gas/outpost guarded): validate `< MAX_BASE_TIER` + affordable
+  (credits + siloed parts/ingots), then atomically consume + increment tier.
+  `storage` shows tier + capacity + next-tier cost (P9b red). Seeded:
+  `base-tiers.test.ts`. (2c-cont: power/throughput/slot tiers, orbital stations.)
+
+### Load-bearing decisions from `cartography` (Keystone 3b)
+
+- **Exploration progression: a `charted` count (worlds first-discovered) → a
+  cartography RANK, shown on the public leaderboard.** Mirrors `faction-ranks`'s
+  ladder pattern; gives "explorer" a path-identity.
+- **`CARTO_RANKS`** (`src/lib/game/cartography.ts`, pure, ~6 tiers ascending by
+  `minCharted` from 0): `cartographyRank(charted)` = highest rank with
+  `minCharted ≤ charted` (clamps, monotonic); `MAX_CARTO_TIER`.
+- **`players.charted integer default 0 check (charted>=0)`** (migration
+  `20260610170504_cartography.sql`, forward-only/idempotent), carried on
+  `Player`/`PlayerRow`/`rowToPlayer`. Incremented EXACTLY ONCE per planet inside
+  the existing first-discovery gate (same gate as `DISCOVERY_BOUNTY` — never
+  double-counts, never on re-scan). The `public.leaderboard` view was RECREATED
+  to expose `charted` (public-safe, no `user_id`; forward-only, per the
+  addressing-overhaul precedent).
+- **`cartography`** (NEW verb, INFORMATIONAL/anywhere): charted count + rank +
+  next-tier threshold. The first-discovery scan line shows the updated count/
+  rank; `who`/leaderboard surface the cartography title. Seeded:
+  `cartography.test.ts`. (3c: orbital derelicts, payout scaling by rank.)
