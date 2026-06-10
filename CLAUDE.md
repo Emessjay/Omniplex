@@ -1476,3 +1476,59 @@ gotchas) accrete here as workers surface things worth persisting. See
   unapplied-everywhere migration was an explicit auditor decision, not landed-
   history rewriting). `map`/`scan`/the `land` sibling list now read innermost→
   outermost naturally.
+
+### Load-bearing decisions from `star-coordinates`
+
+- **A cluster is now a FINITE 3D CLOUD of exactly `STARS_PER_CLUSTER = 1024`
+  stars**, each with a real floating-point `(x, y, z)` position — no longer an
+  open-ended ribbon addressed by a linear `system` index. The `system` index is
+  canonical in `[0, STARS_PER_CLUSTER)` and simply indexes into the cloud; the
+  `cluster` index itself stays unbounded (`cluster >= 0`). Existing stored
+  `system` identities (DB column, `markets`/`system_supply` location keys) are
+  UNAFFECTED — clusters just became finite. All gen stays PURE & deterministic in
+  `src/lib/universe/gen.ts`; NO migration, NO schema change.
+- **`StarPosition { x, y, z }` + `ClusterCoord { galaxy, arm, cluster }`** (new
+  types in `types.ts`, exported from `index.ts`). `StarSystem` gained a required
+  **`position: StarPosition`** field (`systemAt` fills it from
+  `systemPosition(seed, coord)`).
+- **`clusterStars(seed, cluster) -> StarPosition[]`** is the cloud generator: its
+  own RNG stream (`makeRng(seed, "cluster-stars", galaxy, arm, cluster)`), each
+  star's three components isotropic-Gaussian (Box-Muller over two PRNG uniforms,
+  NO `Math.random`; sigma = `STAR_CLUSTER_SIGMA = 10`), **rounded to 2 dp**,
+  TRUNCATED to a finite sphere of radius `STAR_CLUSTER_MAX_RADIUS = 40` (~4 sigma).
+  A single deterministic **reject-and-resample** loop covers BOTH out-of-sphere
+  AND duplicate rounded positions, so every returned position is distinct AND
+  in-sphere, reproducible byte-for-byte. `systemPosition(seed, coord)` indexes the
+  cloud (THROWS on `system` outside `[0, 1024)`); `systemFromPosition(seed,
+  cluster, pos)` is the inverse — rounds the query to 2 dp and returns the EXACT-
+  match star index or `null` (positions are unique, so unambiguous). `clusterOf`
+  drops `system` from a `SystemCoord`.
+- **`warpDistance` is now SEED-FIRST: `warpDistance(seed, a, b, armCount)`**
+  (BREAKING — all three callers in `commands.ts` updated). The arm-ring + cluster
+  terms are unchanged; the SYSTEM term is now GEOMETRIC when `a`/`b` share galaxy
+  AND arm AND cluster — the EUCLIDEAN distance between star positions x `SYSTEM_SPAN`
+  (hence the seed). Across different clusters/arms (different clouds, positions
+  not comparable) it falls back to the old `|Δsystem|·SYSTEM_SPAN`. Tier-weight
+  ordering `ARM_SPAN(100) >> CLUSTER_SPAN(10) >> SYSTEM_SPAN(1)` holds; still
+  0-to-self, symmetric, positive between distinct same-galaxy coords; different
+  galaxies -> `Infinity`. PURE (positions derived from seed).
+- **`warp <arm> <cluster> <system|x,y,z>`** — the third arg is EITHER a star index
+  (0–1023) OR an `x,y,z` coordinate triple (a comma marks the coordinate form;
+  `jump`-style opaque arg, resolved handler-side). `resolveWarpCoord` parses three
+  finite floats, rounds to 2 dp, and looks up the EXACT star via
+  `systemFromPosition`; NO fuzzy/nearest warp — a miss errors and NAMES the
+  nearest star's coords + index so the player can re-aim. `usage.ts` `warp`
+  system-slot hint updated.
+- **`map` lists the nearest `MAP_NEAR_STARS = 10` in-cluster stars by real
+  Euclidean distance** (primary listing, each with its `(x,y,z)` so you can warp
+  by coordinate), PLUS the cross-cluster/cross-arm neighbors one tier out
+  (`neighborCandidates` simplified to walk arm +/-1 / cluster +/-1 holding the
+  `system` index — same-cluster is now the star list's job). `scan`/`map`/the
+  outpost & gas-giant scan frames show the current star's `(x,y,z)` position
+  (`ScanView.position`/`MapNeighbor.position`/`MapLocation.position`, all optional;
+  `starPositionLabel` formats it). P9b red-marking + affordability unchanged.
+- **Seeded contract**: `src/lib/universe/star-coordinates.test.ts` (12 tests:
+  round-trip, Euclidean distance, finiteness, determinism). The
+  `addressing.test.ts`/`universe-gen.test.ts` `warpDistance` cases were updated to
+  the seed-first signature and STRENGTHENED (symmetry via `toBeCloseTo`, geometric
+  system term asserted positive), not weakened.
