@@ -111,6 +111,8 @@ import {
   isShipId,
   getShip,
   shipTradeIn,
+  isBuildableShip,
+  shipRecipeOf,
 } from "./ships";
 import {
   INGOTS,
@@ -730,10 +732,13 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "build" && argIndex === 0)
         return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm", "livestock_pen"];
       // `produce`'s domain: the ingots a blast furnace smelts from siloed raw
-      // metal, the ship parts a production line banks into storage, PLUS the
-      // upgrades it manufactures (P9a — consuming siloed parts, granting the
-      // upgrade to the player). One verb, three building-gated branches.
-      if (verb === "produce" && argIndex === 0) return [...INGOT_IDS, ...PART_IDS, ...UPGRADE_IDS];
+      // metal, the ship parts a production line banks into storage, the upgrades
+      // it manufactures (P9a — consuming siloed parts, granting the upgrade), PLUS
+      // the BUILDABLE ships a production line constructs from siloed parts/ingots
+      // (Keystone 2b — granted via `setShip`, not storage). One verb, four
+      // building-gated branches.
+      if (verb === "produce" && argIndex === 0)
+        return [...INGOT_IDS, ...PART_IDS, ...UPGRADE_IDS, ...SHIP_IDS.filter(isBuildableShip)];
       // `craft` now only cooks food (P9a — upgrades moved to `produce`). Its arg
       // is OPAQUE: `handleCraft` resolves a food prefix itself, so a fully-typed
       // upgrade id reaches the handler and gets a redirect to `produce` (rather
@@ -3588,12 +3593,13 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const region = regionAt(seed, locOf(player), player.region);
   await accrueExcavators(player, base.id, base.rKey, region, planet);
 
-  const [buildings, stored, have, rawPlots, rawHerds] = await Promise.all([
+  const [buildings, stored, have, rawPlots, rawHerds, cargoUsed] = await Promise.all([
     world.getBaseBuildings(base.id),
     world.getBaseStorage(base.id),
     affordContext(player),
     world.getBasePlots(base.id),
     world.getBaseLivestock(base.id),
+    world.getCargoUsed(player.id),
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
@@ -3687,6 +3693,28 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
               .join(" + "),
             disabled: !power.powered || !canProduce(siloed, i.recipe, 1),
           }))
+        : [],
+    // Ships a production line here can BUILD (Keystone 2b). Disabled (red) when
+    // the base is underpowered, the recipe isn't fully siloed, it's already your
+    // ship, or your current cargo wouldn't fit the new hold (an overflow
+    // downgrade) — the same gates `handleProduceShip` enforces.
+    buildableShips:
+      productionLines > 0
+        ? SHIPS.filter((s) => isBuildableShip(s.id)).map((s) => {
+            const recipe = shipRecipeOf(s.id)!;
+            return {
+              id: s.id,
+              name: s.name,
+              recipe: Object.entries(recipe)
+                .map(([itemId, qty]) => `${qty} ${storageItemName(itemId)}`)
+                .join(" + "),
+              disabled:
+                !power.powered
+                || !canProduce(siloed, recipe, 1)
+                || s.id === player.shipId
+                || cargoUsed > s.cargoCap,
+            };
+          })
         : [],
     // Per-structure affordability (credits + cargo minerals) → red build hints.
     buildable: {
@@ -4001,9 +4029,9 @@ async function handleProduce(
   args: string[],
 ): Promise<RenderFrame> {
   const targetId = args[0]?.toLowerCase();
-  if (!targetId) return errorFrame("Usage: produce <ingot|part|upgrade> [qty]  (see `storage`)");
-  if (!isIngotId(targetId) && !isPartId(targetId) && !isUpgradeId(targetId)) {
-    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the ingot/parts list.`);
+  if (!targetId) return errorFrame("Usage: produce <ingot|part|upgrade|ship> [qty]  (see `storage`)");
+  if (!isIngotId(targetId) && !isPartId(targetId) && !isUpgradeId(targetId) && !isBuildableShip(targetId)) {
+    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the ingot/parts/ship list.`);
   }
 
   const base = await baseHere(player, seed);
@@ -4064,6 +4092,13 @@ async function handleProduce(
   // capacity-free — to split out.
   if (isUpgradeId(targetId)) {
     return handleProduceUpgrade(player, base, stored, args[1], targetId);
+  }
+
+  // Keystone 2b: a buildable ship id BUILDS the ship (consuming siloed PARTS +
+  // INGOTS, swapping the player to it via `setShip` — no storage banking, no
+  // credit cost). Mirrors the upgrade branch but grants a ship instead.
+  if (isBuildableShip(targetId)) {
+    return handleProduceShip(player, base, stored, args[1], targetId);
   }
 
   const partId = targetId;
@@ -4242,6 +4277,86 @@ async function handleProduceUpgrade(
       text(`${upgradeId}`, "default"),
       text(" to put one on the market for other pilots.", "muted"),
     ]),
+  ]);
+}
+
+/**
+ * Build a SHIP at the current region's production line (Keystone 2b — the
+ * materials-not-cash alternative to `buyship`). The recipe is ship PARTS +
+ * INGOTS (`ships.ts`), consumed from THIS base's silo storage
+ * (`add_base_storage(-)`); on success the player is SWAPPED to the new ship via
+ * `setShip` (sets `ship_id` + `cargo_cap`, the same single-write swap `buyship`
+ * uses) — the ship doesn't sit in storage, so there's no capacity check. There is
+ * NO credit cost (you paid in materials). You build exactly ONE ship (qty>1 is
+ * rejected). Validation (qty, not-already-your-ship, cargo fits the new hold,
+ * inputs siloed) happens BEFORE any mutation, so a failed build changes nothing;
+ * consumption + swap are atomic via the race-safe RPCs. The base/production-line/
+ * power checks already ran in `handleProduce`.
+ */
+async function handleProduceShip(
+  player: Player,
+  base: { id: string; name: string | null; rKey: string },
+  stored: world.StorageStack[],
+  qtyArg: string | undefined,
+  shipId: string,
+): Promise<RenderFrame> {
+  const ship = getShip(shipId);
+  const recipe = shipRecipeOf(shipId)!; // buildable ⇒ non-null
+
+  // You build ONE ship (a ship is a single hull, like `buyship`). A bare
+  // `produce <ship>` is fine; an explicit qty must be exactly 1.
+  if (qtyArg !== undefined) {
+    const requested = toInt(qtyArg);
+    if (requested === null || requested <= 0) {
+      return errorFrame("Usage: produce <ship>  — you build one ship (no quantity).");
+    }
+    if (requested > 1) {
+      return errorFrame(`You build one ship at a time — \`produce ${shipId}\` (no quantity).`);
+    }
+  }
+
+  // Read fresh ship + cargo so a concurrent swap/load can't slip past the gates.
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  if (fresh.shipId === shipId) {
+    return errorFrame(`You already fly the ${ship.name}.`);
+  }
+  const cargoUsed = await world.getCargoUsed(player.id);
+  if (cargoUsed > ship.cargoCap) {
+    return errorFrame(
+      `The ${ship.name} holds only ${ship.cargoCap} cargo, but you're carrying ${cargoUsed}. `
+      + "Unload (sell/deposit) first.",
+    );
+  }
+
+  // Siloed amounts. The recipe references PART + INGOT ids (both live in storage).
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+
+  if (!canProduce(siloed, recipe, 1)) {
+    const short = Object.entries(recipe)
+      .filter(([itemId, qty]) => (siloed[itemId] ?? 0) < qty)
+      .map(([itemId, qty]) => `${qty} ${storageItemName(itemId)} in the silo (have ${siloed[itemId] ?? 0})`);
+    return errorFrame(`Can't build the ${ship.name} — need ${short.join(", ")}.`);
+  }
+
+  // Consume the recipe inputs from the silo, then swap the player to the new ship
+  // (ship_id + cargo_cap in one write) — all via the atomic RPCs. No credit cost.
+  for (const [itemId, qty] of Object.entries(recipe)) {
+    await world.addBaseStorage(base.id, itemId, -qty);
+  }
+  await world.setShip(player.id, ship.id, ship.cargoCap);
+
+  const current = getShip(fresh.shipId);
+  const consumed = Object.entries(recipe)
+    .map(([itemId, qty]) => `${qty} ${storageItemName(itemId)}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Built the ${ship.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`No credits spent — you built it.`, "accent"),
+    ]),
+    line(text(`  Retired the ${current.name}; cargo capacity now ${ship.cargoCap}.`, "muted")),
   ]);
 }
 
