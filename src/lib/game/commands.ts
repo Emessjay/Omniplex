@@ -41,7 +41,7 @@ import {
   type Planet,
   type Biome,
 } from "@/lib/universe";
-import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
+import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
@@ -269,6 +269,47 @@ function gasGiantScanFrame(player: Player, seed: string, planet: Planet): Render
     ]),
     line(text("A gas giant — no surface to land on, no deposits to mine.", "muted")),
   ];
+  // Sibling planets — mirror regionScanFrame's siblingLand list so the player
+  // can see and click `land <n>` options from gas-giant orbit.
+  const siblings = system.planets.filter((sib) => sib.coord.planet !== planet.coord.planet);
+  if (siblings.length > 0) {
+    lines.push(line(text("Other planets in this system:", "muted")));
+    const now = Date.now();
+    for (const sib of siblings) {
+      const cost = regularFuelCost(
+        { atmosphere: planet.atmosphere, gravity: planet.gravity, orbit: planet },
+        { orbit: sib },
+        now,
+      );
+      const affordable = player.fuel >= cost;
+      if (sib.isGas) {
+        lines.push(
+          line([
+            text(`  ${sib.coord.planet}: `, "muted"),
+            action(`${sib.name} (gas giant)`, `land ${sib.coord.planet}`, {
+              style: "link",
+              title: "gas giant — no surface to land on",
+              disabled: true,
+            }),
+          ]),
+        );
+      } else {
+        const title = affordable
+          ? `land on ${sib.name}`
+          : `not enough fuel (need ${cost})`;
+        const row: RenderSpan[] = [
+          text(`  ${sib.coord.planet}: `, "muted"),
+          action(
+            `${sib.name} (${SIZE_CLASS_LABELS[sib.sizeClass]})`,
+            `land ${sib.coord.planet}`,
+            { style: "link", title, disabled: !affordable },
+          ),
+          text(`  fuel ${cost}`, affordable ? "muted" : "danger"),
+        ];
+        lines.push(line(row));
+      }
+    }
+  }
   if (hasOutpost(seed, locOf(player))) {
     lines.push(
       line([
