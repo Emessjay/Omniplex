@@ -6,8 +6,9 @@ import {
   getPart,
   partRecipeOf,
   partValue,
-  partRawInputValue,
+  partInputValue,
 } from "@/lib/game/parts";
+import { isIngotId } from "@/lib/game/ingots";
 import { canProduce } from "@/lib/game/rules";
 import {
   STRUCTURE_KINDS,
@@ -27,25 +28,29 @@ describe("ship-parts catalog integrity (AC#3)", () => {
     expect([...PART_IDS]).toEqual(PARTS.map((p) => p.id));
   });
 
-  it("every recipe references only real minerals, with positive quantities", () => {
+  it("every recipe references only real ids (ingot or mineral), with positive quantities", () => {
+    // The blast-furnace rewire: part recipes now consume INGOTS for their metal
+    // inputs (and may keep a raw non-metal like silica), so a recipe key is a real
+    // ingot id OR a real mineral id.
     for (const part of PARTS) {
       const entries = Object.entries(part.recipe);
       expect(entries.length, `${part.id} has an empty recipe`).toBeGreaterThan(0);
       for (const [rid, qty] of entries) {
-        expect(RESOURCE_IDS.has(rid), `${part.id} references unknown mineral ${rid}`).toBe(true);
-        // getResource must not throw for a recipe ingredient.
-        expect(() => getResource(rid)).not.toThrow();
+        const real = isIngotId(rid) || RESOURCE_IDS.has(rid);
+        expect(real, `${part.id} references unknown input ${rid}`).toBe(true);
+        // getResource must not throw for a raw (non-ingot) ingredient.
+        if (!isIngotId(rid)) expect(() => getResource(rid)).not.toThrow();
         expect(qty).toBeGreaterThan(0);
         expect(Number.isInteger(qty)).toBe(true);
       }
     }
   });
 
-  it("every part is worth strictly more than its raw inputs (manufacturing adds value)", () => {
+  it("every part is worth strictly more than its inputs (manufacturing adds value)", () => {
     for (const part of PARTS) {
-      const raw = partRawInputValue(part.id);
-      expect(raw).toBeGreaterThan(0);
-      expect(part.value, `${part.id} value must exceed raw input cost ${raw}`).toBeGreaterThan(raw);
+      const input = partInputValue(part.id);
+      expect(input).toBeGreaterThan(0);
+      expect(part.value, `${part.id} value must exceed input cost ${input}`).toBeGreaterThan(input);
     }
   });
 

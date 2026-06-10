@@ -94,6 +94,12 @@ import {
   partValue,
 } from "./parts";
 import {
+  INGOTS,
+  INGOT_IDS,
+  isIngotId,
+  getIngot,
+} from "./ingots";
+import {
   isMaterialId,
   getMaterial,
   materialValue,
@@ -532,11 +538,12 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants).
       if (verb === "build" && argIndex === 0)
-        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array"];
-      // `produce`'s domain: the ship parts a production line banks into storage,
-      // PLUS the upgrades it manufactures (P9a — consuming siloed parts, granting
-      // the upgrade to the player).
-      if (verb === "produce" && argIndex === 0) return [...PART_IDS, ...UPGRADE_IDS];
+        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace"];
+      // `produce`'s domain: the ingots a blast furnace smelts from siloed raw
+      // metal, the ship parts a production line banks into storage, PLUS the
+      // upgrades it manufactures (P9a — consuming siloed parts, granting the
+      // upgrade to the player). One verb, three building-gated branches.
+      if (verb === "produce" && argIndex === 0) return [...INGOT_IDS, ...PART_IDS, ...UPGRADE_IDS];
       // `craft` now only cooks food (P9a — upgrades moved to `produce`). Its arg
       // is OPAQUE: `handleCraft` resolves a food prefix itself, so a fully-typed
       // upgrade id reaches the handler and gets a redirect to `produce` (rather
@@ -2311,12 +2318,12 @@ async function handleBuild(
   if (here.isGas) return gasGiantError(here);
   const structure = args[0]?.toLowerCase();
   if (!structure) {
-    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array> [name]");
+    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace> [name]");
   }
   if (structure === "base") return handleBuildBase(player, seed, args);
   if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
   return errorFrame(
-    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\` or \`solar_array\`.`,
+    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\` or \`blast_furnace\`.`,
   );
 }
 
@@ -2518,6 +2525,7 @@ async function handleBuildStructure(
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
   const lines = buildings.filter((b) => b.kind === "production_line").length;
+  const blastFurnaces = buildings.filter((b) => b.kind === "blast_furnace").length;
   const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   // Recompute the base's power so the player learns immediately whether the new
@@ -2527,6 +2535,7 @@ async function handleBuildStructure(
     solarArrays,
     excavators,
     productionLines: lines,
+    blastFurnaces,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
   });
@@ -2550,6 +2559,9 @@ async function handleBuildStructure(
     case "solar_array":
       detail = `Solar array online — power rises as the atmosphere thins. ${powerNote}`;
       break;
+    case "blast_furnace":
+      detail = `${blastFurnaces} blast furnace${blastFurnaces === 1 ? "" : "s"} ready — \`produce <ingot>\` to smelt siloed raw metal. ${powerNote}`;
+      break;
   }
   return frame([
     line([
@@ -2568,6 +2580,7 @@ async function handleBuildStructure(
  */
 function storageItemName(itemId: string): string {
   if (isPartId(itemId)) return getPart(itemId).name;
+  if (isIngotId(itemId)) return getIngot(itemId).name;
   return getResource(itemId).name;
 }
 
@@ -2621,6 +2634,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
   const productionLines = buildings.filter((b) => b.kind === "production_line").length;
+  const blastFurnaces = buildings.filter((b) => b.kind === "blast_furnace").length;
   const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const capacity = baseCapacity(silos);
@@ -2628,12 +2642,13 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
 
   // Power balance (P13): plant supply vs consumer demand, sited by this region's
   // temperature + the planet's atmosphere. Surfaced (red when short) so the
-  // player knows whether the excavators/lines are actually running.
+  // player knows whether the excavators/lines/furnaces are actually running.
   const power = basePower({
     thermalPlants,
     solarArrays,
     excavators,
     productionLines,
+    blastFurnaces,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
   });
@@ -2649,6 +2664,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     silos,
     excavators,
     productionLines,
+    blastFurnaces,
     thermalPlants,
     solarArrays,
     power: { supply: power.supply, demand: power.demand, powered: power.powered },
@@ -2656,16 +2672,31 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     capacity,
     items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: storageItemName(s.itemId) })),
     // What a production line here can manufacture (only surfaced when one exists).
-    // A part is disabled (red) when its recipe isn't fully siloed to make one.
+    // A part is disabled (red) when its recipe isn't fully siloed, or the base is
+    // underpowered (the production line can't run either way).
     producible:
       productionLines > 0
         ? PARTS.map((p) => ({
             id: p.id,
             name: p.name,
             recipe: Object.entries(p.recipe)
+              .map(([rid, qty]) => `${qty} ${storageItemName(rid)}`)
+              .join(" + "),
+            disabled: !power.powered || !canProduce(siloed, p.recipe, 1),
+          }))
+        : [],
+    // What a blast furnace here can smelt (only surfaced when one exists). An
+    // ingot is disabled (red) when its raw metal isn't fully siloed, or the base
+    // is underpowered (P9b red convention).
+    smeltable:
+      blastFurnaces > 0
+        ? INGOTS.map((i) => ({
+            id: i.id,
+            name: i.name,
+            recipe: Object.entries(i.recipe)
               .map(([rid, qty]) => `${qty} ${getResource(rid).name}`)
               .join(" + "),
-            disabled: !canProduce(siloed, p.recipe, 1),
+            disabled: !power.powered || !canProduce(siloed, i.recipe, 1),
           }))
         : [],
     // Per-structure affordability (credits + cargo minerals) → red build hints.
@@ -2675,6 +2706,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       production_line: canAffordBase(have, buildingCost("production_line")),
       thermal_plant: canAffordBase(have, buildingCost("thermal_plant")),
       solar_array: canAffordBase(have, buildingCost("solar_array")),
+      blast_furnace: canAffordBase(have, buildingCost("blast_furnace")),
     },
   });
 }
@@ -2878,6 +2910,7 @@ async function accrueExcavators(
     solarArrays: buildings.filter((b) => b.kind === "solar_array").length,
     excavators: excavators.length,
     productionLines: buildings.filter((b) => b.kind === "production_line").length,
+    blastFurnaces: buildings.filter((b) => b.kind === "blast_furnace").length,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
   });
@@ -2977,9 +3010,9 @@ async function handleProduce(
   args: string[],
 ): Promise<RenderFrame> {
   const targetId = args[0]?.toLowerCase();
-  if (!targetId) return errorFrame("Usage: produce <part|upgrade> [qty]  (see `storage`)");
-  if (!isPartId(targetId) && !isUpgradeId(targetId)) {
-    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the parts list.`);
+  if (!targetId) return errorFrame("Usage: produce <ingot|part|upgrade> [qty]  (see `storage`)");
+  if (!isIngotId(targetId) && !isPartId(targetId) && !isUpgradeId(targetId)) {
+    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the ingot/parts list.`);
   }
 
   const base = await baseHere(player, seed);
@@ -2998,25 +3031,41 @@ async function handleProduce(
     world.getBaseStorage(base.id),
   ]);
   const productionLines = buildings.filter((b) => b.kind === "production_line").length;
-  if (productionLines === 0) {
+  const blastFurnaces = buildings.filter((b) => b.kind === "blast_furnace").length;
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+
+  // Required building, per branch — the more specific error comes before the
+  // shared power gate. Ingots smelt at a blast furnace; parts/upgrades at a
+  // production line.
+  if (isIngotId(targetId)) {
+    if (blastFurnaces === 0) {
+      return errorFrame("No blast furnace here — `build blast_furnace` first.");
+    }
+  } else if (productionLines === 0) {
     return errorFrame("No production line here — `build production_line` first.");
   }
 
-  // Power gate (P13): a production line only runs when the base's plants supply
-  // enough power. Validate BEFORE any consumption — an underpowered base produces
-  // nothing and is told how to fix it.
+  // Power gate (P13): a production line / blast furnace only runs when the base's
+  // plants supply enough power. Validate BEFORE any consumption — an underpowered
+  // base produces nothing and is told how to fix it.
   const power = basePower({
     thermalPlants: buildings.filter((b) => b.kind === "thermal_plant").length,
     solarArrays: buildings.filter((b) => b.kind === "solar_array").length,
     excavators: buildings.filter((b) => b.kind === "excavator").length,
     productionLines,
+    blastFurnaces,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
   });
   if (!power.powered) {
     return errorFrame(
-      `Insufficient power (${Math.round(power.supply)}/${power.demand}) — \`build thermal_plant\` or \`build solar_array\` to power the production line.`,
+      `Insufficient power (${Math.round(power.supply)}/${power.demand}) — \`build thermal_plant\` or \`build solar_array\` to power the base.`,
     );
+  }
+
+  // Smelting branch (blast furnace): raw metal in the silo → ingot in the silo.
+  if (isIngotId(targetId)) {
+    return handleProduceIngot(base, stored, args[1], targetId, silos);
   }
 
   // P9a: an upgrade id manufactures the UPGRADE (consuming siloed PARTS, granting
@@ -3035,21 +3084,21 @@ async function handleProduce(
     return errorFrame("Usage: produce <part> [qty]  — qty must be a positive whole number.");
   }
 
-  // Siloed amounts (parts also live here, but recipes only reference resources).
+  // Siloed amounts. The recipe references ingot ids (+ any raw silica); ingots and
+  // parts both live in storage, keyed by their item id.
   const siloed: Record<string, number> = {};
   for (const s of stored) siloed[s.itemId] = s.qty;
 
-  // Inputs present? Surfaces every short line ("need 5 Titanium in the silo, have 2").
+  // Inputs present? Surfaces every short line ("need 4 Iron Ingot in the silo, have 2").
   if (!canProduce(siloed, recipe, requested)) {
     const short = Object.entries(recipe)
       .filter(([rid, perUnit]) => (siloed[rid] ?? 0) < perUnit * requested)
-      .map(([rid, perUnit]) => `${perUnit * requested} ${getResource(rid).name} in the silo (have ${siloed[rid] ?? 0})`);
+      .map(([rid, perUnit]) => `${perUnit * requested} ${storageItemName(rid)} in the silo (have ${siloed[rid] ?? 0})`);
     return errorFrame(`Can't produce ${requested} ${part.name} — need ${short.join(", ")}.`);
   }
 
   // Capacity: consuming inputs frees space, banking parts uses it. Validate the
   // net result fits before mutating (defensive — inputs ≥ outputs in practice).
-  const silos = buildings.filter((b) => b.kind === "silo").length;
   const capacity = baseCapacity(silos);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   const inputsConsumed = Object.values(recipe).reduce((sum, q) => sum + q, 0) * requested;
@@ -3067,7 +3116,7 @@ async function handleProduce(
   const nowStored = await world.addBaseStorage(base.id, partId, requested);
 
   const consumed = Object.entries(recipe)
-    .map(([rid, perUnit]) => `${perUnit * requested} ${getResource(rid).name}`)
+    .map(([rid, perUnit]) => `${perUnit * requested} ${storageItemName(rid)}`)
     .join(" + ");
   return frame([
     line([
@@ -3076,6 +3125,73 @@ async function handleProduce(
       text(`Storage ${usedAfter}/${capacity}.`, "muted"),
     ]),
     line(text(`  ${part.name} in store: ${nowStored} (worth ${part.value} cr each).`, "accent")),
+  ]);
+}
+
+/**
+ * Smelt raw metal into ingots at the current region's blast furnace (the
+ * smelting tier). The recipe is raw METAL ore (`ingots.ts`), consumed from THIS
+ * base's silo storage; the finished ingot(s) are banked back into the same
+ * storage (silo-only intermediates that feed the production lines). Bounded by
+ * the remaining `baseCapacity`. Validation (inputs siloed, capacity) happens
+ * BEFORE any mutation, so a failed smelt changes nothing; consumption + banking
+ * are atomic via `add_base_storage`. The base / blast-furnace / power checks
+ * already ran in `handleProduce`.
+ */
+async function handleProduceIngot(
+  base: { id: string; name: string | null; rKey: string },
+  stored: world.StorageStack[],
+  qtyArg: string | undefined,
+  ingotId: string,
+  silos: number,
+): Promise<RenderFrame> {
+  const ingot = getIngot(ingotId);
+  const recipe = ingot.recipe;
+
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: produce <ingot> [qty]  — qty must be a positive whole number.");
+  }
+
+  // Siloed amounts (raw metal lives here, deposited or excavated).
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+
+  if (!canProduce(siloed, recipe, requested)) {
+    const short = Object.entries(recipe)
+      .filter(([rid, perUnit]) => (siloed[rid] ?? 0) < perUnit * requested)
+      .map(([rid, perUnit]) => `${perUnit * requested} ${getResource(rid).name} in the silo (have ${siloed[rid] ?? 0})`);
+    return errorFrame(`Can't smelt ${requested} ${ingot.name} — need ${short.join(", ")}.`);
+  }
+
+  // Capacity: consuming raw frees space, banking ingots uses it. Validate the net
+  // fits before mutating (raw inputs ≥ ingot outputs in practice).
+  const capacity = baseCapacity(silos);
+  const used = stored.reduce((sum, s) => sum + s.qty, 0);
+  const inputsConsumed = Object.values(recipe).reduce((sum, q) => sum + q, 0) * requested;
+  const usedAfter = used - inputsConsumed + requested;
+  if (usedAfter > capacity) {
+    return errorFrame(
+      `Storage would overflow (${usedAfter}/${capacity}). \`build silo\` for more room.`,
+    );
+  }
+
+  // Consume the raw metal, then bank the ingot(s) — all via the atomic storage RPC.
+  for (const [rid, perUnit] of Object.entries(recipe)) {
+    await world.addBaseStorage(base.id, rid, -(perUnit * requested));
+  }
+  const nowStored = await world.addBaseStorage(base.id, ingotId, requested);
+
+  const consumed = Object.entries(recipe)
+    .map(([rid, perUnit]) => `${perUnit * requested} ${getResource(rid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Smelted ${requested} ${ingot.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`Storage ${usedAfter}/${capacity}.`, "muted"),
+    ]),
+    line(text(`  ${ingot.name} in store: ${nowStored} (worth ${ingot.value} cr each — feeds your production lines).`, "accent")),
   ]);
 }
 

@@ -71,6 +71,10 @@ export const STRUCTURE_KINDS = [
   // hot regions; solar favors thin-atmosphere worlds — siting is a real choice.
   "thermal_plant",
   "solar_array",
+  // blast-furnace phase: smelts siloed raw metal into ingots via `produce
+  // <ingot>`. A power consumer like the production line (heavy industry); see
+  // `BLAST_FURNACE_POWER_DEMAND` / `basePower` in `rules.ts`.
+  "blast_furnace",
 ] as const;
 export type StructureKind = (typeof STRUCTURE_KINDS)[number];
 
@@ -93,6 +97,8 @@ export const BUILDING_BUILD_COST: Readonly<Record<StructureKind, Readonly<Record
   production_line: { credits: 600, titanium: 5, copper: 5 },
   thermal_plant: { credits: 500, iron: 5, copper: 5 },
   solar_array: { credits: 500, silica: 5, copper: 5 },
+  // Heavy industry — the priciest structure (it opens the smelting tier).
+  blast_furnace: { credits: 700, iron: 8, copper: 4 },
 };
 
 /** The cost map for one structure kind. */

@@ -471,6 +471,8 @@ export function baseCapacity(siloCount: number): number {
 export const EXCAVATOR_POWER_DEMAND = 4;
 /** Power one production line draws — pricier than an excavator (heavier machinery). */
 export const PRODUCTION_LINE_POWER_DEMAND = 6;
+/** Power one blast furnace draws — heavy industry, on par with a production line. */
+export const BLAST_FURNACE_POWER_DEMAND = 6;
 
 /**
  * Thermal plant power per °C above `THERMAL_FLOOR_C`. Tuned so a warm region
@@ -519,6 +521,7 @@ export function basePower(args: {
   solarArrays: number;
   excavators: number;
   productionLines: number;
+  blastFurnaces: number;
   temperature: number;
   atmosphere: Atmosphere;
 }): { supply: number; demand: number; powered: boolean } {
@@ -527,7 +530,8 @@ export function basePower(args: {
     Math.max(0, args.solarArrays) * solarOutput(args.atmosphere);
   const demand =
     Math.max(0, args.excavators) * EXCAVATOR_POWER_DEMAND +
-    Math.max(0, args.productionLines) * PRODUCTION_LINE_POWER_DEMAND;
+    Math.max(0, args.productionLines) * PRODUCTION_LINE_POWER_DEMAND +
+    Math.max(0, args.blastFurnaces) * BLAST_FURNACE_POWER_DEMAND;
   return { supply, demand, powered: supply >= demand };
 }
 

@@ -1032,9 +1032,11 @@ export interface StorageView {
   /** Number of silos (storage) and excavators (passive ore drain) in the base. */
   silos: number;
   excavators: number;
-  /** Number of production lines (turn siloed minerals into ship parts via `produce`). */
+  /** Number of production lines (turn siloed ingots into ship parts via `produce`). */
   productionLines: number;
-  /** Number of power plants by kind (P13) — they power the excavators + lines. */
+  /** Number of blast furnaces (smelt siloed raw metal into ingots via `produce <ingot>`). */
+  blastFurnaces?: number;
+  /** Number of power plants by kind (P13) — they power the excavators + lines + furnaces. */
   thermalPlants?: number;
   solarArrays?: number;
   /**
@@ -1055,6 +1057,13 @@ export interface StorageView {
    */
   producible: { id: string; name: string; recipe: string; disabled?: boolean }[];
   /**
+   * Ingots a blast furnace here can smelt (each with a raw-metal recipe summary).
+   * Empty when there's no blast furnace — only surfaced once one exists.
+   * `disabled` marks an ingot whose raw metal isn't fully siloed, or whose base
+   * is underpowered (can't smelt now).
+   */
+  smeltable?: { id: string; name: string; recipe: string; disabled?: boolean }[];
+  /**
    * Affordability of each `build <structure>` hint (credits + cargo minerals).
    * A structure the player can't currently afford renders its hint red. Absent
    * = treat as affordable (back-compatible).
@@ -1065,6 +1074,7 @@ export interface StorageView {
     production_line: boolean;
     thermal_plant?: boolean;
     solar_array?: boolean;
+    blast_furnace?: boolean;
   };
 }
 
@@ -1088,6 +1098,8 @@ export function renderStorage(view: StorageView): RenderFrame {
       text(`${view.excavators}`, "default"),
       text("   lines ", "muted"),
       text(`${view.productionLines}`, "default"),
+      text("   furnaces ", "muted"),
+      text(`${view.blastFurnaces ?? 0}`, "default"),
       text("   plants ", "muted"),
       text(`${(view.thermalPlants ?? 0) + (view.solarArrays ?? 0)}`, "default"),
       text("   storage ", "muted"),
@@ -1148,6 +1160,25 @@ export function renderStorage(view: StorageView): RenderFrame {
     }
   }
 
+  // Smeltable ingots (only once a blast furnace exists), each clickable. An ingot
+  // whose raw metal isn't fully siloed (or whose base is underpowered) is red.
+  if (view.smeltable && view.smeltable.length > 0) {
+    lines.push(line(text("Smeltable:", "heading")));
+    for (const s of view.smeltable) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          action(`produce ${s.id}`, `produce ${s.id}`, {
+            style: "link",
+            title: s.disabled ? "missing siloed metal or power" : `smelt ${s.name}`,
+            disabled: s.disabled,
+          }),
+          text(`  (${s.recipe})`, "muted"),
+        ]),
+      );
+    }
+  }
+
   // Expansion hints (clickable). A structure you can't afford is shown red,
   // matching the affordability check `build` enforces.
   const b = view.buildable;
@@ -1180,6 +1211,12 @@ export function renderStorage(view: StorageView): RenderFrame {
       style: "link",
       title: b && b.solar_array === false ? "can't afford a solar array" : "power from sunlight (thin air)",
       disabled: b ? b.solar_array === false : false,
+    }),
+    text("   ", "muted"),
+    action("build blast_furnace", "build blast_furnace", {
+      style: "link",
+      title: b && b.blast_furnace === false ? "can't afford a blast furnace" : "smelt raw metal into ingots",
+      disabled: b ? b.blast_furnace === false : false,
     }),
   ];
   lines.push(line(hints));

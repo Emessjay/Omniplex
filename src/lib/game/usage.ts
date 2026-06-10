@@ -158,7 +158,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "food" }],
   },
   build: {
-    desc: "build a base or an in-base structure (silo/excavator/production_line/power plant) here (on foot)",
+    desc: "build a base or an in-base structure (silo/excavator/production_line/blast_furnace/power plant) here (on foot)",
     slots: [
       { name: "structure" },
       { name: "name", optional: true, hint: "an optional base name (build base only)" },
@@ -192,9 +192,9 @@ export const USAGE: Record<string, UsageDescriptor> = {
     ],
   },
   produce: {
-    desc: "manufacture a ship part or upgrade from siloed inputs (needs a production line)",
+    desc: "smelt an ingot (blast furnace), or manufacture a ship part/upgrade (production line) from siloed inputs",
     slots: [
-      { name: "part" },
+      { name: "item" },
       { name: "qty", optional: true, hint: "a number (default 1)" },
     ],
   },

@@ -39,7 +39,7 @@ describe("basePower — supply vs demand, powered gate", () => {
   it("a consumer with no plant is unpowered", () => {
     const r = basePower({
       thermalPlants: 0, solarArrays: 0, excavators: 1, productionLines: 0,
-      temperature: 50, atmosphere: ATM,
+      blastFurnaces: 0, temperature: 50, atmosphere: ATM,
     });
     expect(r.demand).toBeGreaterThan(0);
     expect(r.supply).toBe(0);
@@ -50,14 +50,14 @@ describe("basePower — supply vs demand, powered gate", () => {
     // Many plants on a hot world: supply should clear a single excavator's demand.
     const r = basePower({
       thermalPlants: 5, solarArrays: 0, excavators: 1, productionLines: 0,
-      temperature: 300, atmosphere: ATM,
+      blastFurnaces: 0, temperature: 300, atmosphere: ATM,
     });
     expect(r.supply).toBeGreaterThanOrEqual(r.demand);
     expect(r.powered).toBe(true);
   });
 
   it("more consumers raise demand; powered flips when demand exceeds supply", () => {
-    const base = { thermalPlants: 1, solarArrays: 0, temperature: 120, atmosphere: ATM };
+    const base = { thermalPlants: 1, solarArrays: 0, blastFurnaces: 0, temperature: 120, atmosphere: ATM };
     const few = basePower({ ...base, excavators: 1, productionLines: 0 });
     const many = basePower({ ...base, excavators: 50, productionLines: 50 });
     expect(many.demand).toBeGreaterThan(few.demand);
@@ -67,7 +67,7 @@ describe("basePower — supply vs demand, powered gate", () => {
   it("no buildings ⇒ trivially powered (supply 0 ≥ demand 0)", () => {
     const r = basePower({
       thermalPlants: 0, solarArrays: 0, excavators: 0, productionLines: 0,
-      temperature: 20, atmosphere: ATM,
+      blastFurnaces: 0, temperature: 20, atmosphere: ATM,
     });
     expect(r.powered).toBe(true);
   });
