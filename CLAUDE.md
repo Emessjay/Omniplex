@@ -1638,3 +1638,39 @@ gotchas) accrete here as workers surface things worth persisting. See
   its arg domain = crops with mature plots here. `scan`/`storage` surface plots
   + maturity (P9b red). Registered in `VERBS`/`USAGE`/`applicability`
   (DISEMBARKED).
+
+### Load-bearing decisions from `animal-husbandry`
+
+- **Ranching (Phase 3, COMPLETES the industrial/agricultural expansion): build
+  a livestock pen, `ranch` biome-affined animals, `feed` them crops to breed
+  the herd over time, `slaughter` for product materials.** Active
+  ranch→feed/breed→slaughter cycle, mirroring `crop-farming`. **Closes the
+  crops→feed loop**: every farm animal eats a Phase-2 crop.
+- **`livestock_pen` is a non-power-gated `StructureKind`** (`bases.ts`,
+  `STRUCTURE_KINDS` + `base-buildings-cost.test.ts` updated) — agricultural,
+  like `crop_farm`. Each pen holds `LIVESTOCK_PEN_CAPACITY` (`rules.ts`, 20)
+  head; base capacity = `× #livestock_pen` across all animal types.
+- **`FARM_ANIMALS` catalog** (`src/lib/game/livestock.ts`, mirrors `crops.ts`):
+  `FarmAnimal = { id, name, biomes, feed: {cropId, qtyPerHead}, breedMs,
+  product: {materialId, qty}, acquireCost }`; helpers `FARM_ANIMALS`/
+  `FARM_ANIMAL_IDS`/`isFarmAnimalId`/`getFarmAnimal`/`farmAnimalsForBiome`.
+  8 animals across 5 biomes; **`feed.cropId` is always a real `CROPS` id**.
+  Products are 8 new `category:"animal"` materials (poultry_meat, tender_loin,
+  shellfish_meat, woolly_fleece, etc.), sellable like the wild animal drops.
+- **`base_livestock` table** (migration `20260609020000_animal-husbandry.sql`,
+  forward-only/idempotent): `(base_id→bases cascade, animal_id text [no FK],
+  count int ≥0 check, last_bred_at, pk (base_id, animal_id))`, index on base_id,
+  **RLS public-read + service-role writes**. Atomic clamped RPC
+  `add_livestock(p_base, p_animal, p_delta)` (`greatest(0, …)`, mirrors
+  `add_inventory`/`add_base_storage`). `world.ts`: `getBaseLivestock`/
+  `addLivestock`/`setLivestockBred`.
+- **Pure rules** (`rules.ts`): `livestockCanBreed(lastBredAtMs, nowMs, breedMs)`,
+  `feedAmount(count, qtyPerHead)` (= count × perHead, 0 at empty), `breedOffspring(
+  count)` (≥1 for non-empty, capped to capacity at the call site). Time/inputs
+  passed in. Seeded: `animal-husbandry.test.ts`.
+- **Commands** (NEW verbs, DISEMBARKED, own base in-region, gas/outpost guards;
+  `VERBS`/`USAGE`/`applicability`): `ranch <animal>` (acquire a head for
+  `acquireCost`; biome + capacity + affordability checks), `feed <animal>`
+  (consume `feedAmount` of the feed crop from `player_materials`; breed when
+  `livestockCanBreed` + capacity), `slaughter <animal> [n]` (head → product
+  materials). scan/storage surface herds + breed-readiness (P9b red hints).
