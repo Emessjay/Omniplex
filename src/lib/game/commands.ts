@@ -106,6 +106,13 @@ import {
   partValue,
 } from "./parts";
 import {
+  SHIPS,
+  SHIP_IDS,
+  isShipId,
+  getShip,
+  shipTradeIn,
+} from "./ships";
+import {
   INGOTS,
   INGOT_IDS,
   isIngotId,
@@ -171,6 +178,7 @@ import {
   renderMap,
   renderInventory,
   renderUpgrades,
+  renderShipyard,
   renderBases,
   renderStorage,
   renderWho,
@@ -568,6 +576,8 @@ interface ArgDomainContext {
   ranchCandidates: string[] | null;
   /** Animal ids the player currently herds here — the `feed`/`slaughter` arg domain. */
   herdCandidates: string[] | null;
+  /** Ship ids you can swap to — every catalog ship except the one you fly. */
+  buyshipCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -580,6 +590,7 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   harvestCandidates: null,
   ranchCandidates: null,
   herdCandidates: null,
+  buyshipCandidates: null,
 };
 
 /**
@@ -673,6 +684,11 @@ async function loadArgDomainContext(
     const herds = await world.getBaseLivestock(base.id);
     return { ...EMPTY_ARG_CONTEXT, herdCandidates: herds.map((h) => h.animalId) };
   }
+  if (verb === "buyship") {
+    // You can swap to any catalog ship except the one you already fly (no point
+    // re-buying it). Derived purely from the player row — no DB read needed.
+    return { ...EMPTY_ARG_CONTEXT, buyshipCandidates: SHIP_IDS.filter((id) => id !== player.shipId) };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -702,6 +718,8 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "ranch" && argIndex === 0) return ctx.ranchCandidates;
       // `feed`/`slaughter`'s domain: the animals you currently herd here.
       if ((verb === "feed" || verb === "slaughter") && argIndex === 0) return ctx.herdCandidates;
+      // `buyship`'s domain: every catalog ship except your current one.
+      if (verb === "buyship" && argIndex === 0) return ctx.buyshipCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants, the
       // blast-furnace smelting tier, the crop-farming crop farm, and the
@@ -902,6 +920,10 @@ async function dispatchResolved(
       return handleSell(player, args);
     case "buy":
       return handleBuy(player, args);
+    case "shipyard":
+      return handleShipyard(player, seed);
+    case "buyship":
+      return handleBuyship(player, args);
     case "standing":
       return handleStanding(player);
     case "contracts":
@@ -2814,6 +2836,7 @@ async function handleInventory(player: Player, seed: string): Promise<RenderFram
     })),
     cargoUsed,
     cargoCap: fresh.cargoCap,
+    shipName: getShip(fresh.shipId).name,
     credits: fresh.credits,
     fuel: fresh.fuel,
     warpFuel: fresh.warpFuel,
@@ -4687,6 +4710,108 @@ async function handleBuyPart(
       text(`${partId}`, "default"),
       text("` at a base to use it in production.", "muted"),
     ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// shipyard  |  buyship <id>   (Keystone 2a — the credit sink + cargo ladder)
+// ---------------------------------------------------------------------------
+
+/**
+ * `shipyard` — browse the ship catalog (INFORMATIONAL, usable anywhere). Shows
+ * the player's current ship, each other ship's net cost after trade-in, marks
+ * unbuyable ships RED (off-hub / unaffordable / a downgrade that wouldn't fit
+ * current cargo), and notes the must-be-at-a-hub rule when off a trade location.
+ */
+async function handleShipyard(player: Player, seed: string): Promise<RenderFrame> {
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const cargoUsed = await world.getCargoUsed(player.id);
+  const atHub = atTradeLocation(player, seed);
+  const tradeIn = shipTradeIn(fresh.shipId);
+
+  return renderShipyard({
+    currentShipId: fresh.shipId,
+    tradeIn,
+    cargoUsed,
+    credits: fresh.credits,
+    atTradeLocation: atHub,
+    ships: SHIPS.map((s) => {
+      const isCurrent = s.id === fresh.shipId;
+      const netCost = s.price - tradeIn;
+      const cargoOverflow = cargoUsed > s.cargoCap;
+      // Red when the purchase would be rejected by `handleBuyship`: off-hub, too
+      // expensive, or a downgrade your current cargo wouldn't fit. The current
+      // ship carries no buy action so its `disabled` is irrelevant.
+      const disabled = !isCurrent && (!atHub || fresh.credits < netCost || cargoOverflow);
+      return {
+        id: s.id,
+        name: s.name,
+        cargoCap: s.cargoCap,
+        price: s.price,
+        blurb: s.blurb,
+        isCurrent,
+        netCost,
+        cargoOverflow,
+        disabled,
+      };
+    }),
+  });
+}
+
+/**
+ * `buyship <id>` — purchase & swap to another ship (ECONOMY: at a settlement /
+ * outpost, out of combat — gated in `dispatchResolved`). Server-authoritative,
+ * validate-before-mutate: the id must be a real, DIFFERENT ship; the net cost
+ * (`price − trade-in of your current ship`) must be affordable; and your current
+ * cargo must fit the new hold (a downgrade that would overflow is refused —
+ * unload first). Then atomically charge the net cost and set BOTH `ship_id` and
+ * `cargo_cap` (= the new ship's cargoCap) in one write, so every cargo-space
+ * check keeps reading the right capacity. `id` is already abbrev-resolved.
+ */
+async function handleBuyship(player: Player, args: string[]): Promise<RenderFrame> {
+  const id = args[0]?.toLowerCase();
+  if (!id || !isShipId(id)) {
+    return errorFrame("Usage: buyship <id>  — see `shipyard` for available ships.");
+  }
+  if (id === player.shipId) {
+    return errorFrame(`You already fly the ${getShip(id).name}.`);
+  }
+  const target = getShip(id);
+
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const current = getShip(fresh.shipId);
+  const tradeIn = shipTradeIn(fresh.shipId);
+  const netCost = target.price - tradeIn;
+
+  // A downgrade that wouldn't fit your current load is refused (no silent cargo
+  // loss) — check BEFORE charging.
+  const cargoUsed = await world.getCargoUsed(player.id);
+  if (cargoUsed > target.cargoCap) {
+    return errorFrame(
+      `The ${target.name} holds only ${target.cargoCap} cargo, but you're carrying ${cargoUsed}. Unload (sell/`
+      + `deposit) first.`,
+    );
+  }
+
+  if (fresh.credits < netCost) {
+    return errorFrame(
+      `Not enough credits: the ${target.name} costs ${netCost} cr net of your ${current.name} trade-in `
+      + `(${tradeIn} cr) and you have ${fresh.credits}.`,
+    );
+  }
+
+  // Atomic: charge the net cost, then swap ship + cargo capacity together.
+  const newBalance = await world.addPlayerCredits(player.id, -netCost);
+  await world.setShip(player.id, target.id, target.cargoCap);
+
+  return frame([
+    line([
+      text(`Traded the ${current.name} for the ${target.name}. `, "success"),
+      text(`Net ${netCost} cr `, "accent"),
+      text(`(trade-in ${tradeIn} cr). `, "muted"),
+      text(`Balance ${newBalance} cr.`, "accent"),
+    ]),
+    line(text(`  Cargo capacity now ${target.cargoCap}.`, "muted")),
   ]);
 }
 

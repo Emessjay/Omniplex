@@ -55,6 +55,8 @@ export const VERBS: string[] = [
   "produce",
   "sell",
   "buy",
+  "shipyard",
+  "buyship",
   "standing",
   "contracts",
   "fulfill",
@@ -246,6 +248,14 @@ export const USAGE: Record<string, UsageDescriptor> = {
       { name: "item" },
       { name: "qty", optional: true, hint: "a number (default 1)" },
     ],
+  },
+  shipyard: {
+    desc: "browse the ship catalog: bigger cargo holds for steeper prices",
+    slots: [],
+  },
+  buyship: {
+    desc: "buy & swap to another ship at a settlement/outpost (net of your trade-in)",
+    slots: [{ name: "id" }],
   },
   standing: {
     desc: "show your reputation with each NPC faction",

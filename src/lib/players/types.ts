@@ -22,8 +22,16 @@ export interface Player {
   fuel: number;
   /** Warp fuel — burned on system-and-larger `warp` jumps (scales with distance). */
   warpFuel: number;
-  /** Cargo capacity. */
+  /** Cargo capacity. DERIVED from the current ship (`getShip(shipId).cargoCap`);
+   * buying a ship sets this from its catalog cargoCap, so this stays the single
+   * value every cargo-space check reads. */
   cargoCap: number;
+  /**
+   * The ship the player currently flies — a `ships.ts` catalog id (defaults to
+   * the starter `STARTER_SHIP_ID`). The SOURCE of `cargoCap`: a ship swap
+   * (`buyship`) sets both this and `cargoCap` together.
+   */
+  shipId: string;
   /**
    * Current location — the six-tier coordinate
    * (`galaxy → arm → cluster → system → planet → region`). `(0,0,0,0,0,0)` is
@@ -87,6 +95,7 @@ export interface PlayerRow {
   fuel: number;
   warp_fuel: number;
   cargo_cap: number;
+  ship_id: string;
   galaxy: number;
   arm: number;
   cluster: number;

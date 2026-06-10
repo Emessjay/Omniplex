@@ -953,6 +953,8 @@ export interface InventoryView {
   parts?: { partId: string; qty: number; name: string; value: number }[];
   cargoUsed: number;
   cargoCap: number;
+  /** The ship the player flies — its name is shown alongside the cargo line. */
+  shipName?: string;
   credits: number;
   fuel: number;
   /** Warp fuel (burned on `warp`); shown alongside regular fuel. */
@@ -971,6 +973,7 @@ export function renderInventory(view: InventoryView): RenderFrame {
     line([
       text("Cargo ", "heading"),
       text(`${cargoUsed}/${cargoCap}`, cargoUsed >= cargoCap ? "warning" : "default"),
+      view.shipName ? text(`  (${view.shipName})`, "muted") : text("", "muted"),
       text(`   credits ${credits}`, "accent"),
       text(`   fuel ${fuel}`, "default"),
       text(`   warp fuel ${warpFuel ?? 0}`, "default"),
@@ -1154,6 +1157,83 @@ export function renderUpgrades(view: UpgradesView): RenderFrame {
       );
     }
   }
+  return frame(lines);
+}
+
+export interface ShipyardView {
+  /** The player's current ship id. */
+  currentShipId: string;
+  /** Trade-in value of the current ship (credited toward a swap). */
+  tradeIn: number;
+  /** Cargo currently in use — informs the downgrade-overflow warning. */
+  cargoUsed: number;
+  /** The player's credits — to mark unaffordable buys red. */
+  credits: number;
+  /** At a settlement/outpost? When false, a hub note replaces buy actions. */
+  atTradeLocation: boolean;
+  /** Each catalog ship with its purchase economics (handler-computed). */
+  ships: {
+    id: string;
+    name: string;
+    cargoCap: number;
+    price: number;
+    blurb?: string;
+    /** This is the ship the player flies right now. */
+    isCurrent: boolean;
+    /** `price − tradeIn` (what a swap actually costs); ignored for the current ship. */
+    netCost: number;
+    /** Current cargo wouldn't fit this (smaller) ship — a blocked downgrade. */
+    cargoOverflow: boolean;
+    /** `buyship` would be rejected here (off-hub / unaffordable / overflow) → red. */
+    disabled: boolean;
+  }[];
+}
+
+/**
+ * The `shipyard` — the ship catalog with the player's current ship marked, each
+ * other ship's net cost (after trade-in), and a clickable `buyship <id>` that
+ * reads RED (P9b convention) when the purchase would be rejected here (off-hub,
+ * unaffordable, or a downgrade that wouldn't fit the current cargo). Off a trade
+ * hub, a note explains where you can actually buy.
+ */
+export function renderShipyard(view: ShipyardView): RenderFrame {
+  const lines: RenderLine[] = [line(text("Shipyard", "heading"))];
+  if (!view.atTradeLocation) {
+    lines.push(
+      line(text("Browsing only — dock at a settlement or orbital outpost to buy a ship.", "warning")),
+    );
+  }
+  for (const s of view.ships) {
+    const stats = `cargo ${s.cargoCap}  ·  ${s.price} cr`;
+    if (s.isCurrent) {
+      lines.push(
+        line([
+          text("  ✓ ", "success"),
+          text(`${s.name}  `, "default"),
+          text(`${stats}  `, "muted"),
+          text(`(your ship — trade-in ${view.tradeIn} cr)`, "accent"),
+        ]),
+      );
+    } else {
+      const title = !view.atTradeLocation
+        ? "dock at a settlement/outpost to buy"
+        : s.cargoOverflow
+          ? `your ${view.cargoUsed} cargo won't fit — unload first`
+          : view.credits < s.netCost
+            ? `not enough credits (net ${s.netCost} cr)`
+            : `buy the ${s.name}`;
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          action(s.name, `buyship ${s.id}`, { style: "link", title, disabled: s.disabled }),
+          text(`  ${stats}  `, "muted"),
+          text(`net ${s.netCost} cr`, view.credits < s.netCost ? "warning" : "accent"),
+        ]),
+      );
+    }
+    if (s.blurb) lines.push(line(text(`      ${s.blurb}`, "muted")));
+  }
+  lines.push(line(text(`Credits ${view.credits}. Trade-in credits toward any swap.`, "muted")));
   return frame(lines);
 }
 

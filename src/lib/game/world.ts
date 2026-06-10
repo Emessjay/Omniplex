@@ -859,6 +859,26 @@ export async function setFuel(playerId: string, fuel: number): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * Swap the player's ship (`buyship`): set `ship_id` AND `cargo_cap` in one
+ * update. The ship is the single SOURCE of cargo capacity, so the two MUST move
+ * together — `cargoCap` is the new ship's catalog `cargoCap`. The credit charge
+ * goes through the atomic `add_player_credits` RPC in the handler (validated
+ * before this is called).
+ */
+export async function setShip(
+  playerId: string,
+  shipId: string,
+  cargoCap: number,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ ship_id: shipId, cargo_cap: cargoCap })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
 /** Set absolute warp fuel (buy warpfuel). */
 export async function setWarpFuel(playerId: string, warpFuel: number): Promise<void> {
   const db = getServerClient();

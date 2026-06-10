@@ -67,6 +67,10 @@ const INFORMATIONAL = new Set([
   // combat (it advises `attack`/`flee` then), so it lives with the informational
   // commands rather than gating on embark/location.
   "guide",
+  // ships (Keystone 2a) — browse the ship catalog. Read-only, usable anywhere;
+  // it shows the off-hub note itself when you can't yet `buyship` here (the
+  // actual purchase is the economy-gated `buyship`).
+  "shipyard",
 ]);
 
 /** Combat actions — applicable ONLY while in an encounter. */
@@ -80,7 +84,7 @@ const COMBAT_ONLY = new Set(["attack", "flee"]);
  * warpfuel` are covered by `buy`.) `fulfill` (Keystone 1a — deliver goods to the
  * hub's faction for a contract) joins them: you fulfill at the hub.
  */
-const ECONOMY = new Set(["buy", "sell", "fulfill"]);
+const ECONOMY = new Set(["buy", "sell", "fulfill", "buyship"]);
 
 /**
  * In-system travel usable ABOARD in EITHER orbit/surface state (out of combat).
