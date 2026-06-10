@@ -1839,3 +1839,32 @@ gotchas) accrete here as workers surface things worth persisting. See
   shows each faction's rival + both sides; `contracts`/`buy`/`sell` surface the
   active discount. Seeded: `faction-politics.test.ts`. (Keystone 1 — factions —
   is now complete: 1a contracts/rep, 1b ranks, 1c politics.)
+
+### Load-bearing decisions from `ships` (Keystone 2a)
+
+- **Buyable ships: the credit SINK + cargo/hauling ladder.** Wealth finally
+  buys something aspirational; bigger cargo unlocks real hauling/arbitrage/
+  bigger contract deliveries. (Ship fuel/speed/modules + production-built ships/
+  stations are 2b+.)
+- **`SHIPS` catalog** (`src/lib/game/ships.ts`, pure): `Ship = {id, name,
+  cargoCap, price, blurb?}`; 4 ships STRICTLY ascending in both cargo & price —
+  `shuttle`(50, free, the STARTER) → `courier`(150, 6k) → `freighter`(500, 50k)
+  → `hauler`(1500, ~250k). Helpers `SHIPS`/`SHIP_IDS`/`STARTER_SHIP_ID`/
+  `isShipId`/`getShip`/`shipCargoCap`/`shipTradeIn`. `shipTradeIn = floor(price ×
+  TRADE_IN_FRACTION[=0.7])` (< price — reselling toward an upgrade is always a
+  net loss, a sink).
+- **The ship is the SINGLE source of cargo capacity.** `players.ship_id text
+  default 'shuttle'` (migration `20260610000000_ships.sql`, forward-only/
+  idempotent; the shuttle's cargoCap 50 matches the pre-existing `cargo_cap`
+  default, so existing players need no cargo migration), carried on `Player`/
+  `PlayerRow`/`rowToPlayer`. `world.setShip` writes `ship_id` + `cargo_cap` (=
+  the ship's cargoCap) in ONE update, so all existing `player.cargoCap` cargo
+  checks keep working unchanged.
+- **Commands**: `shipyard` (INFORMATIONAL, anywhere — lists catalog, marks
+  current/affordable/trade-in, P9b red off-hub/unaffordable/overflow-downgrade)
+  + `buyship <id>` (ECONOMY — `atTradeLocation && !inCombat`): net cost =
+  `price − shipTradeIn(currentShip)`; validate affordable + not-current + your
+  current cargo fits the new ship (reject overflow downgrade) BEFORE charging;
+  atomic `addPlayerCredits(-net)` + `setShip`. `inventory` shows the ship.
+  Seeded: `ships.test.ts`. **Keystone 2b** (constructions: production-built
+  ships/stations/base tiers) builds on this.
