@@ -1376,6 +1376,14 @@ export interface StorageView {
    */
   smeltable?: { id: string; name: string; recipe: string; disabled?: boolean }[];
   /**
+   * Ships a production line here can BUILD (Keystone 2b), each with a recipe
+   * summary. Empty/absent when there's no production line — only surfaced once
+   * one exists. `disabled` marks a ship that can't be built right now (recipe not
+   * fully siloed, base underpowered, already your ship, or current cargo wouldn't
+   * fit the new hold).
+   */
+  buildableShips?: { id: string; name: string; recipe: string; disabled?: boolean }[];
+  /**
    * Affordability of each `build <structure>` hint (credits + cargo minerals).
    * A structure the player can't currently afford renders its hint red. Absent
    * = treat as affordable (back-compatible).
@@ -1489,6 +1497,26 @@ export function renderStorage(view: StorageView): RenderFrame {
           action(`produce ${s.id}`, `produce ${s.id}`, {
             style: "link",
             title: s.disabled ? "missing siloed metal or power" : `smelt ${s.name}`,
+            disabled: s.disabled,
+          }),
+          text(`  (${s.recipe})`, "muted"),
+        ]),
+      );
+    }
+  }
+
+  // Buildable ships (Keystone 2b) — only once a production line exists, each
+  // clickable. A ship that can't be built now (recipe not siloed, underpowered,
+  // already yours, or a downgrade your cargo wouldn't fit) is shown red (P9b).
+  if (view.buildableShips && view.buildableShips.length > 0) {
+    lines.push(line(text("Buildable ships:", "heading")));
+    for (const s of view.buildableShips) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          action(`produce ${s.id}`, `produce ${s.id}`, {
+            style: "link",
+            title: s.disabled ? "can't build this ship now" : `build the ${s.name}`,
             disabled: s.disabled,
           }),
           text(`  (${s.recipe})`, "muted"),

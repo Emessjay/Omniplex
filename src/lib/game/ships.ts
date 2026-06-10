@@ -26,6 +26,9 @@
  * from its `cargoCap`, so every existing `player.cargoCap` check keeps working.
  */
 
+import { partValue } from "./parts";
+import { isIngotId, ingotValue } from "./ingots";
+
 export interface Ship {
   /** Stable id (the `players.ship_id` value + the `buyship <id>` argument). */
   id: string;
@@ -37,6 +40,14 @@ export interface Ship {
   price: number;
   /** Optional flavor text. */
   blurb?: string;
+  /**
+   * Production recipe (Keystone 2b) — `(partId | ingotId) -> qty` consumed from a
+   * base's silo to BUILD this ship via `produce <ship>`, the materials-not-cash
+   * alternative to `buyship`. Absent on the starter `shuttle` (not buildable).
+   * Its summed input value is always strictly below `price` (see
+   * `shipRecipeValue`), so building is the cheaper-but-laborious path.
+   */
+  recipe?: Record<string, number>;
 }
 
 /**
@@ -65,6 +76,8 @@ export const SHIPS: readonly Ship[] = [
     cargoCap: 150,
     price: 6_000,
     blurb: "A nimble light hauler — triple the hold for your first real trade runs.",
+    // ≈ 3,580 cr of parts (< 6,000 buy price).
+    recipe: { hull_plating: 8, circuit_board: 6, alloy_beam: 2 },
   },
   {
     id: "freighter",
@@ -72,6 +85,14 @@ export const SHIPS: readonly Ship[] = [
     cargoCap: 500,
     price: 50_000,
     blurb: "A proper cargo vessel. Bulk minerals, big contract deliveries.",
+    // ≈ 26,450 cr of parts + ingots (< 50,000 buy price).
+    recipe: {
+      hull_plating: 40,
+      circuit_board: 30,
+      alloy_beam: 20,
+      sensor_array: 10,
+      titanium_ingot: 20,
+    },
   },
   {
     id: "hauler",
@@ -79,6 +100,15 @@ export const SHIPS: readonly Ship[] = [
     cargoCap: 1_500,
     price: 250_000,
     blurb: "An industrial leviathan. The endgame hold — and the endgame price.",
+    // ≈ 121,920 cr of parts + ingots (< 250,000 buy price).
+    recipe: {
+      hull_plating: 150,
+      circuit_board: 100,
+      alloy_beam: 80,
+      sensor_array: 60,
+      titanium_ingot: 100,
+      iridium_ingot: 40,
+    },
   },
 ] as const;
 
@@ -117,4 +147,40 @@ export function shipCargoCap(id: string): number {
  */
 export function shipTradeIn(id: string): number {
   return Math.floor(getShip(id).price * TRADE_IN_FRACTION);
+}
+
+/**
+ * The production recipe (`(partId | ingotId) -> qty`) used to BUILD this ship via
+ * `produce <ship>` (Keystone 2b), or `null` for the starter `shuttle` (which has
+ * no recipe and can't be built). Throws on unknown ship ids (via `getShip`).
+ */
+export function shipRecipeOf(id: string): Record<string, number> | null {
+  return getShip(id).recipe ?? null;
+}
+
+/**
+ * Whether `id` is a real ship that can be BUILT at a base (has a recipe) — i.e.
+ * any ship except the starter. The starter `shuttle` is excluded.
+ */
+export function isBuildableShip(id: string): boolean {
+  return isShipId(id) && shipRecipeOf(id) !== null;
+}
+
+/**
+ * Summed input value of a ship's build recipe: Σ qty × per-item value, where a
+ * part input is valued at `partValue` and an ingot input at `ingotValue`. The
+ * materials cost of building the ship, by construction strictly below its cash
+ * `price` (the producer's payoff — building is cheaper than buying). Returns 0
+ * for a non-buildable ship (the starter, which has no recipe). Throws on unknown
+ * ship ids (via `getShip`).
+ */
+export function shipRecipeValue(id: string): number {
+  const recipe = shipRecipeOf(id);
+  if (recipe === null) return 0;
+  let total = 0;
+  for (const [itemId, qty] of Object.entries(recipe)) {
+    const unit = isIngotId(itemId) ? ingotValue(itemId) : partValue(itemId);
+    total += unit * qty;
+  }
+  return total;
 }
