@@ -1727,3 +1727,42 @@ gotchas) accrete here as workers surface things worth persisting. See
   impure boundary, only on the INSERT path (existing players keep their
   location). `startingWorld(seed)` is UNCHANGED — the reset migration's
   deterministic relocation still uses it. Seeded: `random-spawn.test.ts`.
+
+### Load-bearing decisions from `orbit-land`
+
+- **Travel is now a 3-state machine per planet, separating ORBITING from
+  LANDED with two fuel models** (fixes gas giants being unreachable, and makes
+  distance-vs-atmosphere fuel honest):
+  - **Orbiting** (`embarked && !landed`) — aboard, above the planet.
+  - **Landed** (`embarked && landed`) — aboard on the surface (ROCKY only).
+  - **On foot** (`!embarked`, always landed) — disembarked on the surface.
+  - **INVARIANT `!embarked ⇒ landed`** (no on-foot-in-orbit). New `players.landed
+    boolean default false` (migration `20260609040000_orbit-land.sql`,
+    forward-only/idempotent; sets `landed=true` where `embarked=false` to keep
+    existing players valid) carried on `Player`/`PlayerRow`/`rowToPlayer`.
+- **Fuel split** (`rules.ts`, pure): `orbitFuelCost(from, to, timeMs)` =
+  DISTANCE only (`INTERPLANETARY_FUEL_PER_DISTANCE × interplanetaryDistance`,
+  0-to-self, time-varying); `launchFuelCost(atmosphere, gravity)` = ATMOSPHERE
+  only (`takeoffCost`); **descent (`land`) is FREE — the atmosphere cost is
+  billed on LAUNCH** (the climb out). The old combined `regularFuelCost` is no
+  longer charged as one piece.
+- **Verbs**: `orbit <planet>` (fly to ANY planet incl. gas giants — distance
+  fuel), `land` (descend current, ROCKY only, free, landing-gate applies),
+  `launch` (surface→orbit, atmosphere fuel), `land <planet>` combo (go + land).
+  **`orbit`/`land` CHAIN an implicit `launch` when issued from a surface**
+  (charge `launchFuelCost(currentPlanet) + orbitFuelCost`, validate combined
+  fuel before mutating); the long jumps `warp`/`hyperwarp` NEVER chain — they're
+  Orbiting-only (force an explicit `launch`). `disembark` now requires Landed;
+  bare `land` while Landed is a no-op error.
+- **Applicability** (`applicability.ts`, the single source — `PlayerStateView`
+  gained `landed`): `ABOARD_TRAVEL {orbit, land}` applicable in EITHER aboard
+  state (they chain launch); `ORBITING_ONLY {warp, hyperwarp}`; `SURFACE_ABOARD
+  {launch, disembark}`; on-foot/economy/combat/informational unchanged.
+  `inapplicableReason` updated ("`launch` to orbit first" / "`land` first").
+- **Scan reworked into orbital-vs-surface frames** (`render.ts`/`commands.ts`):
+  Orbiting (or any gas giant) → an ORBITAL frame (planet info + in-system
+  siblings as `orbit <n>` with `orbitFuelCost` + P9b red + a `land` action when
+  rocky / "no surface" when gas); Landed/On-foot → the surface `regionScanFrame`
+  (+ a `launch` hint). **This SUPERSEDES `gasGiantScanFrame` and the
+  `gas-scan-siblings` land-list** (siblings are `orbit <n>` now). The outpost
+  scan also gained `orbit <n>` sibling nav. Seeded: `orbit-land.test.ts`.
