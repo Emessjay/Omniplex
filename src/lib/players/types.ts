@@ -43,10 +43,20 @@ export interface Player {
    */
   health: number;
   /**
-   * Survival state: `true` = aboard ship (trading & ship travel enabled),
-   * `false` = on foot in the current region (mining enabled, hazard can wound).
+   * Survival state: `true` = aboard ship, `false` = on foot in the current
+   * region. Combines with `landed` into the three-state per-planet machine:
+   * Orbiting (`embarked && !landed`), Landed (`embarked && landed`), On-foot
+   * (`!embarked`, which always implies `landed`). See `applicability.ts`.
    */
   embarked: boolean;
+  /**
+   * Surface state (orbit-land): `true` = on the planet's surface (landed aboard,
+   * or disembarked on foot), `false` = up in orbit. Orbiting burns DISTANCE fuel
+   * (`orbit`); descent (`land`) is free; the atmosphere climb is billed on
+   * `launch`. INVARIANT: `!embarked ⇒ landed` (you can't be on foot in orbit).
+   * New players spawn Orbiting (landed=false); warp/hyperwarp arrive Orbiting.
+   */
+  landed: boolean;
   /**
    * Active-combat state: `null` when not fighting, otherwise the creature you're
    * facing (`faunaId` indexes the `wildlife.ts` catalog) and its remaining HP.
@@ -85,6 +95,7 @@ export interface PlayerRow {
   region: number;
   health: number;
   embarked: boolean;
+  landed: boolean;
   encounter: PlayerEncounter | null;
   created_at: string;
 }

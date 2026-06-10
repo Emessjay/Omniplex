@@ -21,6 +21,14 @@ import { VERBS } from "./usage";
 export interface PlayerStateView {
   /** Aboard the ship (true) or on foot on the surface (false). */
   embarked: boolean;
+  /**
+   * On the planet's surface (true) or up in orbit (false) — the orbit-land
+   * dimension. With `embarked` it forms the three-state machine: Orbiting
+   * (`embarked && !landed`), Landed (`embarked && landed`), On-foot (`!embarked`,
+   * which always implies `landed`). Orbiting unlocks travel (`orbit`/`land`/
+   * `warp`/`hyperwarp`); Landed unlocks `launch`/`disembark`.
+   */
+  landed: boolean;
   /** In an active combat encounter (`player.encounter != null`). */
   inCombat: boolean;
   /**
@@ -71,13 +79,28 @@ const COMBAT_ONLY = new Set(["attack", "flee"]);
 const ECONOMY = new Set(["buy", "sell", "fulfill"]);
 
 /**
- * Ship travel — requires being ABOARD the ship (and out of combat). `disembark`
- * lives here: you can only step off the ship while you're on it.
+ * Orbiting actions — usable while ABOARD and UP IN ORBIT (`embarked && !landed`,
+ * out of combat). Selecting/flying to another planet (`orbit`), descending to a
+ * surface (`land`), and the long jumps (`warp`/`hyperwarp`) all happen from
+ * orbit. `land` with no arg descends the planet you're orbiting; `land <planet>`
+ * is the orbit-then-descend combo. You must `launch` back to orbit before any of
+ * these once you're on the surface.
  */
-const EMBARKED_ACTIONS = new Set([
-  "warp",
+const ORBITING_ACTIONS = new Set([
+  "orbit",
   "land",
+  "warp",
   "hyperwarp",
+]);
+
+/**
+ * Surface-aboard actions — usable while ABOARD but ON THE SURFACE
+ * (`embarked && landed`, out of combat). `launch` lifts back to orbit (billing
+ * the atmosphere climb); `disembark` steps off the ship onto the surface (you
+ * can only do that once landed).
+ */
+const SURFACE_ABOARD_ACTIONS = new Set([
+  "launch",
   "disembark",
 ]);
 
@@ -128,9 +151,11 @@ const ALWAYS = new Set<string>(["eat", ...INFORMATIONAL]);
  * Combat overrides everything: while `inCombat`, only the combat actions
  * (`attack`/`flee`) plus the always-applicable set (informational + `eat`) are
  * applicable. Out of combat, the combat actions are hidden ("nothing to fight"),
- * fabrication/navigation work in either embark state, the economy commands work
- * iff at a trade location (settlement/outpost), and the remaining actions split
- * by embark state (travel aboard, surface/base on foot).
+ * fabrication/navigation work in any embark/surface state, the economy commands
+ * work iff at a trade location (settlement/outpost), and the remaining actions
+ * split by the three-state machine: Orbiting (aboard + in orbit) unlocks travel,
+ * Landed (aboard + on surface) unlocks launch/disembark, On-foot unlocks the
+ * surface/base work.
  */
 export function isApplicable(verb: string, state: PlayerStateView): boolean {
   if (ALWAYS.has(verb)) return true;
@@ -143,7 +168,9 @@ export function isApplicable(verb: string, state: PlayerStateView): boolean {
   if (ANYTIME_OUT_OF_COMBAT.has(verb)) return true;
   // Economy is gated by LOCATION (a settlement/outpost), not embark state.
   if (ECONOMY.has(verb)) return state.atTradeLocation;
-  return state.embarked ? EMBARKED_ACTIONS.has(verb) : DISEMBARKED_ACTIONS.has(verb);
+  if (!state.embarked) return DISEMBARKED_ACTIONS.has(verb); // on foot ⇒ landed
+  // Aboard: orbit-vs-surface split.
+  return state.landed ? SURFACE_ABOARD_ACTIONS.has(verb) : ORBITING_ACTIONS.has(verb);
 }
 
 /** Whether `verb` is an economy command (gated by being at a trade location). */

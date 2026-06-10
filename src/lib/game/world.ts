@@ -726,8 +726,9 @@ export async function addPlayerCredits(
 
 /**
  * Set WARP fuel and full location in one update (warp). Region is always reset
- * to 0 — you touch down in region 0 of the arrival planet. Warp burns warp fuel;
- * regular `fuel` is untouched here (P2).
+ * to 0 and `landed` to false — you ARRIVE IN ORBIT of region 0's planet
+ * (orbit-land); you must `land` to descend. Warp burns warp fuel; regular `fuel`
+ * is untouched here (P2).
  */
 export async function setWarpFuelAndLocation(
   playerId: string,
@@ -751,6 +752,7 @@ export async function setWarpFuelAndLocation(
       system: loc.system,
       planet: loc.planet,
       region: 0,
+      landed: false,
     })
     .eq("id", playerId);
   if (error) throw error;
@@ -783,26 +785,59 @@ export async function setGalaxyLocation(
       system: loc.system,
       planet: loc.planet,
       region: 0,
+      landed: false,
     })
     .eq("id", playerId);
   if (error) throw error;
 }
 
 /**
- * Move within the current system to a new planet index AND set regular fuel in
- * one update (land). Region resets to 0 — landing always puts you down in region
- * 0, even when re-landing the planet you're already on. `land` burns regular
- * fuel (takeoff + interplanetary); warp fuel is untouched here.
+ * Move within the current system to another planet index AND set regular fuel in
+ * one update, setting the surface state explicitly (orbit-land). Region resets to
+ * 0. Used by `orbit <planet>` (landed=false — you fly to ORBIT it, burning the
+ * distance fuel) and by the `land <planet>` combo (landed=true — orbit there then
+ * descend; descent itself is free, so the fuel charged is the orbit hop only).
+ * Warp fuel is untouched here.
  */
-export async function setFuelAndPlanet(
+export async function setFuelPlanetLanded(
   playerId: string,
   fuel: number,
   planet: number,
+  landed: boolean,
 ): Promise<void> {
   const db = getServerClient();
   const { error } = await db
     .from("players")
-    .update({ fuel, planet, region: 0 })
+    .update({ fuel, planet, region: 0, landed })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
+ * Descend to the surface of the planet you're already orbiting (`land`, no arg).
+ * Descent is FREE — no fuel change; just sets `landed=true` and resets region to
+ * 0 (you touch down in region 0). The landing gate / rocky check is enforced in
+ * the handler before this is called.
+ */
+export async function setLandedDescent(playerId: string): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ landed: true, region: 0 })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
+ * Lift off the surface back into orbit (`launch`): sets regular `fuel` (the
+ * atmosphere climb is billed here) and `landed=false`, resetting region to 0
+ * (region is nominal in orbit). Same planet — only the surface state changes.
+ */
+export async function setLaunch(playerId: string, fuel: number): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ fuel, landed: false, region: 0 })
     .eq("id", playerId);
   if (error) throw error;
 }

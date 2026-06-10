@@ -2,14 +2,16 @@ import { describe, it, expect } from "vitest";
 import { applicableVerbs, isApplicable } from "@/lib/game/applicability"; // wherever it lives
 
 // P12a: economy (buy/sell) is gated by being at a TRADE LOCATION (a settlement
-// region or the orbital outpost), not by embark state. Travel still requires
-// being embarked; surface/base actions still require being on foot. So the state
-// slice now carries `atTradeLocation` alongside `embarked` / `inCombat`.
-const EMBARKED_TRADE = { embarked: true, inCombat: false, atTradeLocation: true };
-const EMBARKED_DEEP = { embarked: true, inCombat: false, atTradeLocation: false };
-const DISEMBARKED_TRADE = { embarked: false, inCombat: false, atTradeLocation: true };
-const DISEMBARKED_DEEP = { embarked: false, inCombat: false, atTradeLocation: false };
-const COMBAT = { embarked: false, inCombat: true, atTradeLocation: true };
+// region or the orbital outpost), not by embark state. orbit-land: the state
+// slice gained `landed` — aboard splits into ORBITING (embarked && !landed:
+// travel/orbit) and LANDED (embarked && landed: launch/disembark); on foot is
+// always landed. "Embarked" states below are ORBITING (the travel state) unless
+// noted. Travel needs orbit; surface/base needs being on foot.
+const EMBARKED_TRADE = { embarked: true, landed: false, inCombat: false, atTradeLocation: true };
+const EMBARKED_DEEP = { embarked: true, landed: false, inCombat: false, atTradeLocation: false };
+const DISEMBARKED_TRADE = { embarked: false, landed: true, inCombat: false, atTradeLocation: true };
+const DISEMBARKED_DEEP = { embarked: false, landed: true, inCombat: false, atTradeLocation: false };
+const COMBAT = { embarked: false, landed: true, inCombat: true, atTradeLocation: true };
 
 const ALL_STATES = [
   EMBARKED_TRADE,
@@ -65,10 +67,10 @@ describe("economy (buy/sell) is gated by LOCATION, not embark (P12a)", () => {
   });
 
   it("being at a trade location does NOT enable travel or surface work", () => {
-    // Trade location only unlocks the economy; travel still needs embark, and
+    // Trade location only unlocks the economy; travel still needs orbit, and
     // surface work still needs being on foot.
-    for (const v of ["warp", "land", "hyperwarp"]) {
-      expect(isApplicable(v, DISEMBARKED_TRADE)).toBe(false); // travel needs embark
+    for (const v of ["warp", "land", "hyperwarp", "orbit"]) {
+      expect(isApplicable(v, DISEMBARKED_TRADE)).toBe(false); // travel needs orbit
     }
     for (const v of ["mine", "explore", "build"]) {
       expect(isApplicable(v, EMBARKED_TRADE)).toBe(false); // surface needs on-foot
@@ -76,21 +78,31 @@ describe("economy (buy/sell) is gated by LOCATION, not embark (P12a)", () => {
   });
 });
 
-describe("travel + surface split by embark (out of combat)", () => {
-  it("embarked: travel yes, surface no", () => {
-    for (const v of ["warp", "land", "hyperwarp", "disembark"]) {
+describe("travel + surface split by orbit/landed/on-foot (out of combat)", () => {
+  it("orbiting (embarked && !landed): travel/orbit yes, launch/disembark/surface no", () => {
+    for (const v of ["warp", "land", "hyperwarp", "orbit"]) {
       expect(isApplicable(v, EMBARKED_TRADE)).toBe(true);
     }
-    for (const v of ["mine", "explore", "harvest", "build", "produce", "embark"]) {
+    for (const v of ["launch", "disembark", "mine", "explore", "harvest", "build", "produce", "embark"]) {
       expect(isApplicable(v, EMBARKED_TRADE)).toBe(false);
     }
   });
 
-  it("disembarked: surface/base yes, travel no", () => {
+  it("landed aboard (embarked && landed): launch/disembark yes, travel/surface no", () => {
+    const LANDED = { embarked: true, landed: true, inCombat: false, atTradeLocation: true };
+    for (const v of ["launch", "disembark"]) {
+      expect(isApplicable(v, LANDED)).toBe(true);
+    }
+    for (const v of ["warp", "land", "hyperwarp", "orbit", "mine", "build", "embark"]) {
+      expect(isApplicable(v, LANDED)).toBe(false);
+    }
+  });
+
+  it("on foot (!embarked): surface/base yes, travel/launch/disembark no", () => {
     for (const v of ["mine", "explore", "harvest", "build", "produce", "embark"]) {
       expect(isApplicable(v, DISEMBARKED_TRADE)).toBe(true);
     }
-    for (const v of ["warp", "land", "hyperwarp", "disembark"]) {
+    for (const v of ["warp", "land", "hyperwarp", "orbit", "launch", "disembark"]) {
       expect(isApplicable(v, DISEMBARKED_TRADE)).toBe(false);
     }
   });

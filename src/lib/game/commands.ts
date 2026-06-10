@@ -41,7 +41,7 @@ import {
   type Planet,
   type Biome,
 } from "@/lib/universe";
-import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
+import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
@@ -51,7 +51,8 @@ import { getWorldSeed } from "./seed";
 import {
   effectiveAbundance,
   warpFuelCost,
-  regularFuelCost,
+  orbitFuelCost,
+  launchFuelCost,
   miningYield,
   priceAfterSale,
   priceAfterPurchase,
@@ -237,13 +238,30 @@ function gasGiantError(planet: Planet): RenderFrame {
 }
 
 /**
- * Scan frame for a GAS GIANT you're orbiting (region is nominal; there is no
- * surface region). Describes the world — size class, radius, temperature,
- * atmosphere — and notes it has no surface, offering `map`/`warp` and (when it
- * exists) docking at its orbital outpost.
+ * The ORBITAL scan frame (orbit-land): what you see while ABOARD and UP IN ORBIT
+ * of a planet (any planet — rocky or gas giant). Describes the world (size,
+ * radius, atmosphere, temp), your "in orbit" status, the in-system sibling
+ * planets as clickable `orbit <n>` actions (with the distance-based
+ * `orbitFuelCost` + P9b red when you can't afford the hop), and — on a ROCKY
+ * world — a `land` action to descend (red, with the gear it needs, when the
+ * freezing/boiling landing gate blocks you; a gas giant simply has no `land`).
+ * Plus `jump O` (when an outpost exists) and a `map` hint. This SUPERSEDES the
+ * old `gasGiantScanFrame` and the `land`-sibling list the surface scan used to
+ * carry: siblings are reached by `orbit` now; only the planet you're orbiting
+ * offers `land`.
  */
-function gasGiantScanFrame(player: Player, seed: string, planet: Planet): RenderFrame {
+async function orbitalScanFrame(
+  player: Player,
+  seed: string,
+  planet: Planet,
+): Promise<RenderFrame> {
   const system = systemAt(seed, locOf(player));
+  const now = Date.now();
+  const requiredUpgrade = planet.isGas ? null : landingRequirement(planet.temperature);
+  const owned = requiredUpgrade ? await world.getOwnedUpgradeIds(player.id) : new Set<string>();
+  const canDescend = !planet.isGas && (requiredUpgrade === null || owned.has(requiredUpgrade));
+  const lowHealth = player.health <= MAX_HEALTH * 0.3;
+
   const lines: RenderLine[] = [
     line([
       text(planet.name, "heading"),
@@ -255,7 +273,7 @@ function gasGiantScanFrame(player: Player, seed: string, planet: Planet): Render
     ]),
     line([
       text("HP ", "muted"),
-      text(`${player.health}/${MAX_HEALTH}`, player.health <= MAX_HEALTH * 0.3 ? "danger" : "default"),
+      text(`${player.health}/${MAX_HEALTH}`, lowHealth ? "danger" : "default"),
       text("   ", "muted"),
       text("in orbit", "accent"),
     ]),
@@ -267,7 +285,7 @@ function gasGiantScanFrame(player: Player, seed: string, planet: Planet): Render
     ]),
     line([
       text("size ", "muted"),
-      text(`${SIZE_CLASS_LABELS[planet.sizeClass]} (gas giant)`, "accent"),
+      text(`${SIZE_CLASS_LABELS[planet.sizeClass]}${planet.isGas ? " (gas giant)" : ""}`, "accent"),
       text("   radius ", "muted"),
       text(`${planet.radius} R⊕`, "default"),
     ]),
@@ -276,50 +294,53 @@ function gasGiantScanFrame(player: Player, seed: string, planet: Planet): Render
       text(planet.atmosphere, "accent"),
       text("   temp ", "muted"),
       text(`${planet.temperature}°C`, "default"),
+      text("   gravity ", "muted"),
+      text(`${planet.gravity}g`, "default"),
     ]),
-    line(text("A gas giant — no surface to land on, no deposits to mine.", "muted")),
   ];
-  // Sibling planets — mirror regionScanFrame's siblingLand list so the player
-  // can see and click `land <n>` options from gas-giant orbit.
+
+  // Descend to the surface — rocky worlds only; the freezing/boiling landing
+  // gate may block it (red, naming the gear). A gas giant has no surface.
+  if (planet.isGas) {
+    lines.push(line(text("A gas giant — no surface to land on. `orbit` a sibling or `warp` away.", "muted")));
+  } else if (canDescend) {
+    lines.push(
+      line([
+        action("land", "land", { style: "link", title: `descend to the surface of ${planet.name} (free)` }),
+        text(" to descend to the surface (free).", "muted"),
+      ]),
+    );
+  } else {
+    const up = getUpgrade(requiredUpgrade!);
+    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    lines.push(
+      line([
+        action("land", "land", { style: "link", title: `needs ${up.name} to land here`, disabled: true }),
+        text(` — ${why} surface (${planet.temperature}°C), requires ${up.name}.`, "danger"),
+      ]),
+    );
+  }
+
+  // Sibling planets, reached by `orbit <n>` (distance fuel). Red when you can't
+  // afford the (time-varying) orbit hop. Gas-giant siblings are reachable too.
   const siblings = system.planets.filter((sib) => sib.coord.planet !== planet.coord.planet);
   if (siblings.length > 0) {
-    lines.push(line(text("Other planets in this system:", "muted")));
-    const now = Date.now();
+    lines.push(line(text("Other planets in this system (`orbit <n>`):", "heading")));
     for (const sib of siblings) {
-      const cost = regularFuelCost(
-        { atmosphere: planet.atmosphere, gravity: planet.gravity, orbit: planet },
-        { orbit: sib },
-        now,
-      );
+      const cost = orbitFuelCost(planet, sib, now);
       const affordable = player.fuel >= cost;
-      if (sib.isGas) {
-        lines.push(
-          line([
-            text(`  ${sib.coord.planet}: `, "muted"),
-            action(`${sib.name} (gas giant)`, `land ${sib.coord.planet}`, {
-              style: "link",
-              title: "gas giant — no surface to land on",
-              disabled: true,
-            }),
-          ]),
-        );
-      } else {
-        const title = affordable
-          ? `land on ${sib.name}`
-          : `not enough fuel (need ${cost})`;
-        const row: RenderSpan[] = [
+      const label = `${sib.name} (${SIZE_CLASS_LABELS[sib.sizeClass]}${sib.isGas ? " gas giant" : ""})`;
+      const title = affordable ? `orbit ${sib.name}` : `not enough fuel (need ${cost})`;
+      lines.push(
+        line([
           text(`  ${sib.coord.planet}: `, "muted"),
-          action(
-            `${sib.name} (${SIZE_CLASS_LABELS[sib.sizeClass]})`,
-            `land ${sib.coord.planet}`,
-            { style: "link", title, disabled: !affordable },
-          ),
+          action(label, `orbit ${sib.coord.planet}`, { style: "link", title, disabled: !affordable }),
           text(`  fuel ${cost}`, affordable ? "muted" : "danger"),
-        ];
-        lines.push(line(row));
-      }
+        ]),
+      );
     }
   }
+
   if (hasOutpost(seed, locOf(player))) {
     lines.push(
       line([
@@ -332,27 +353,10 @@ function gasGiantScanFrame(player: Player, seed: string, planet: Planet): Render
   lines.push(
     line([
       action("map", "map", { style: "link", title: "show nearby systems" }),
-      text(" to find somewhere to go.", "muted"),
+      text(" to find another system.", "muted"),
     ]),
   );
   return frame(lines);
-}
-
-/**
- * The gas-aware arrival/scan dispatcher for the player's CURRENT planet+region.
- * A gas giant has no surface region, so it gets `gasGiantScanFrame`; a rocky
- * world goes through the normal `regionScanFrame`. Used by `scan` and by warp /
- * hyperwarp arrival (which always touch down at region 0).
- */
-async function planetScanFrame(
-  player: Player,
-  seed: string,
-  coord: PlanetCoord,
-  regionIndex: number,
-): Promise<RenderFrame> {
-  const planet = planetAt(seed, coord);
-  if (planet.isGas) return gasGiantScanFrame(player, seed, planet);
-  return regionScanFrame(player, seed, coord, regionIndex);
 }
 
 function locOf(player: Player): PlanetCoord {
@@ -441,24 +445,10 @@ async function regionScanFrame(
     }
   }
   const requiredUpgrade = landingRequirement(planet.temperature);
-  // Regular-fuel cost to `land` on each sibling planet, takeoff from the planet
-  // being scanned. Time-varying (planets orbit) — recomputed each scan with
-  // `Date.now()`. Marked unaffordable (red) when on foot or short on regular fuel.
-  const now = Date.now();
-  const siblingLand = system.planets
-    .filter((sib) => sib.coord.planet !== planet.coord.planet)
-    .map((sib) => {
-      const cost = regularFuelCost(
-        { atmosphere: planet.atmosphere, gravity: planet.gravity, orbit: planet },
-        { orbit: sib },
-        now,
-      );
-      return {
-        index: sib.coord.planet,
-        fuelCost: cost,
-        affordable: player.embarked && player.fuel >= cost,
-      };
-    });
+  // Orbit-land: the surface scan no longer lists sibling planets as `land <n>`
+  // (you must `launch` to orbit before flying anywhere — siblings live in the
+  // ORBITAL frame as `orbit <n>` now). It carries `landed` so the renderer can
+  // offer `launch`/`disembark` appropriately.
   return renderScan({
     planet,
     system,
@@ -472,9 +462,9 @@ async function regionScanFrame(
     health: player.health,
     maxHealth: MAX_HEALTH,
     embarked: player.embarked,
+    landed: player.landed,
     fuel: player.fuel,
     warpFuel: player.warpFuel,
-    siblingLand,
     encounter: encounterView(player),
     // Shared-world presence: bases here, yours marked, others shown by handle.
     bases: regionBases.map((b): ScanBase => ({
@@ -762,6 +752,7 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
 function playerState(player: Player, seed: string): PlayerStateView {
   return {
     embarked: player.embarked,
+    landed: player.landed,
     inCombat: player.encounter != null,
     atTradeLocation: atTradeLocation(player, seed),
   };
@@ -784,9 +775,29 @@ function inapplicableReason(verb: string, state: PlayerStateView): string {
   if (isEconomyVerb(verb)) {
     return "You can only trade at a settlement or orbital outpost — find one and `jump O` to dock, or `jump`/`land` to a settlement region.";
   }
+  // Embark/surface toggles (orbit-land three-state machine).
   if (verb === "embark") return "You're already aboard your ship.";
-  if (verb === "disembark") return "You're already on the surface.";
-  if (!state.embarked) return "You must `embark` your ship first.";
+  if (verb === "disembark") {
+    return state.embarked
+      ? "You're in orbit — `land` on the surface first, then `disembark`."
+      : "You're already on the surface.";
+  }
+  if (verb === "launch") {
+    return state.embarked
+      ? "You're already in orbit — nothing to launch from."
+      : "You must `embark` your ship first.";
+  }
+  // Orbiting-only travel/selection: orbit / land / warp / hyperwarp.
+  if (verb === "orbit" || verb === "land" || verb === "warp" || verb === "hyperwarp") {
+    if (!state.embarked) return "You must `embark` and `launch` to orbit first.";
+    return "You must `launch` to orbit first."; // landed
+  }
+  // Remaining (surface/base) actions need you ON FOOT.
+  if (state.embarked) {
+    return state.landed
+      ? "You must `disembark` onto the surface first."
+      : "You must `land` and `disembark` onto the surface first.";
+  }
   return "You must `disembark` onto the surface first.";
 }
 
@@ -820,8 +831,12 @@ async function dispatchResolved(
       return handleWarp(player, seed, args);
     case "hyperwarp":
       return handleHyperwarp(player, seed, args);
+    case "orbit":
+      return handleOrbit(player, seed, args);
     case "land":
       return handleLand(player, seed, args);
+    case "launch":
+      return handleLaunch(player, seed);
     case "jump":
       return handleJump(player, seed, args);
     case "regions":
@@ -1117,8 +1132,11 @@ function tradeAnnotation(
 
 async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
   if (atOutpost(player)) return outpostScanFrame(player, seed);
-  // A gas giant has no surface region — describe it from orbit instead.
-  return planetScanFrame(player, seed, locOf(player), player.region);
+  const planet = planetAt(seed, locOf(player));
+  // Orbit-land: ORBITING (or a gas giant, which can only be orbited) → the
+  // orbital frame; LANDED / ON-FOOT on a rocky surface → the region detail.
+  if (!player.landed || planet.isGas) return orbitalScanFrame(player, seed, planet);
+  return regionScanFrame(player, seed, locOf(player), player.region);
 }
 
 /**
@@ -1130,7 +1148,7 @@ async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
 function outpostScanFrame(player: Player, seed: string): RenderFrame {
   const planet = planetAt(seed, locOf(player));
   const system = systemAt(seed, locOf(player));
-  return frame([
+  const lines: RenderLine[] = [
     line([
       text(`${planet.name} — Orbital Outpost`, "heading"),
       text("  (in orbit)", "muted"),
@@ -1172,7 +1190,29 @@ function outpostScanFrame(player: Player, seed: string): RenderFrame {
       text("jump <n>", "default"),
       text(" to drop to a surface region.", "muted"),
     ]),
-  ]);
+  ];
+  // Docked at the outpost you ARE orbiting (embarked + !landed), so the in-system
+  // `orbit <n>` navigation belongs here too (orbit-land — the same nav the
+  // orbital frame offers, fixing the omission the old gas/outpost frames had).
+  const siblings = system.planets.filter((sib) => sib.coord.planet !== planet.coord.planet);
+  if (siblings.length > 0) {
+    const now = Date.now();
+    lines.push(line(text("Other planets in this system (`orbit <n>`):", "heading")));
+    for (const sib of siblings) {
+      const cost = orbitFuelCost(planet, sib, now);
+      const affordable = player.fuel >= cost;
+      const label = `${sib.name} (${SIZE_CLASS_LABELS[sib.sizeClass]}${sib.isGas ? " gas giant" : ""})`;
+      const title = affordable ? `orbit ${sib.name}` : `not enough fuel (need ${cost})`;
+      lines.push(
+        line([
+          text(`  ${sib.coord.planet}: `, "muted"),
+          action(label, `orbit ${sib.coord.planet}`, { style: "link", title, disabled: !affordable }),
+          text(`  fuel ${cost}`, affordable ? "muted" : "danger"),
+        ]),
+      );
+    }
+  }
+  return frame(lines);
 }
 
 // ---------------------------------------------------------------------------
@@ -1523,14 +1563,18 @@ async function handleWarp(
     planet: 0,
   });
 
-  // Warp is NOT gated — you always arrive in-system at planet 0, region 0. If
-  // that world is hostile you simply can't `mine` it until you have the gear
-  // (or `land` a survivable sibling), so this can never softlock you.
+  // Warp is NOT gated — you always arrive IN ORBIT of planet 0 (orbit-land);
+  // you must `land` to descend. If that world is hostile you simply can't land/
+  // mine it until you have the gear (or `orbit` a survivable sibling), so this
+  // can never softlock you.
   const arrivalCoord: PlanetCoord = { ...dest, planet: 0 };
   const destSystem = systemAt(seed, dest);
-  // Planet 0 may be a gas giant — arrive in orbit (no surface region) in that
-  // case; `planetScanFrame` picks the right view.
-  const scan = await planetScanFrame(player, seed, arrivalCoord, 0);
+  const arrived: Player = {
+    ...player,
+    galaxy: dest.galaxy, arm: dest.arm, cluster: dest.cluster, system: dest.system,
+    planet: 0, region: 0, warpFuel: newWarpFuel, landed: false,
+  };
+  const scan = await orbitalScanFrame(arrived, seed, planetAt(seed, arrivalCoord));
   return frame([
     line([
       text(`Warped to ${destSystem.name}. `, "success"),
@@ -1598,8 +1642,12 @@ async function handleHyperwarp(
   await world.setGalaxyLocation(player.id, arrivalCoord);
 
   const remaining = owned - 1;
-  // The entry planet may be a gas giant — arrive in orbit in that case.
-  const scan = await planetScanFrame(player, seed, arrivalCoord, 0);
+  // You arrive IN ORBIT of the entry planet (orbit-land); `land` to descend.
+  const arrived: Player = {
+    ...player,
+    galaxy: target, arm, cluster: 0, system: 0, planet: 0, region: 0, landed: false,
+  };
+  const scan = await orbitalScanFrame(arrived, seed, planetAt(seed, arrivalCoord));
   return frame([
     line([
       text(`Hyperwarp engaged — you tear into ${destGalaxy.name}. `, "success"),
@@ -1611,16 +1659,59 @@ async function handleHyperwarp(
 }
 
 // ---------------------------------------------------------------------------
-// land
+// orbit / land / launch — the three-state per-planet travel machine (orbit-land).
+//
+//   ORBITING  (embarked, !landed)  →  aboard, above a planet
+//   LANDED    (embarked,  landed)  →  aboard, on the surface (rocky only)
+//   ON-FOOT   (!embarked)          →  disembarked on the surface (always landed)
+//
+// `orbit <planet>` flies you to ORBIT another planet (distance fuel; any planet,
+// gas giants included). `land` DESCENDS to the surface of the planet you're
+// orbiting (FREE; rocky only, landing gate applies). `land <planet>` is the
+// orbit-then-descend combo. `launch` lifts you back to orbit (atmosphere fuel —
+// the climb out). `disembark`/`embark` toggle the on-foot survival state, both
+// from the LANDED state.
 // ---------------------------------------------------------------------------
 
-async function handleLand(
+/**
+ * Why a descent onto `planet`'s surface is blocked, as an error frame — or
+ * `null` when it's allowed. Gas giants have no surface; a freezing/boiling world
+ * needs the matching landing upgrade. Shared by `land` (descend) and the
+ * `land <planet>` combo so both gate identically.
+ */
+async function landBlockedReason(
+  player: Player,
+  planet: Planet,
+): Promise<RenderFrame | null> {
+  // Gas giants have no surface to land on (planet-taxonomy) — but you can still
+  // `orbit` them, so the model stays honest.
+  if (planet.isGas) return gasGiantError(planet);
+  const owned = await world.getOwnedUpgradeIds(player.id);
+  const gate = canLand(planet.temperature, owned);
+  if (!gate.ok) {
+    const up = getUpgrade(gate.required);
+    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    return errorFrame(
+      `${planet.name} is ${why} (${planet.temperature}°C) — landing requires ${up.name}. \`produce\` or \`buy\` it first.`,
+    );
+  }
+  return null;
+}
+
+/**
+ * `orbit <planet>` — fly to ORBIT another planet in this system (orbit-land).
+ * Burns DISTANCE fuel only (`orbitFuelCost`, time-varying) — NO atmosphere/
+ * takeoff term. Reaches ANY planet, gas giants included (that's the whole point:
+ * gas giants are orbit-only but no longer unreachable). Validates the index +
+ * fuel before mutating; arrives Orbiting (landed=false, region nominal 0).
+ */
+async function handleOrbit(
   player: Player,
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
   const idx = toInt(args[0]);
-  if (idx === null) return errorFrame("Usage: land <planet index>  (see `scan`)");
+  if (idx === null) return errorFrame("Usage: orbit <planet index>  (see `scan`)");
 
   const system = systemAt(seed, systemOf(player));
   if (idx < 0 || idx >= system.planetCount) {
@@ -1630,48 +1721,139 @@ async function handleLand(
   }
 
   const coord: PlanetCoord = { ...systemOf(player), planet: idx };
-  const planet = planetAt(seed, coord);
-
-  // Gas giants have no surface to land on (planet-taxonomy). You can `warp` into
-  // a system and orbit its planet 0 if it's gas, or dock its outpost, but `land`
-  // touches down on a surface — blocked here.
-  if (planet.isGas) return gasGiantError(planet);
-
-  // Landing gate: a hostile surface needs the matching upgrade. No move, no
-  // state change when blocked — naming the gear the player is missing.
-  const owned = await world.getOwnedUpgradeIds(player.id);
-  const gate = canLand(planet.temperature, owned);
-  if (!gate.ok) {
-    const up = getUpgrade(gate.required);
-    const why = planet.temperature < 0 ? "freezing" : "boiling";
-    return errorFrame(
-      `${planet.name} is ${why} (${planet.temperature}°C) — landing requires ${up.name}. \`craft\` or \`buy\` it first.`,
-    );
-  }
-
-  // Regular fuel: takeoff from your CURRENT planet + the (time-varying)
-  // interplanetary hop to the destination. Validate before mutating.
+  const target = planetAt(seed, coord);
   const fromPlanet = planetAt(seed, locOf(player));
-  const cost = regularFuelCost(
-    { atmosphere: fromPlanet.atmosphere, gravity: fromPlanet.gravity, orbit: fromPlanet },
-    { orbit: planet },
-    Date.now(),
-  );
+  const cost = orbitFuelCost(fromPlanet, target, Date.now());
   if (cost > player.fuel) {
     return errorFrame(
-      `Not enough fuel: landing on ${planet.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` first.`,
+      `Not enough fuel: orbiting ${target.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` (or \`craft biofuel\`) first.`,
     );
   }
 
-  // Landing always touches you down in region 0 (resets `region`), even when
-  // re-landing the planet you're already on after jumping around it.
   const newFuel = player.fuel - cost;
-  await world.setFuelAndPlanet(player.id, newFuel, idx);
+  await world.setFuelPlanetLanded(player.id, newFuel, idx, false);
 
-  const scan = await regionScanFrame(player, seed, coord, 0);
+  const arrived: Player = { ...player, planet: idx, region: 0, fuel: newFuel, landed: false };
+  const scan = await orbitalScanFrame(arrived, seed, target);
   return frame([
     line([
-      text(`Landed on ${planet.name}. `, "success"),
+      text(`Now orbiting ${target.name}. `, "success"),
+      text(`−${cost} fuel (${newFuel} left).`, "muted"),
+    ]),
+    ...scan.lines,
+  ]);
+}
+
+/**
+ * `land` (no arg) — DESCEND to the surface of the planet you're orbiting. FREE
+ * (no fuel; the atmosphere is billed on `launch`). Rocky worlds only; the
+ * freezing/boiling landing gate applies. `land <planet>` is the combo: orbit
+ * there (distance fuel) then descend. Both arrive Landed (region 0).
+ */
+async function handleLand(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  // `land <planet>`: fly to ORBIT that planet (distance fuel) then descend free.
+  if (args.length > 0) return handleLandCombo(player, seed, args);
+
+  // `land`: free descent onto the planet you're currently orbiting.
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  const blocked = await landBlockedReason(player, planet);
+  if (blocked) return blocked;
+
+  await world.setLandedDescent(player.id);
+  const landed: Player = { ...player, region: 0, landed: true };
+  const scan = await regionScanFrame(landed, seed, coord, 0);
+  return frame([
+    line([
+      text(`Descended to the surface of ${planet.name}. `, "success"),
+      text("Free descent — `disembark` to step out, or `launch` to return to orbit.", "muted"),
+    ]),
+    ...scan.lines,
+  ]);
+}
+
+/**
+ * `land <planet>` — the convenience combo: `orbit <planet>` (distance fuel) then
+ * `land` (free descent) in one. Rocky target only; gated + fuel-checked before
+ * any mutation so a blocked combo consumes nothing. Arrives Landed (region 0).
+ */
+async function handleLandCombo(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const idx = toInt(args[0]);
+  if (idx === null) {
+    return errorFrame(
+      "Usage: land [planet]  — omit to descend where you're orbiting, or give a planet # to fly there and land (see `scan`).",
+    );
+  }
+
+  const system = systemAt(seed, systemOf(player));
+  if (idx < 0 || idx >= system.planetCount) {
+    return errorFrame(
+      `No planet ${idx} here — this system has ${system.planetCount} (0–${system.planetCount - 1}).`,
+    );
+  }
+
+  const coord: PlanetCoord = { ...systemOf(player), planet: idx };
+  const target = planetAt(seed, coord);
+  // Gate the DESCENT first (rocky + landing gear) so we never burn orbit fuel
+  // flying somewhere we can't land. No mutation on a blocked combo.
+  const blocked = await landBlockedReason(player, target);
+  if (blocked) return blocked;
+
+  // The fuel is the orbit hop (distance); the descent itself is free.
+  const fromPlanet = planetAt(seed, locOf(player));
+  const cost = orbitFuelCost(fromPlanet, target, Date.now());
+  if (cost > player.fuel) {
+    return errorFrame(
+      `Not enough fuel: flying to ${target.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` first.`,
+    );
+  }
+
+  const newFuel = player.fuel - cost;
+  await world.setFuelPlanetLanded(player.id, newFuel, idx, true);
+
+  const landed: Player = { ...player, planet: idx, region: 0, fuel: newFuel, landed: true };
+  const scan = await regionScanFrame(landed, seed, coord, 0);
+  return frame([
+    line([
+      text(`Flew to ${target.name} and landed. `, "success"),
+      text(`−${cost} fuel (${newFuel} left); descent free.`, "muted"),
+    ]),
+    ...scan.lines,
+  ]);
+}
+
+/**
+ * `launch` — lift off the surface back into orbit (orbit-land). Burns the
+ * ATMOSPHERE climb (`launchFuelCost`, ceil'd) — NO distance term. Applicability
+ * guarantees we're Landed (embarked + on a surface). Validates fuel before
+ * mutating; if short, a clear error (and `craft biofuel` works on the surface,
+ * so an empty tank on the ground is never a hard softlock).
+ */
+async function handleLaunch(player: Player, seed: string): Promise<RenderFrame> {
+  const planet = planetAt(seed, locOf(player));
+  const cost = Math.max(1, Math.ceil(launchFuelCost(planet.atmosphere, planet.gravity)));
+  if (cost > player.fuel) {
+    return errorFrame(
+      `Not enough fuel: launching off ${planet.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` or \`craft biofuel\` first.`,
+    );
+  }
+
+  const newFuel = player.fuel - cost;
+  await world.setLaunch(player.id, newFuel);
+
+  const arrived: Player = { ...player, fuel: newFuel, region: 0, landed: false };
+  const scan = await orbitalScanFrame(arrived, seed, planet);
+  return frame([
+    line([
+      text(`Launched off ${planet.name} into orbit. `, "success"),
       text(`−${cost} fuel (${newFuel} left).`, "muted"),
     ]),
     ...scan.lines,
@@ -1733,7 +1915,7 @@ async function handleEmbark(player: Player): Promise<RenderFrame> {
   return frame([
     line([
       text("You climb back aboard your ship. ", "success"),
-      text("Trading and warp drives are online.", "muted"),
+      text("You're on the surface — `launch` to return to orbit.", "muted"),
     ]),
   ]);
 }

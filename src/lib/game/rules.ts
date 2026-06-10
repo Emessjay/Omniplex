@@ -717,7 +717,14 @@ export function takeoffCost(atmosphere: Atmosphere, gravity: number): number {
  * (time-varying) `interplanetaryDistance` between the two orbits. The two
  * components are ADDITIVE; the result is a positive integer (`ceil`, so it is
  * always ≥ the takeoff component alone). Pure — `timeMs` is supplied by the
- * caller (`Date.now()` in `land`).
+ * caller.
+ *
+ * SUPERSEDED for the player-facing travel commands by the orbit-land split
+ * (`orbitFuelCost` + `launchFuelCost`): orbiting bills the interplanetary
+ * distance only, launch bills the atmosphere/gravity climb only, and descent is
+ * free. Kept here because it is the canonical "what a planet-to-planet hop used
+ * to cost as one lump" function and is still exercised by the fuel-orbital unit
+ * suite. Do not charge it as a single piece in commands.
  */
 export function regularFuelCost(
   from: { atmosphere: Atmosphere; gravity: number; orbit: OrbitLike },
@@ -727,6 +734,31 @@ export function regularFuelCost(
   const takeoff = takeoffCost(from.atmosphere, from.gravity);
   const inter = INTERPLANETARY_FUEL_PER_DISTANCE * interplanetaryDistance(from.orbit, to.orbit, timeMs);
   return Math.max(1, Math.ceil(takeoff + inter));
+}
+
+/**
+ * Regular fuel to ORBIT from one planet to another within a system (orbit-land):
+ * the interplanetary half of the old `regularFuelCost`, with NO takeoff/atmosphere
+ * term. Cost = `ceil(INTERPLANETARY_FUEL_PER_DISTANCE * interplanetaryDistance)`.
+ * 0 to self (you don't move), a positive integer between distinct planets, and
+ * TIME-VARYING (the planets sweep their orbits). Orbiting selects/flies to a
+ * planet without descending, so it never pays the atmosphere climb — that is
+ * billed separately on `launch`. Pure — `timeMs` is supplied by the caller.
+ */
+export function orbitFuelCost(from: OrbitLike, to: OrbitLike, timeMs: number): number {
+  return Math.ceil(INTERPLANETARY_FUEL_PER_DISTANCE * interplanetaryDistance(from, to, timeMs));
+}
+
+/**
+ * Regular fuel to LAUNCH off a planet's surface back into orbit (orbit-land):
+ * the atmosphere/gravity half of the old `regularFuelCost`, with NO distance
+ * term — it depends only on the world you're climbing out of. Equal to
+ * `takeoffCost(atmosphere, gravity)` (the handler `ceil`s it to a whole fuel
+ * unit). Descent (`land`) is free; the climb back out is where the atmosphere is
+ * billed. Pure — exactly two parameters (no time/distance input).
+ */
+export function launchFuelCost(atmosphere: Atmosphere, gravity: number): number {
+  return takeoffCost(atmosphere, gravity);
 }
 
 // ---------------------------------------------------------------------------

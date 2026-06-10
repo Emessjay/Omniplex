@@ -216,16 +216,16 @@ export interface ScanView {
   maxHealth: number;
   /** True = aboard ship; false = on foot in this region. */
   embarked: boolean;
-  /** Regular fuel (burned to `land` between planets). */
+  /**
+   * On the surface (true) vs in orbit (false) — orbit-land. This is the SURFACE
+   * scan frame, so `landed` is true here (Landed aboard, or On-foot); it picks
+   * the `launch` (aboard) vs `embark` (on foot) hint at the foot of the frame.
+   */
+  landed?: boolean;
+  /** Regular fuel (burned to `orbit`/`launch` within a system). */
   fuel?: number;
   /** Warp fuel (burned to `warp` between systems). */
   warpFuel?: number;
-  /**
-   * Per-sibling-planet `land` info: the (time-varying) regular-fuel cost and
-   * whether the player can perform the land right now (embarked + enough fuel).
-   * Keyed by the planet index; absent entries fall back to embark-only gating.
-   */
-  siblingLand?: { index: number; fuelCost: number; affordable: boolean }[];
   /** Active combat encounter to surface (with `attack`/`flee` options), or null. */
   encounter?: EncounterView | null;
   /** Bases present in this region (shared-world presence); yours are marked. */
@@ -669,54 +669,29 @@ export function renderScan(view: ScanView): RenderFrame {
     ]),
   );
 
-  // Sibling planets to land on.
-  if (system.planetCount > 1) {
-    lines.push(line(text("Other planets in this system:", "heading")));
-    for (let i = 0; i < system.planetCount; i++) {
-      const sib = system.planets[i]!;
-      if (i === planet.coord.planet) {
-        lines.push(
-          line([text(`  ${i}: `, "muted"), text(`${sib.name} (here)`, "accent")]),
-        );
-      } else if (sib.isGas) {
-        // A gas giant can't be landed on (planet-taxonomy) — `land i` would be
-        // rejected, so the action reads red (P9b) and is labeled as such.
-        lines.push(
-          line([
-            text(`  ${i}: `, "muted"),
-            action(`${sib.name} (gas giant)`, `land ${i}`, {
-              style: "link",
-              title: "gas giant — no surface to land on",
-              disabled: true,
-            }),
-          ]),
-        );
-      } else {
-        // `land` is embarked-only (you fly the ship) AND burns regular fuel
-        // (takeoff + time-varying interplanetary distance), so the action reads
-        // red when on foot OR short on regular fuel — the same gates `land`
-        // enforces. The (orbit-dependent) fuel cost is shown alongside.
-        const landInfo = view.siblingLand?.find((s) => s.index === i);
-        const affordable = landInfo ? landInfo.affordable : view.embarked;
-        const title = !view.embarked
-          ? "embark to fly between planets"
-          : landInfo && !affordable
-            ? `not enough fuel (need ${landInfo.fuelCost})`
-            : `land on ${sib.name}`;
-        const row: RenderSpan[] = [
-          text(`  ${i}: `, "muted"),
-          action(sib.name, `land ${i}`, {
-            style: "link",
-            title,
-            disabled: !affordable,
-          }),
-        ];
-        if (landInfo) {
-          row.push(text(`  fuel ${landInfo.fuelCost}`, affordable ? "muted" : "danger"));
-        }
-        lines.push(line(row));
-      }
-    }
+  // Orbit-land: from a surface you don't fly to siblings directly — `launch`
+  // back to orbit first (the sibling `orbit <n>` list lives in the ORBITAL
+  // frame). Offer the right action for the surface state you're in.
+  if (view.embarked) {
+    // Landed aboard: `launch` back to orbit, or `disembark` onto the surface.
+    lines.push(
+      line([
+        action("launch", "launch", { style: "link", title: "lift back into orbit" }),
+        text(" to return to orbit, or ", "muted"),
+        action("disembark", "disembark", { style: "link", title: "step onto the surface" }),
+        text(" to step out and work the surface.", "muted"),
+      ]),
+    );
+  } else {
+    // On foot: `embark` to climb aboard (then `launch` to orbit).
+    lines.push(
+      line([
+        action("embark", "embark", { style: "link", title: "climb back aboard your ship" }),
+        text(" to climb aboard, then ", "muted"),
+        text("launch", "default"),
+        text(" to return to orbit.", "muted"),
+      ]),
+    );
   }
 
   return frame(lines);

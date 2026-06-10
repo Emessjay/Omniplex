@@ -26,7 +26,9 @@ export const VERBS: string[] = [
   "map",
   "warp",
   "hyperwarp",
+  "orbit",
   "land",
+  "launch",
   "jump",
   "regions",
   "disembark",
@@ -111,9 +113,17 @@ export const USAGE: Record<string, UsageDescriptor> = {
     desc: "jump to another galaxy (consumes a Hyperwarp Condensate)",
     slots: [{ name: "galaxy", hint: "a galaxy index ≥ 0 (galaxies are infinite outward)" }],
   },
-  land: {
-    desc: "fly to another planet in this system (burns regular fuel)",
+  orbit: {
+    desc: "fly to orbit another planet in this system (burns regular fuel by distance)",
     slots: [{ name: "planet", hint: "a planet # in this system; see `scan`" }],
+  },
+  land: {
+    desc: "descend to the surface of the planet you're orbiting (free), or `land <planet>` to fly there and descend",
+    slots: [{ name: "planet", optional: true, hint: "a planet # in this system; see `scan`" }],
+  },
+  launch: {
+    desc: "lift off the surface back into orbit (burns regular fuel for the atmosphere climb)",
+    slots: [],
   },
   jump: {
     desc: "jump to another region of this planet (or `O` for its orbital outpost)",

@@ -9,10 +9,13 @@ const ALIASES = VERBS.filter((v) => USAGE[v]?.alias);
 
 // Representative states. `atTradeLocation: true` so the economy commands
 // (buy/sell) are exercised in the parity checks (P12a gates them by location,
-// not embark state).
-const EMBARKED: PlayerStateView = { embarked: true, inCombat: false, atTradeLocation: true };
-const DISEMBARKED: PlayerStateView = { embarked: false, inCombat: false, atTradeLocation: true };
-const COMBAT: PlayerStateView = { embarked: false, inCombat: true, atTradeLocation: true };
+// not embark state). orbit-land: `landed` splits aboard into ORBITING
+// (embarked && !landed — the travel state, used here as EMBARKED) and LANDED
+// (embarked && landed). On foot is always landed.
+const EMBARKED: PlayerStateView = { embarked: true, landed: false, inCombat: false, atTradeLocation: true };
+const LANDED: PlayerStateView = { embarked: true, landed: true, inCombat: false, atTradeLocation: true };
+const DISEMBARKED: PlayerStateView = { embarked: false, landed: true, inCombat: false, atTradeLocation: true };
+const COMBAT: PlayerStateView = { embarked: false, landed: true, inCombat: true, atTradeLocation: true };
 
 /** The verbs the no-arg `help` list links to in `state` (one token per command). */
 function helpListedVerbs(state: PlayerStateView): string[] {
@@ -101,8 +104,9 @@ describe("help command-arg resolves abbreviations (AC#6)", () => {
  */
 describe("no-arg help is in parity with the applicability model (per state)", () => {
   for (const [label, state] of [
-    ["embarked / out of combat", EMBARKED],
-    ["disembarked / out of combat", DISEMBARKED],
+    ["orbiting / out of combat", EMBARKED],
+    ["landed aboard / out of combat", LANDED],
+    ["on foot / out of combat", DISEMBARKED],
     ["in combat", COMBAT],
   ] as const) {
     describe(label, () => {
