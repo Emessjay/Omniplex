@@ -51,7 +51,7 @@ import {
   type Biome,
   type Site,
 } from "@/lib/universe";
-import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
+import type { RenderFrame, RenderLine, StatusBar } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
@@ -462,6 +462,38 @@ function systemOf(player: Player): SystemCoord {
 }
 
 /**
+ * A friendly, human-readable label for the player's current location, drawn
+ * deterministically from the procedural universe (system + planet names). Pure;
+ * never throws — an out-of-range planet index or the orbital-outpost sentinel
+ * (`region === -1`) degrade to a sensible label rather than crashing the HUD.
+ */
+function locationLabel(player: Player, seed: string): string {
+  const system = systemAt(seed, systemOf(player));
+  if (atOutpost(player)) return `${system.name} · orbital outpost`;
+  const planet = system.planets[player.planet];
+  const planetName = planet ? planet.name : `planet ${player.planet}`;
+  return `${system.name} · ${planetName}`;
+}
+
+/**
+ * Build the persistent HUD snapshot (credits / friendly location / fuel /
+ * warpFuel / health+max / ship name) from the current player. PURE &
+ * deterministic — a function of `(player, seed)` only — so it's unit-testable
+ * and the dispatch path can attach it to the outgoing frame in ONE place.
+ */
+export function buildStatusBar(player: Player, seed: string): StatusBar {
+  return {
+    credits: player.credits,
+    location: locationLabel(player, seed),
+    fuel: player.fuel,
+    warpFuel: player.warpFuel,
+    health: player.health,
+    maxHealth: MAX_HEALTH,
+    ship: getShip(player.shipId).name,
+  };
+}
+
+/**
  * The baseline a supply-market item reverts toward (P12b) — parts vs upgrades.
  * Used to resolve a lazy (rowless) system+item supply, which reads as the
  * baseline. Mirrors `world.supplyBaseline` (kept local so help can merge without
@@ -854,7 +886,7 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   const seed = getWorldSeed();
   const { verb: rawVerb } = parseCommand(input);
   if (rawVerb === "") {
-    return frame([line(text("Type `help` for commands.", "muted"))]);
+    return { ...frame([line(text("Type `help` for commands.", "muted"))]), status: buildStatusBar(player, seed) };
   }
 
   // Resolve the verb first so we know which contextual candidate sets to fetch
@@ -871,13 +903,20 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   const { verb, args, canonical } = resolved;
   const result = await dispatchResolved(player, seed, verb, args);
 
+  // Attach the persistent status header (AC#2): one central attach point.
+  // Re-read the player so the HUD reflects whatever mutations the handler made
+  // (the in-hand `player` is the pre-command snapshot); fall back to it if the
+  // read fails so the header still renders.
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const status = buildStatusBar(fresh, seed);
+
   // Echo the expanded form when abbreviation changed what was typed, so the
   // player learns the canonical command.
   const normalized = input.trim().replace(/\s+/g, " ").toLowerCase();
   if (canonical !== normalized) {
-    return frame([line(text(`» ${canonical}`, "muted")), ...result.lines]);
+    return { ...frame([line(text(`» ${canonical}`, "muted")), ...result.lines]), status };
   }
-  return result;
+  return { ...result, status };
 }
 
 /** The minimal player-state slice the unified applicability model reads. */

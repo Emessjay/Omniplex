@@ -21,6 +21,7 @@ import type {
   RenderLine,
   RenderSpan,
   SpanStyle,
+  StatusBar,
 } from "@/lib/terminal/types";
 import { action, actionStyle, frame, line, text } from "@/lib/terminal/helpers";
 import { submitCommand } from "@/lib/terminal/pipeline";
@@ -100,6 +101,67 @@ function bootFrame(player?: Player): RenderFrame {
   ]);
 }
 
+/**
+ * A best-effort initial HUD snapshot derived purely from the `player` prop, so
+ * the header is present on first paint before any command runs. The client has
+ * no access to the procedural universe (the seed/gen are server-side), so the
+ * location is a coordinate label and the ship is the raw id; the first response
+ * frame's `status` (built server-side by `buildStatusBar`) replaces both with
+ * the friendly names. Preferred over nothing — and the server-rendered page
+ * passes a fully-resolved `initialStatus` when it can.
+ */
+function statusFromPlayer(player?: Player): StatusBar | undefined {
+  if (!player) return undefined;
+  return {
+    credits: player.credits,
+    location: `system ${player.system} · planet ${player.planet}`,
+    fuel: player.fuel,
+    warpFuel: player.warpFuel,
+    health: player.health,
+    maxHealth: 100,
+    ship: player.shipId,
+  };
+}
+
+/**
+ * The persistent status header — always visible above the scrolling log,
+ * surviving `clear` and scrolling (it's separate state). Color-only styling via
+ * the shared palette (theme-parity rule); HP turns red when low (P9b palette).
+ */
+function StatusHeader({ status }: { status?: StatusBar }) {
+  if (!status) return null;
+  const lowHealth = status.health <= status.maxHealth * 0.3;
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-term-muted/30 px-3 py-1.5 text-xs"
+      aria-label="status"
+    >
+      <span>
+        <span className={STYLE_CLASS.muted}>◈ </span>
+        <span className={STYLE_CLASS.success}>{status.credits.toLocaleString()}cr</span>
+      </span>
+      <span className={STYLE_CLASS.muted}>·</span>
+      <span className={STYLE_CLASS.accent}>{status.location}</span>
+      <span className={STYLE_CLASS.muted}>·</span>
+      <span>
+        <span className={STYLE_CLASS.muted}>HP </span>
+        <span className={lowHealth ? STYLE_CLASS.danger : STYLE_CLASS.default}>
+          {status.health}/{status.maxHealth}
+        </span>
+      </span>
+      <span className={STYLE_CLASS.muted}>·</span>
+      <span>
+        <span className={STYLE_CLASS.muted}>fuel </span>
+        <span className={STYLE_CLASS.default}>{status.fuel}</span>
+        <span className={STYLE_CLASS.muted}> / warp </span>
+        <span className={STYLE_CLASS.default}>{status.warpFuel}</span>
+      </span>
+      <span className={STYLE_CLASS.muted}>·</span>
+      <span className={STYLE_CLASS.default}>{status.ship}</span>
+    </div>
+  );
+}
+
 /** Render one span: plain text, or a clickable action button. */
 function Span({
   span,
@@ -132,8 +194,17 @@ function Span({
   return <span className={STYLE_CLASS[span.style ?? "default"]}>{span.text}</span>;
 }
 
-export function Terminal({ player }: { player?: Player } = {}) {
+export function Terminal({
+  player,
+  initialStatus,
+}: { player?: Player; initialStatus?: StatusBar } = {}) {
   const [lines, setLines] = useState<RenderLine[]>(() => bootFrame(player).lines);
+  // The persistent status header — kept SEPARATE from the scrolling log so the
+  // `clear` meta-command (which empties `lines`) never wipes it. Seeded so the
+  // header is present on first paint, before any command (AC#2).
+  const [status, setStatus] = useState<StatusBar | undefined>(
+    () => initialStatus ?? statusFromPlayer(player),
+  );
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   // null = "editing a fresh line"; otherwise an index into `history`.
@@ -171,6 +242,9 @@ export function Terminal({ player }: { player?: Player } = {}) {
     try {
       const f = await submitCommand(cmd);
       append(f);
+      // Refresh the persistent header from the post-command snapshot the server
+      // attached (additive — frames without `status` leave the header as-is).
+      if (f.status) setStatus(f.status);
     } finally {
       setBusy(false);
       inputRef.current?.focus();
@@ -262,6 +336,9 @@ export function Terminal({ player }: { player?: Player } = {}) {
           inputRef.current?.focus();
       }}
     >
+      {/* Persistent status header — separate state, survives `clear`. */}
+      <StatusHeader status={status} />
+
       {/* Scrollback */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2" aria-live="polite">
         {rendered}
