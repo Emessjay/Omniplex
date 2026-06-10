@@ -130,6 +130,9 @@ import {
   rankFor,
   RANKS,
   MAX_RANK_TIER,
+  rivalOf,
+  rivalRepPenalty,
+  repPriceDiscount,
 } from "./factions";
 import {
   isMaterialId,
@@ -899,9 +902,9 @@ async function dispatchResolved(
     case "produce":
       return handleProduce(player, seed, args);
     case "sell":
-      return handleSell(player, args);
+      return handleSell(player, seed, args);
     case "buy":
-      return handleBuy(player, args);
+      return handleBuy(player, seed, args);
     case "standing":
       return handleStanding(player);
     case "contracts":
@@ -4223,15 +4226,18 @@ async function handleProduceUpgrade(
 // sell
 // ---------------------------------------------------------------------------
 
-async function handleSell(player: Player, args: string[]): Promise<RenderFrame> {
+async function handleSell(player: Player, seed: string, args: string[]): Promise<RenderFrame> {
   const target = args[0]?.toLowerCase();
   if (!target) return errorFrame("Usage: sell <resource>  or  sell all");
 
+  // Rank trade perk (1c): high standing with this hub's faction boosts payouts.
+  const disc = await hubTradeDiscount(player, seed);
+
   // Selling an upgrade, a part, or a material is code-priced (no market drift);
   // resource selling below is unchanged.
-  if (isUpgradeId(target)) return handleSellUpgrade(player, target, args[1]);
-  if (isPartId(target)) return handleSellPart(player, target, args[1]);
-  if (isMaterialId(target)) return handleSellMaterial(player, target, args[1]);
+  if (isUpgradeId(target)) return handleSellUpgrade(player, target, args[1], disc);
+  if (isPartId(target)) return handleSellPart(player, target, args[1], disc);
+  if (isMaterialId(target)) return handleSellMaterial(player, target, args[1], disc);
 
   const stacks = await world.getInventory(player.id);
   if (stacks.length === 0) return errorFrame("Nothing to sell — your hold is empty.");
@@ -4258,7 +4264,8 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
       );
       continue;
     }
-    const gain = sellValue(price, stack.qty);
+    // Rank perk (1c): boost the payout by the hub discount (round, integer-safe).
+    const gain = Math.round(sellValue(price, stack.qty) * (1 + disc.discount));
     totalGain += gain;
     const newPrice = priceAfterSale(price, stack.qty);
     await world.setMarketPrice(sysKey, stack.resourceId, newPrice);
@@ -4279,12 +4286,14 @@ async function handleSell(player: Player, args: string[]): Promise<RenderFrame> 
   }
 
   const newBalance = await world.addPlayerCredits(player.id, totalGain);
+  const footer = discountLine(disc);
   return frame([
     line([
       text(`Sold for ${totalGain} cr. `, "success"),
       text(`Balance: ${newBalance} cr.`, "accent"),
     ]),
     ...soldLines,
+    ...(footer ? [footer] : []),
   ]);
 }
 
@@ -4298,6 +4307,7 @@ async function handleSellUpgrade(
   player: Player,
   upgradeId: string,
   qtyArg: string | undefined,
+  disc: HubDiscount,
 ): Promise<RenderFrame> {
   const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
   if (requested === null || requested <= 0) {
@@ -4314,7 +4324,7 @@ async function handleSellUpgrade(
     );
   }
 
-  const unit = upgradeValue(upgradeId);
+  const unit = bonusedSellUnit(upgradeValue(upgradeId), disc.discount);
   const total = unit * qty;
   const remaining = await world.addPlayerUpgrade(player.id, upgradeId, -qty);
   const newBalance = await world.addPlayerCredits(player.id, total);
@@ -4325,6 +4335,7 @@ async function handleSellUpgrade(
   const current = await world.getSystemSupply(sysKey, upgradeId);
   const supply = await world.setSystemSupply(sysKey, upgradeId, current + qty);
 
+  const footer = discountLine(disc);
   return frame([
     line([
       text(`Sold ${qty} ${upgrade.name} `, "success"),
@@ -4333,6 +4344,7 @@ async function handleSellUpgrade(
       text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
     ]),
     line(text(`  ${supply} now on the market for other pilots to buy.`, "muted")),
+    ...(footer ? [footer] : []),
   ]);
 }
 
@@ -4346,6 +4358,7 @@ async function handleSellMaterial(
   player: Player,
   materialId: string,
   qtyArg: string | undefined,
+  disc: HubDiscount,
 ): Promise<RenderFrame> {
   const material = getMaterial(materialId);
 
@@ -4369,11 +4382,12 @@ async function handleSellMaterial(
     return errorFrame(`You only own ${ownedNow} ${material.name} — can't sell ${qty}.`);
   }
 
-  const unit = materialValue(materialId);
+  const unit = bonusedSellUnit(materialValue(materialId), disc.discount);
   const total = unit * qty;
   const remaining = await world.addPlayerMaterial(player.id, materialId, -qty);
   const newBalance = await world.addPlayerCredits(player.id, total);
 
+  const footer = discountLine(disc);
   return frame([
     line([
       text(`Sold ${qty} ${material.name} `, "success"),
@@ -4381,6 +4395,7 @@ async function handleSellMaterial(
       text(`(${unit}/u). `, "muted"),
       text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
     ]),
+    ...(footer ? [footer] : []),
   ]);
 }
 
@@ -4397,6 +4412,7 @@ async function handleSellPart(
   player: Player,
   partId: string,
   qtyArg: string | undefined,
+  disc: HubDiscount,
 ): Promise<RenderFrame> {
   const part = getPart(partId);
 
@@ -4420,7 +4436,7 @@ async function handleSellPart(
     return errorFrame(`You only own ${ownedNow} ${part.name} — can't sell ${qty}.`);
   }
 
-  const unit = partValue(partId);
+  const unit = bonusedSellUnit(partValue(partId), disc.discount);
   const total = unit * qty;
   const remaining = await world.addPlayerPart(player.id, partId, -qty);
   const newBalance = await world.addPlayerCredits(player.id, total);
@@ -4429,6 +4445,7 @@ async function handleSellPart(
   const current = await world.getSystemSupply(sysKey, partId);
   const supply = await world.setSystemSupply(sysKey, partId, current + qty);
 
+  const footer = discountLine(disc);
   return frame([
     line([
       text(`Sold ${qty} ${part.name} `, "success"),
@@ -4437,6 +4454,7 @@ async function handleSellPart(
       text(`${remaining} left. Balance ${newBalance} cr.`, "accent"),
     ]),
     line(text(`  ${supply} now on this system's market for other pilots to buy.`, "muted")),
+    ...(footer ? [footer] : []),
   ]);
 }
 
@@ -4444,14 +4462,17 @@ async function handleSellPart(
 // buy fuel [n]  |  buy <resource> [qty]  |  buy <upgrade> [qty]
 // ---------------------------------------------------------------------------
 
-async function handleBuy(player: Player, args: string[]): Promise<RenderFrame> {
+async function handleBuy(player: Player, seed: string, args: string[]): Promise<RenderFrame> {
   const what = args[0]?.toLowerCase();
   if (!what) return errorFrame("Usage: buy fuel [n]  |  buy warpfuel [n]  |  buy <resource> [qty]");
+  // Fuel is code-fixed (not a faction-hub commodity), so no rank discount there.
   if (what === "fuel") return handleBuyFuel(player, "regular", args[1]);
   if (what === "warpfuel") return handleBuyFuel(player, "warp", args[1]);
-  if (isUpgradeId(what)) return handleBuyUpgrade(player, what, args[1]);
-  if (isPartId(what)) return handleBuyPart(player, what, args[1]);
-  return handleBuyResource(player, what, args[1]);
+  // Rank trade perk (1c): high standing with this hub's faction lowers prices.
+  const disc = await hubTradeDiscount(player, seed);
+  if (isUpgradeId(what)) return handleBuyUpgrade(player, what, args[1], disc);
+  if (isPartId(what)) return handleBuyPart(player, what, args[1], disc);
+  return handleBuyResource(player, what, args[1], disc);
 }
 
 /**
@@ -4512,6 +4533,7 @@ async function handleBuyResource(
   player: Player,
   resourceId: string,
   qtyArg: string | undefined,
+  disc: HubDiscount,
 ): Promise<RenderFrame> {
   // Parse quantity (default 1; must be a positive whole number when supplied).
   const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
@@ -4528,7 +4550,7 @@ async function handleBuyResource(
   }
 
   const res = getResource(resourceId);
-  const unitCost = buyUnitCost(price);
+  const unitCost = discountedBuyUnit(buyUnitCost(price), disc.discount);
   const total = unitCost * qty;
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
@@ -4560,6 +4582,7 @@ async function handleBuyResource(
       text(`Balance ${newBalance} cr.`, "accent"),
     ]),
     line(text(`  price ${price}→${newPrice}`, "muted")),
+    ...(discountLine(disc) ? [discountLine(disc)!] : []),
   ]);
 }
 
@@ -4572,6 +4595,7 @@ async function handleBuyUpgrade(
   player: Player,
   upgradeId: string,
   qtyArg: string | undefined,
+  disc: HubDiscount,
 ): Promise<RenderFrame> {
   const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
   if (requested === null || requested <= 0) {
@@ -4597,7 +4621,7 @@ async function handleBuyUpgrade(
     );
   }
 
-  const unitCost = buyUnitCost(upgradeValue(upgradeId));
+  const unitCost = discountedBuyUnit(buyUnitCost(upgradeValue(upgradeId)), disc.discount);
   const total = unitCost * qty;
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
@@ -4613,6 +4637,7 @@ async function handleBuyUpgrade(
   const owned = await world.addPlayerUpgrade(player.id, upgradeId, qty);
   const newBalance = await world.addPlayerCredits(player.id, -total);
 
+  const footer = discountLine(disc);
   return frame([
     line([
       text(`Bought ${qty} ${upgrade.name} `, "success"),
@@ -4621,6 +4646,7 @@ async function handleBuyUpgrade(
       text(`You now own ${owned}. Balance ${newBalance} cr.`, "accent"),
     ]),
     line(text(`  ${newSupply} left on this system's market.`, "muted")),
+    ...(footer ? [footer] : []),
   ]);
 }
 
@@ -4636,6 +4662,7 @@ async function handleBuyPart(
   player: Player,
   partId: string,
   qtyArg: string | undefined,
+  disc: HubDiscount,
 ): Promise<RenderFrame> {
   const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
   if (requested === null || requested <= 0) {
@@ -4658,7 +4685,7 @@ async function handleBuyPart(
     );
   }
 
-  const unitCost = buyUnitCost(partValue(partId));
+  const unitCost = discountedBuyUnit(buyUnitCost(partValue(partId)), disc.discount);
   const total = unitCost * qty;
 
   const fresh = (await world.getPlayerById(player.id)) ?? player;
@@ -4687,6 +4714,7 @@ async function handleBuyPart(
       text(`${partId}`, "default"),
       text("` at a base to use it in production.", "muted"),
     ]),
+    ...(discountLine(disc) ? [discountLine(disc)!] : []),
   ]);
 }
 
@@ -4711,6 +4739,63 @@ function hubKeyOf(player: Player): string {
 /** The current contract rotation bucket (the only place `Date.now()` enters). */
 function currentContractBucket(): number {
   return Math.floor(Date.now() / CONTRACT_ROTATION_MS);
+}
+
+/** The rank trade perk active at the player's current hub (Keystone 1c). */
+interface HubDiscount {
+  /** Fraction off (`repPriceDiscount`), 0 when off-hub / no standing. */
+  discount: number;
+  /** The hub faction's name (empty off-hub). */
+  factionName: string;
+  /** The player's rank title with the hub faction (empty off-hub). */
+  rankTitle: string;
+}
+
+/**
+ * The rank-based trade discount the player gets at their CURRENT hub: the
+ * faction controlling this hub (`factionAt`), the player's rank with them
+ * (`rankFor`), and the resulting `repPriceDiscount`. Off a trade hub it's 0 (a
+ * defensive default — `buy`/`sell` are economy-gated to a hub anyway). One rep
+ * read + pure math; applied to resource/material/part/upgrade trades, never to
+ * code-fixed fuel or the distress fee.
+ */
+async function hubTradeDiscount(player: Player, seed: string): Promise<HubDiscount> {
+  if (!atTradeLocation(player, seed)) {
+    return { discount: 0, factionName: "", rankTitle: "" };
+  }
+  const factionId = factionAt(seed, hubKeyOf(player));
+  const faction = getFaction(factionId);
+  const rep = await world.getReputation(player.id).then(
+    (reps) => reps.find((r) => r.factionId === factionId)?.rep ?? 0,
+  );
+  const rank = rankFor(rep);
+  return { discount: repPriceDiscount(rank.tier), factionName: faction.name, rankTitle: rank.title };
+}
+
+/** Discounted buy unit cost: `floor(base × (1 − discount))`, never below 1 cr. */
+function discountedBuyUnit(unitCost: number, discount: number): number {
+  return Math.max(1, Math.floor(unitCost * (1 - discount)));
+}
+
+/** Bonus-adjusted sell unit payout: `round(base × (1 + discount))`. */
+function bonusedSellUnit(unit: number, discount: number): number {
+  return Math.round(unit * (1 + discount));
+}
+
+/**
+ * A muted footer line surfacing the active hub discount (Keystone 1c) — e.g.
+ * "−9% (Partner standing with the Iron Vanguard)". Returns `null` (no line) when
+ * there's no discount, so callers can spread it conditionally.
+ */
+function discountLine(disc: HubDiscount): RenderLine | null {
+  if (disc.discount <= 0) return null;
+  const pct = Math.round(disc.discount * 100);
+  return line(
+    text(
+      `  −${pct}% (${disc.rankTitle} standing with the ${disc.factionName})`,
+      "success",
+    ),
+  );
 }
 
 /** Display name for a demandable good (resource / part / material). */
@@ -4774,12 +4859,15 @@ async function handleStanding(player: Player): Promise<RenderFrame> {
   return renderStanding({
     factions: FACTIONS.map((f) => {
       const rep = byId.get(f.id) ?? 0;
+      const rivalId = rivalOf(f.id);
       return {
         name: f.name,
         blurb: f.blurb,
         rep,
         rankTitle: rankFor(rep).title,
         nextRep: nextRankRep(rep),
+        rivalName: getFaction(rivalId).name,
+        rivalRep: byId.get(rivalId) ?? 0,
       };
     }),
   });
@@ -4839,6 +4927,7 @@ async function handleContracts(player: Player, seed: string): Promise<RenderFram
     rep,
     rankTitle: rank.title,
     nextRep: nextRankRep(rep),
+    discount: repPriceDiscount(rank.tier),
     contracts: entries,
   });
 }
@@ -4890,9 +4979,16 @@ async function handleFulfill(
   await consumeGood(player, itemId, qty);
   const newBalance = await world.addPlayerCredits(player.id, contract.rewardCredits);
   const newRep = await world.addReputation(player.id, factionId, contract.rewardRep);
+  // Faction politics (1c): pleasing this faction angers its rival. Award first,
+  // then penalize the rival by `rivalRepPenalty(rewardRep)` (the RPC clamps ≥ 0).
+  const rivalId = rivalOf(factionId);
+  const rivalFaction = getFaction(rivalId);
+  const penalty = rivalRepPenalty(contract.rewardRep);
+  const newRivalRep =
+    penalty > 0 ? await world.addReputation(player.id, rivalId, -penalty) : undefined;
   await world.markContractComplete(player.id, contract.key);
 
-  return frame([
+  const lines: RenderFrame["lines"] = [
     line([
       text(`Delivered ${qty} ${name} to the ${faction.name}.`, "success"),
     ]),
@@ -4902,7 +4998,16 @@ async function handleFulfill(
       text(`+${contract.rewardRep} rep `, "success"),
       text(`(${faction.name}: ${newRep})`, "muted"),
     ]),
-  ]);
+  ];
+  if (newRivalRep !== undefined) {
+    lines.push(
+      line([
+        text(`-${penalty} rep `, "danger"),
+        text(`with their rivals the ${rivalFaction.name} (${newRivalRep}).`, "muted"),
+      ]),
+    );
+  }
+  return frame(lines);
 }
 
 // ---------------------------------------------------------------------------
