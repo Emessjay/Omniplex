@@ -43,18 +43,22 @@ comment on function public.add_charted(uuid, integer) is
 --    ranking signal), preserving every existing column. Still NO user_id — the
 --    title is derived render-side from `charted` (cartography.ts), so the view
 --    only needs the raw count. Same grants. Idempotent via create-or-replace.
+--    IMPORTANT: `CREATE OR REPLACE VIEW` can only APPEND columns — Postgres
+--    rejects inserting a column before existing ones or reordering them (that
+--    broke the first cut of this migration and failed the deploy healthcheck).
+--    So `charted` goes LAST, preserving the prior column order exactly.
 create or replace view public.leaderboard as
   select
     p.id,
     p.handle,
     p.credits,
-    p.charted,
     p.galaxy,
     p.arm,
     p.cluster,
     p.system,
     p.planet,
-    p.created_at
+    p.created_at,
+    p.charted
   from public.players p;
 
 comment on view public.leaderboard is
