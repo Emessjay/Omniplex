@@ -1868,3 +1868,25 @@ gotchas) accrete here as workers surface things worth persisting. See
   atomic `addPlayerCredits(-net)` + `setShip`. `inventory` shows the ship.
   Seeded: `ships.test.ts`. **Keystone 2b** (constructions: production-built
   ships/stations/base tiers) builds on this.
+
+### Load-bearing decisions from `construct-ships` (Keystone 2b)
+
+- **Production now BUILDS ships** — `produce <ship>` is the alternative to
+  buying (2a), closing the chain mine→ingot→part→**ship**. Building costs
+  materials worth LESS than the cash price (the producer's payoff), never free.
+  NO migration (recipes are code; `produce` extended).
+- **Ship recipes** (`ships.ts`): every ship except the starter `shuttle` has a
+  `recipe` (Record of PART/INGOT id → qty). Helpers `shipRecipeOf(id)` (null for
+  the starter), `isBuildableShip(id)`, `shipRecipeValue(id)` (Σ part/ingot value
+  × qty). **Invariant: `0 < shipRecipeValue < getShip(id).price`** and recipe
+  value ascends with cargo (courier 3580<6000 / freighter 26450<50000 / hauler
+  121920<250000).
+- **`produce` 4th branch** (`commands.ts`): `isShipId` + buildable → build a
+  ship. Requires a base in-region with a **production_line**, **powered** (reuse
+  the produce power gate), recipe inputs siloed (`canProduce`), not-already-your-
+  ship, current cargo fits (no overflow-downgrade), qty must be 1. Consumes the
+  recipe from `base_storage` then `setShip(id)` (ship_id + cargo_cap, the same
+  swap `buyship` uses) — NO credit cost. Validate-before-mutate, atomic. The
+  `produce` arg domain + the `storage` buildable list include buildable ships
+  (P9b red when not producible). Seeded: `construct-ships.test.ts`. (2c —
+  stations / base-tier upgrades — builds on this.)
