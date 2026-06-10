@@ -1674,3 +1674,44 @@ gotchas) accrete here as workers surface things worth persisting. See
   (consume `feedAmount` of the feed crop from `player_materials`; breed when
   `livestockCanBreed` + capacity), `slaughter <animal> [n]` (head → product
   materials). scan/storage surface herds + breed-readiness (P9b red hints).
+
+### Load-bearing decisions from `factions-core` (Keystone 1a)
+
+- **The DEMAND side of the economy (per `docs/design/path-depth-roadmap.md`):
+  NPC factions post rotating contracts for goods; fulfilling pays credits +
+  faction reputation.** First piece that makes production/exploration/capitalism
+  *pull* instead of dumping onto a flat market. (Ranks/gating = 1b; politics =
+  1c — not yet built.)
+- **`FACTIONS` catalog** (`src/lib/game/factions.ts`, pure): 4 factions with
+  distinct demand themes — militarist (metals + parts), agrarian (crops + food +
+  animal products), scientific (rare minerals + relics), mercantile (broad).
+  `Faction = { id, name, blurb, demand: string[] }`; `demand` ids are all real
+  CARRIABLE goods (resource/material/part — no silo-only ingots, no upgrades).
+  Helpers `FACTIONS`/`FACTION_IDS`/`isFactionId`/`getFaction`.
+- **Deterministic hub alignment + contract generation** (pure, no `Date`/
+  `Math.random`): `factionAt(seed, locationKey)` aligns every trade hub
+  (settlement region / outpost) to one faction. `contractsAt(seed, locationKey,
+  factionId, timeBucket)` generates a bounded set of delivery contracts;
+  `timeBucket = floor(now / CONTRACT_ROTATION_MS)` (passed in by the handler).
+  `Contract = { key:"<hub>|<bucket>|<slot>", factionId, want:{itemId,qty},
+  rewardCredits, rewardRep }`. Contracts ROTATE per bucket (keys bucket-distinct).
+  **Reward is a PREMIUM over market**: `rewardCredits = round(itemUnitValue ×
+  qty × CONTRACT_REWARD_MARKUP[=1.5])` (> dumping on the market); `rewardRep ≥ 1`.
+- **Persistence** (migration `20260609030000_factions-core.sql`, forward-only/
+  idempotent): `player_reputation (player_id→players cascade, faction_id text,
+  rep int ≥0 check, pk(player,faction))` — **read-OWN RLS** (the inventory-policy
+  pattern: `player_id in (select id from players where user_id = auth.uid())`),
+  service-role writes, atomic clamped `add_reputation(p_player, p_faction,
+  p_delta)` (`greatest(0, …)` upsert). `completed_contracts (player_id→players
+  cascade, contract_key text, completed_at, pk(player,key))` — read-own RLS,
+  guards double-fulfill. `world.ts`: `getReputation`/`addReputation`,
+  `getCompletedContractKeys`/`markContractComplete`.
+- **Commands**: `standing` (INFORMATIONAL — per-faction rep), `contracts`
+  (INFORMATIONAL — current hub's contracts with fulfillable/completed/short
+  states + P9b red + `fulfill <n>` actions; off-hub note), `fulfill <n>`
+  (ECONOMY bucket: `atTradeLocation && !inCombat`; validate current+unfulfilled+
+  held-goods → consume from the right store [inventory/materials/parts] →
+  `addPlayerCredits`+`addReputation`+`markContractComplete`, atomic,
+  validate-before-mutate, double-fulfill-guarded). Registered in `VERBS`/`USAGE`/
+  `applicability`; `scan` at a hub surfaces a `contracts` hint. Seeded:
+  `factions-core.test.ts` (+ `factions-extra.test.ts`).
