@@ -48,6 +48,7 @@ export {
   planetAt,
   regionAt,
   startingWorld,
+  randomStartingWorld,
   clusterStars,
   clusterOf,
   systemPosition,

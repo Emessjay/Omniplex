@@ -1295,3 +1295,39 @@ export function startingWorld(seed: string): PlanetCoord {
   // a deterministic last resort.
   return { galaxy: 0, arm: 0, cluster: 0, system: 0, planet: 0 };
 }
+
+/** Max retry budget for `randomStartingWorld` before falling back to `startingWorld`. */
+const RANDOM_SPAWN_MAX_TRIES = 64;
+
+/**
+ * A RANDOM habitable planet coord in cluster 0 (galaxy 0, arm 0, cluster 0).
+ * "Habitable" = same criteria as `startingWorld`: rocky, temperate (0 < T < 100),
+ * low-hazard. Each attempt draws a random system index via the injected `rand`
+ * (∈ [0,1)), generates that system, collects its habitable planets, and if any
+ * exist picks one uniformly. `rand` is INJECTED (not `Math.random` inside) so
+ * the function stays pure/deterministic given a fixed `rand` sequence and is
+ * unit-testable without side-effects. Falls back to `startingWorld(seed)` if
+ * the retry budget is exhausted.
+ */
+export function randomStartingWorld(
+  seed: string,
+  rand: () => number,
+): PlanetCoord {
+  for (let i = 0; i < RANDOM_SPAWN_MAX_TRIES; i++) {
+    const system = Math.floor(rand() * STARS_PER_CLUSTER);
+    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system };
+    const sys = systemAt(seed, sysCoord);
+    const habitable = sys.planets.filter(
+      (p) =>
+        !p.isGas &&
+        p.temperature > FREEZING_C &&
+        p.temperature < BOILING_C &&
+        p.hazard <= STARTING_WORLD_MAX_HAZARD,
+    );
+    if (habitable.length > 0) {
+      const planet = habitable[Math.floor(rand() * habitable.length)]!;
+      return { galaxy: 0, arm: 0, cluster: 0, system, planet: planet.coord.planet };
+    }
+  }
+  return startingWorld(seed);
+}
