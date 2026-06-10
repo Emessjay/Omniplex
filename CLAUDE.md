@@ -1600,3 +1600,41 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **For the farming phases (crop-farming, animal-husbandry)**: same building/
   `build`/power pattern; biome-affined catalogs; active plant/tend/harvest +
   feed/breed/slaughter cycles (need `base_plots` / `base_livestock` tables).
+
+### Load-bearing decisions from `crop-farming`
+
+- **Agriculture (Phase 2): plant biome-affined crops at a base, grow over real
+  time, harvest for crop materials.** Active plant→grow→harvest cycle. Mirrors
+  the building/catalog/material patterns; reuses bases/buildings + the wildlife
+  material loop. Crop materials are designed to feed livestock in Phase 3.
+- **`crop_farm` is a non-power-gated `StructureKind`** (`bases.ts`,
+  `STRUCTURE_KINDS` extended + `base-buildings-cost.test.ts` updated) — a
+  deliberate contrast with the INDUSTRIAL buildings (excavator/production_line/
+  blast_furnace are power-gated; agriculture is natural, not). Each `crop_farm`
+  provides `CROP_FARM_PLOTS` (`rules.ts`) planting plots; a base's capacity =
+  `CROP_FARM_PLOTS × (#crop_farm)`.
+- **New `MaterialCategory: "crop"`** (`materials.ts`): the harvest outputs —
+  sellable `{category:"crop"}` materials, some edible (`heal`). **EXCLUDED from
+  `SCAVENGEABLE`** (crops are farmed, never found — like `food`/`animal`).
+- **`CROPS` catalog** (`src/lib/game/crops.ts`, mirrors `wildlife.ts`):
+  `Crop = { id, name, biomes: Biome[], growMs, yield: {materialId, qty} }`;
+  helpers `CROPS`/`CROP_IDS`/`isCropId`/`getCrop`/`cropsForBiome`. 10 crops
+  across 5 biomes (jungle/ocean/desert/tundra/volcanic, ≥2 each), grow times
+  20–90 min. **Biome-affined** — a crop only plants in a region whose biome is
+  in its `biomes`.
+- **`base_plots` table** (migration `20260609010000_crop-farming.sql`,
+  forward-only/idempotent): `(id, base_id→bases cascade, crop_id text [code
+  catalog, no FK], planted_at, created_at)`, index on base_id, **RLS public
+  read + service-role writes** (like `base_buildings`/`base_storage`). One row
+  per sown plot. `world.ts`: `getBasePlots`/`plantCrop`/`removePlots` (plain
+  service-role insert/delete — rows, not counters, so no atomic RPC).
+- **Pure rule** `cropMature(plantedAtMs, nowMs, growMs)` (`rules.ts`,
+  `now − planted ≥ grow`; time passed in). Seeded: `crop-farming.test.ts`.
+- **Commands**: `plant <crop>` (NEW verb; DISEMBARKED + own base in-region +
+  biome-valid + free plot + gas/outpost guards; arg domain =
+  `cropsForBiome(regionBiome)`). `harvest <crop>` EXTENDS the existing
+  `harvest`: with a crop arg → harvest your MATURE plots of it (award yield to
+  `player_materials`, free the plots); bare `harvest` → wild flora (unchanged);
+  its arg domain = crops with mature plots here. `scan`/`storage` surface plots
+  + maturity (P9b red). Registered in `VERBS`/`USAGE`/`applicability`
+  (DISEMBARKED).
