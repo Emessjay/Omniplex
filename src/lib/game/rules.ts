@@ -286,6 +286,17 @@ export function distressCost(credits: number, fee: number = DISTRESS_FEE): numbe
   return Math.min(have, fee);
 }
 
+// ---------------------------------------------------------------------------
+// First-discovery bounty (Keystone 3) — exploration pays immediately. The first
+// player to chart a planet (the `discoveries` insert wins exactly once per
+// planet) earns this flat credit reward. Modest by design: a nice nudge to
+// explore, not a primary income source. Awarded in the scan flow off the
+// existing once-only discovery gate, so it can never double-pay.
+// ---------------------------------------------------------------------------
+
+/** Flat credit reward for being the first to chart a planet. */
+export const DISCOVERY_BOUNTY = 250;
+
 /**
  * The most damage a single disembarked action can deal, on a maximally hostile
  * world (hazard 1.0) with the worst magnitude roll. At MAX_HEALTH 100 this means

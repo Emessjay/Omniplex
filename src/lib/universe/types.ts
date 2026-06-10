@@ -41,6 +41,26 @@ export const STAR_CLASSES = ["O", "B", "A", "F", "G", "K", "M"] as const;
 export type StarClass = (typeof STAR_CLASSES)[number];
 
 /**
+ * The kinds of findable exploration site (Keystone 3): an abandoned ship
+ * (`derelict`), a precursor structure (`ruin`), or an exotic phenomenon
+ * (`anomaly`). Source of truth for the `SiteType` union.
+ */
+export const SITE_TYPES = ["derelict", "ruin", "anomaly"] as const;
+export type SiteType = (typeof SITE_TYPES)[number];
+
+/**
+ * A findable exploration site occupying a surface region (Keystone 3). RARE and
+ * deterministic per region coord (`siteAt`); holds loot you can't mine —
+ * relics, rare materials, and a credit cache (`siteLoot`). `lootTier` (≥ 1)
+ * scales the haul: higher tier ⇒ richer loot.
+ */
+export interface Site {
+  readonly type: SiteType;
+  /** Loot richness tier (≥ 1); higher ⇒ better loot. */
+  readonly lootTier: number;
+}
+
+/**
  * Physical planet size classes, grounded in the Kopparapu (2018, ApJ 856)
  * occurrence data. Ordered small → large; the radius (R⊕) boundaries are:
  * Rocky 0.5–1, Super-Earth 1–1.75, Sub-Neptune 1.75–3.5, Sub-Jovian 3.5–6,

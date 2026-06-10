@@ -132,6 +132,7 @@ const SURFACE_ABOARD_ACTIONS = new Set([
 const DISEMBARKED_ACTIONS = new Set([
   "mine",
   "explore",
+  "salvage",
   "harvest",
   "plant",
   "ranch",

@@ -35,6 +35,7 @@ export const VERBS: string[] = [
   "embark",
   "mine",
   "explore",
+  "salvage",
   "harvest",
   "plant",
   "ranch",
@@ -151,6 +152,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
   },
   explore: {
     desc: "search the surface for salvage, plants and creatures (on foot)",
+    slots: [],
+  },
+  salvage: {
+    desc: "investigate the exploration site in this region for loot (on foot)",
     slots: [],
   },
   harvest: {

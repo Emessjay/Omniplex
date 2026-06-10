@@ -7,7 +7,7 @@
  * Every noun a player might act on is an `action` span whose `command` is the
  * exact string the click submits (AC: "use clickable actions generously").
  */
-import type { Biome, Planet, Region, StarSystem, StarPosition } from "@/lib/universe";
+import type { Biome, Planet, Region, StarSystem, StarPosition, SiteType } from "@/lib/universe";
 import { getResource, SIZE_CLASS_LABELS } from "@/lib/universe";
 import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
@@ -16,6 +16,13 @@ import { UPGRADES, getUpgrade } from "./upgrades";
 import { USAGE, usageLine } from "./usage";
 import { applicableVerbs, type PlayerStateView } from "./applicability";
 import type { GuideAdvice } from "./advisor";
+
+/** Display labels for exploration site types (Keystone 3; UI text only). */
+const SITE_TYPE_LABELS: Record<SiteType, string> = {
+  derelict: "derelict ship",
+  ruin: "ancient ruin",
+  anomaly: "strange anomaly",
+};
 
 /** Human description of what owning an upgrade lets you do (UI text only). */
 function capabilityOf(upgradeId: string): string {
@@ -201,10 +208,14 @@ export interface ScanView {
   region: Region;
   /** True when this region bears a settlement (P11) — surfaced as a note. */
   settlement?: boolean;
+  /** An exploration site in this region (Keystone 3), if present — type + salvage state. */
+  site?: ScanSite;
   /** Accumulated depletion per resource id in the CURRENT region. */
   depletionMap: Record<string, number>;
   /** True only on the scan that first recorded the discovery. */
   justDiscovered: boolean;
+  /** Credit bounty awarded for this first discovery (Keystone 3); set only when `justDiscovered`. */
+  discoveryBounty?: number;
   /** Handle of the original discoverer, if known and not this player. */
   discovererNote?: string;
   /** Upgrade id required to land/mine here, or null if survivable bare. */
@@ -239,6 +250,14 @@ export interface ScanView {
   herds?: HerdSummary[];
   /** Clickable `ranch <animal>` hints for this biome (red when pen full). */
   ranchHints?: RanchHint[];
+}
+
+/** An exploration site present in the scanned region (Keystone 3). */
+export interface ScanSite {
+  /** The site kind — derelict / ruin / anomaly. */
+  type: SiteType;
+  /** True when this player has already picked it clean (the `salvage` hint reads red). */
+  salvaged: boolean;
 }
 
 /** A base present in the scanned region, for the shared-world presence readout. */
@@ -452,7 +471,18 @@ export function renderScan(view: ScanView): RenderFrame {
     );
   }
   if (justDiscovered) {
-    lines.push(line(text("★ First discovery! You charted this world.", "success")));
+    // Keystone 3: charting a brand-new planet pays a one-time discovery bounty.
+    const bounty = view.discoveryBounty;
+    lines.push(
+      line(
+        text(
+          bounty && bounty > 0
+            ? `⊛ First to chart ${planet.name} — +${bounty} credits.`
+            : "★ First discovery! You charted this world.",
+          "success",
+        ),
+      ),
+    );
   } else if (view.discovererNote) {
     lines.push(line(text(view.discovererNote, "muted")));
   }
@@ -532,6 +562,24 @@ export function renderScan(view: ScanView): RenderFrame {
         text("   Its faction posts ", "muted"),
         action("contracts", "contracts", { style: "link", title: "see the faction's goods contracts" }),
         text(" — deliver goods for credits + reputation.", "muted"),
+      ]),
+    );
+  }
+  // Exploration site (Keystone 3): a rare derelict/ruin/anomaly in this region.
+  // Offer `salvage`; the action reads RED (P9b) once you've picked it clean (the
+  // command then returns the "already picked clean" error).
+  if (view.site) {
+    const label = SITE_TYPE_LABELS[view.site.type];
+    lines.push(
+      line([
+        text(`⊙ A ${label} lies here`, "accent"),
+        text(" — ", "muted"),
+        action("salvage", "salvage", {
+          style: "link",
+          title: view.site.salvaged ? "already picked clean" : `salvage the ${label}`,
+          disabled: view.site.salvaged,
+        }),
+        text(view.site.salvaged ? " (already picked clean)." : " it for loot.", "muted"),
       ]),
     );
   }

@@ -592,6 +592,53 @@ export async function markContractComplete(
 }
 
 // ---------------------------------------------------------------------------
+// Exploration sites (Keystone 3) — which region sites a player has already
+// salvaged. Sites are deterministic per region coord (`siteAt`); only the fact
+// that a player has picked one clean is persisted, keyed by the 6-segment
+// `regionKey`. Per-player (read-own RLS); service-role writes only. Mirrors the
+// `completed_contracts` once-per-instance shape.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether this player has ALREADY salvaged the site at `regionKey`. The
+ * `(player_id, region_key)` PK makes salvage once-per-player-per-site. Returns
+ * false when no row exists (not yet salvaged).
+ */
+export async function hasSalvaged(
+  playerId: string,
+  regionKey: string,
+): Promise<boolean> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("salvaged_sites")
+    .select("region_key")
+    .eq("player_id", playerId)
+    .eq("region_key", regionKey)
+    .maybeSingle();
+  if (error) throw error;
+  return data !== null;
+}
+
+/**
+ * Record that the player has salvaged the site at `regionKey`. Idempotent: the
+ * `(player_id, region_key)` PK makes a second salvage a no-op (the insert is
+ * ignored on conflict). Service-role write.
+ */
+export async function markSalvaged(
+  playerId: string,
+  regionKey: string,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("salvaged_sites")
+    .upsert(
+      { player_id: playerId, region_key: regionKey },
+      { onConflict: "player_id,region_key", ignoreDuplicates: true },
+    );
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Markets — per-SYSTEM resource prices (P12a). Each system has its own market
 // row per resource, keyed by `location_key = systemKey(...)` (the 4-segment
 // `"galaxy:arm:cluster:system"`). Trades read + write only the current system's

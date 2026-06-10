@@ -33,6 +33,8 @@ import {
   hasSettlement,
   hasOutpost,
   systemOutpostPlanets,
+  siteAt,
+  siteLoot,
   RESOURCES,
   SIZE_CLASS_LABELS,
   type SystemCoord,
@@ -41,6 +43,7 @@ import {
   type Region,
   type Planet,
   type Biome,
+  type Site,
 } from "@/lib/universe";
 import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
@@ -83,6 +86,7 @@ import {
   LIVESTOCK_PEN_CAPACITY,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
+  DISCOVERY_BOUNTY,
   DEPLETION_PER_UNIT,
   REGULAR_FUEL_PRICE_PER_UNIT,
   WARP_FUEL_PRICE_PER_UNIT,
@@ -464,6 +468,23 @@ async function regionScanFrame(
       ranchHintList = ranchHints(region.biome, totalHead >= headCapacity);
     }
   }
+  // First-discovery bounty (Keystone 3): `recordDiscovery` is the once-only gate
+  // (its insert wins exactly once per planet), so `justDiscovered === true` here
+  // means THIS player is the genuine first charter. Pay the flat bounty exactly
+  // once (atomic credit RPC) and surface it in the frame. Re-scanning a planet
+  // you already charted never re-pays.
+  if (justDiscovered) {
+    await world.addPlayerCredits(player.id, DISCOVERY_BOUNTY);
+  }
+  // Exploration site present in this region (Keystone 3)? Sites are RARE,
+  // deterministic, and surface-region-only — this is the surface frame (gas
+  // giants short-circuit to the orbital frame upstream), so it's a valid place
+  // to surface one. Show whether the player has already picked it clean so the
+  // `salvage` hint can read red (P9b).
+  const site = siteAt(seed, region.coord);
+  const siteView = site
+    ? { type: site.type, salvaged: await world.hasSalvaged(player.id, rKey) }
+    : undefined;
   const requiredUpgrade = landingRequirement(planet.temperature);
   // Orbit-land: the surface scan no longer lists sibling planets as `land <n>`
   // (you must `launch` to orbit before flying anywhere — siblings live in the
@@ -475,8 +496,10 @@ async function regionScanFrame(
     position: system.position,
     region,
     settlement: hasSettlement(seed, region.coord),
+    site: siteView,
     depletionMap,
     justDiscovered,
+    discoveryBounty: justDiscovered ? DISCOVERY_BOUNTY : undefined,
     requiredUpgrade,
     hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
     health: player.health,
@@ -884,6 +907,8 @@ async function dispatchResolved(
       return handleMine(player, seed, args);
     case "explore":
       return handleExplore(player, seed);
+    case "salvage":
+      return handleSalvage(player, seed);
     case "harvest":
       return handleHarvest(player, seed, args);
     case "plant":
@@ -2260,6 +2285,120 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
     `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
   );
   return frame([...lines, ...deathLines]);
+}
+
+/**
+ * `salvage` (Keystone 3) — investigate the exploration site in the current
+ * region (a `derelict`/`ruin`/`anomaly` found via `siteAt`) for its loot:
+ * relics, rare materials, and a credit cache (`siteLoot`). Once per player per
+ * site (tracked in `salvaged_sites`). Validate-before-mutate: refuse when
+ * there's no site here or you've already picked it clean, BEFORE granting
+ * anything. On success, award the loot atomically (each material + the credit
+ * cache), mark the site salvaged, THEN take the standard surface hazard roll —
+ * picking through a wreck on a savage world can wound or kill you (death
+ * sequence), exactly like `mine`/`explore`. Disembarked + gas/outpost guarded.
+ */
+async function handleSalvage(player: Player, seed: string): Promise<RenderFrame> {
+  // No surface to salvage while docked at the orbital outpost.
+  if (atOutpost(player)) return outpostSurfaceError();
+
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+
+  // A gas giant has no surface, hence no surface site to salvage (planet-taxonomy).
+  if (planet.isGas) return gasGiantError(planet);
+
+  // Same surface gate as `mine`/`explore`: a hostile (freezing/boiling) surface
+  // needs the matching upgrade before you can work it. No state change blocked.
+  const owned = await world.getOwnedUpgradeIds(player.id);
+  const gate = canLand(planet.temperature, owned);
+  if (!gate.ok) {
+    const up = getUpgrade(gate.required);
+    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    return errorFrame(
+      `${planet.name} is ${why} (${planet.temperature}°C) — salvaging requires ${up.name}. \`craft\` or \`buy\` it first.`,
+    );
+  }
+
+  const region = regionAt(seed, coord, player.region);
+  const site = siteAt(seed, region.coord);
+  if (!site) {
+    return errorFrame("Nothing to salvage here. `explore` other regions to find a site.");
+  }
+
+  const rKey = regionKey(region.coord);
+  if (await world.hasSalvaged(player.id, rKey)) {
+    return errorFrame("You've already picked this site clean.");
+  }
+
+  // Award the deterministic loot: each material + the credit cache. Atomic per
+  // RPC; then mark it salvaged so it can't be picked twice.
+  const loot = siteLoot(seed, region.coord, site);
+  for (const m of loot.materials) {
+    await world.addPlayerMaterial(player.id, m.id, m.qty);
+  }
+  if (loot.credits > 0) await world.addPlayerCredits(player.id, loot.credits);
+  await world.markSalvaged(player.id, rKey);
+
+  const lines: RenderLine[] = [];
+  lines.push(
+    line([
+      text("You comb the ", "default"),
+      text(siteLabel(site.type), "accent"),
+      text(" for anything of value.", "muted"),
+    ]),
+  );
+  for (const m of loot.materials) {
+    const mat = getMaterial(m.id);
+    lines.push(
+      line([
+        text(`+${m.qty} ${mat.name}`, mat.category === "relic" ? "success" : "default"),
+        text(mat.category === "relic" ? "  — a rare relic!" : ` (${mat.category})`, "muted"),
+      ]),
+    );
+  }
+  if (loot.credits > 0) {
+    lines.push(line(text(`+${loot.credits} cr (a stashed credit cache).`, "success")));
+  }
+
+  // Surface hazard: picking through a site exposes you to the region's hazard,
+  // exactly like `mine`/`explore`. The loot is already yours — you grabbed it
+  // before the hazard hit.
+  const damage = rollHazardDamage(region.hazard, Math.random(), Math.random());
+  if (damage <= 0) return frame(lines);
+
+  const hazardPct = Math.round(region.hazard * 100);
+  const newHealth = player.health - damage;
+  if (newHealth > 0) {
+    await world.setHealth(player.id, newHealth);
+    lines.push(
+      line(
+        text(
+          `${planet.name} wounds you for ${damage} (hazard ${hazardPct}%). HP ${newHealth}/${MAX_HEALTH}.`,
+          "danger",
+        ),
+      ),
+    );
+    return frame(lines);
+  }
+
+  const deathLines = await runDeath(
+    player,
+    `You succumbed to ${planet.name} (hazard ${hazardPct}%). You wake aboard your ship, 10% of your gold lost.`,
+  );
+  return frame([...lines, ...deathLines]);
+}
+
+/** Human-readable noun for a site type, for `salvage` / `scan` output. */
+function siteLabel(type: Site["type"]): string {
+  switch (type) {
+    case "derelict":
+      return "derelict ship";
+    case "ruin":
+      return "ancient ruin";
+    case "anomaly":
+      return "strange anomaly";
+  }
 }
 
 /**

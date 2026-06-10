@@ -32,9 +32,11 @@ import {
   type Galaxy,
   type Planet,
   type PlanetCoord,
+  SITE_TYPES,
   type Region,
   type RegionCoord,
   type ResourceDeposit,
+  type Site,
   type SizeClass,
   type StarClass,
   type StarPosition,
@@ -1103,6 +1105,104 @@ export function regionAt(
     hazard,
     deposits,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Exploration sites (Keystone 3) — findable derelicts / ruins / anomalies that
+// reward exploration with loot you CAN'T mine: relics, rare materials, and
+// credit caches. PURE & deterministic per region coord, on their OWN RNG stream
+// (`"site"` / `"site-loot"`, distinct from `regionAt`'s `"region"` stream), so
+// reading a site never perturbs region generation. Sites are RARE — a small
+// fraction of surface regions bear one — so finding a site is a genuine
+// discovery, not a given. Gas giants have no surface regions, hence no sites
+// (callers guard `isGas`; `siteAt` is only called for valid surface regions).
+// ---------------------------------------------------------------------------
+
+/**
+ * Probability a given surface region bears an exploration site. Tuned LOW so
+ * sites are a find, not a given (~5% of regions). The seeded universe suite
+ * asserts the realized fraction stays a small-but-present slice.
+ */
+export const SITE_SPAWN_CHANCE = 0.05;
+
+/**
+ * The loot table per site type: the material ids it can hold (real
+ * `materials.ts` ids — relics + rare minerals) and the credit-cache base. The
+ * actual haul scales with the site's `lootTier` (see `siteLoot`). A `derelict`
+ * yields salvageable minerals + a fat credit cache; a `ruin` yields precursor
+ * relics; an `anomaly` yields the exotic void idol + dust.
+ */
+const SITE_LOOT_TABLE: Record<Site["type"], { materials: readonly string[]; baseCredits: number }> = {
+  derelict: { materials: ["meteoric_dust", "geode_cluster"], baseCredits: 600 },
+  ruin: { materials: ["precursor_relic"], baseCredits: 350 },
+  anomaly: { materials: ["void_idol", "meteoric_dust"], baseCredits: 450 },
+};
+
+/** Largest loot tier a site can roll (≥ 1). Higher tier ⇒ richer loot. */
+const SITE_LOOT_TIER_MAX = 3;
+
+/**
+ * Whether — and what kind of — exploration site the region at `coord` bears.
+ * RARE and deterministic: a single `rng()` draw against `SITE_SPAWN_CHANCE`
+ * decides presence, then the site's `type` and `lootTier` are rolled from the
+ * SAME `"site"` stream. Returns `null` for the (vast) majority of regions with
+ * no site. Pure — no `Date`, no `Math.random`. The `"site"` namespace is
+ * distinct from `regionAt`'s `"region"` namespace, so reading a site flag never
+ * changes region generation.
+ *
+ * Gas giants have no surface regions to bear a site; callers guard `isGas`
+ * before reaching the surface, so `siteAt` is only ever called for a real
+ * surface region coord.
+ */
+export function siteAt(seed: string, coord: RegionCoord): Site | null {
+  const rng = makeRng(
+    seed,
+    "site",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+    coord.region,
+  );
+  if (rng() >= SITE_SPAWN_CHANCE) return null;
+  const type = pick(rng, SITE_TYPES);
+  const lootTier = randInt(rng, 1, SITE_LOOT_TIER_MAX);
+  return { type, lootTier };
+}
+
+/**
+ * The deterministic loot a site holds: a list of `{ id, qty }` materials (real
+ * `materials.ts` ids) plus a `credits` cache (always > 0). Higher `lootTier` ⇒
+ * better loot — every material's `qty` scales with the tier, as does the credit
+ * cache, so a tier-3 site strictly out-rewards a tier-1 site of the same type
+ * in the same region. PURE: the per-region credit jitter is keyed on the region
+ * coord ONLY (not the tier), so tier-monotonicity holds exactly. The
+ * `"site-loot"` stream is distinct from both `"site"` and `"region"`.
+ */
+export function siteLoot(
+  seed: string,
+  coord: RegionCoord,
+  site: Site,
+): { materials: { id: string; qty: number }[]; credits: number } {
+  const rng = makeRng(
+    seed,
+    "site-loot",
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+    coord.region,
+  );
+  const table = SITE_LOOT_TABLE[site.type];
+  // Per-region credit jitter, keyed on the region coord only (drawn before any
+  // tier scaling), so it's identical across tiers ⇒ credits rise strictly with
+  // tier.
+  const jitter = randInt(rng, 0, 200);
+  const materials = table.materials.map((id) => ({ id, qty: site.lootTier }));
+  const credits = table.baseCredits * site.lootTier + jitter;
+  return { materials, credits };
 }
 
 // ---------------------------------------------------------------------------
