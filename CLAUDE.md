@@ -2035,3 +2035,53 @@ gotchas) accrete here as workers surface things worth persisting. See
   shows both forms (P9b red when no condensate). Seeded:
   `hyperwarp-anywhere.test.ts`. Progression: bootstrap locally on warp fuel →
   mine voidstone → craft condensate → roam the galaxy freely.
+
+### Load-bearing decisions from `radiation-hazard` (cascade 0b)
+
+- **Galactic radiation now has teeth: coreward = lethal + rich, rim = calm +
+  poor.** NO migration in this phase (but see the player-relocation follow-up).
+  `radiationHazardFloor(radiation)` (`rules.ts`, pure, 0 → `RAD_HAZARD_FLOOR_MAX
+  = 0.55`, monotonic); **planet hazard = `max(hazardFor(temp),
+  radiationHazardFloor(galacticRadiation(cluster)))`** — the rim stays
+  temperature-driven (floor ≈0), the core is floored high. Via the existing
+  hazard→rarity (`rarityWeight`) + hazard→damage couplings, this makes coreward
+  planets rarer-ore'd and more dangerous for free. Verified gradient: cluster 0
+  mean hazard ~0.59 → cluster 63 ~0.36.
+- **`radiation_shield` upgrade** (`upgrades.ts`): real parts recipe, `value >
+  cost`, produced/traded via the existing UPGRADE machinery (no fork).
+  `radiationShieldRequired(radiation)` = `radiation > RADIATION_SHIELD_THRESHOLD
+  (60)`; landing/`disembark`/`mine`/`explore`/`salvage` on a high-rad surface
+  require owning it, composed with the temperature gate via a shared
+  `surfaceGateMissing`/`surfaceGateError` helper; `scan` surfaces it (P9b red).
+- **Spawn moved to the RIM**: `SPAWN_CLUSTER = MAX_CLUSTERS_PER_ARM − 1`
+  (`gen.ts`); `randomStartingWorld`/`startingWorld` scan the safe outer rim
+  (cluster-0 core floor 0.55 > the low-hazard spawn bar + would need a shield =
+  new-player softlock). New players start safe + poor at the rim and journey
+  coreward for riches — an emergent progression. The universe-gen/biome/
+  temp-hazard suites were re-sampled across the full cluster range (calm@rim /
+  savage@core). Seeded: `radiation-hazard.test.ts`.
+
+### Load-bearing decisions from `guide-advisor-fix`
+
+- **The `guide` advisor was looping mine↔sell forever** (the "no ore→mine" /
+  "has ore→sell" rungs fired before the progression rungs and were always
+  satisfiable). Reworked `nextStep` (`advisor.ts`) into a **stable, milestone-
+  based ladder** keyed off STABLE state (credits/holdings/base/ship/location),
+  not transient cargo: combat → reach-a-surface → first ore → **gather base
+  materials → build base** (a new player has the 500cr, so it says MINE the base
+  minerals, NOT sell) → grow the base (excavators/production/farms/contracts) →
+  bigger ship → explore/factions/coreward → open-ended. Selling is only advised
+  toward a NAMED goal, never as a bare rung that ping-pongs with mining. Gives a
+  new forward step each milestone. Seeded: `guide-advisor-fix.test.ts`.
+
+### Load-bearing decisions from `status-bar`
+
+- **Persistent HUD header** (playtest ask — clearing the terminal lost context).
+  `StatusBar` type + **additive `RenderFrame.status?`** (`terminal/types.ts`);
+  pure **`buildStatusBar(player, seed)`** (credits, friendly location, fuel,
+  warpFuel, health/maxHealth, ship) attached in ONE central dispatch spot.
+  `<Terminal>` keeps the latest status in its OWN state (separate from the log)
+  and renders a fixed header — **survives `clear`** (the client meta-command only
+  clears log lines) and is seeded from the `player` prop on first paint. Low HP
+  red (P9b), color-only styling (theme parity). `submitCommand` signature
+  unchanged. Custom "pin what you want" deferred to v2. Seeded: `status-bar.test.ts`.
