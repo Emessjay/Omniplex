@@ -1966,3 +1966,20 @@ gotchas) accrete here as workers surface things worth persisting. See
   build echo, storage — passes the base tier). So leveling a base runs more
   industry without more plants. `storage` shows the tier power contribution.
   Seeded: `base-power-tiers.test.ts`.
+
+### Load-bearing decisions from `orbital-derelicts` (Keystone 3c)
+
+- **Orbital derelicts + rank-scaled discovery payouts.** NO migration (reuses
+  `salvaged_sites`'s text key). `orbitalSiteAt(seed, planetCoord) → Site|null`
+  (`gen.ts`, pure, distinct `"orbital-site"` RNG stream that does NOT perturb
+  `planetAt`/`regionAt`/`siteAt`; ~4-8% of planets; per-PLANET; works for GAS
+  GIANTS too — orbit, not surface). `orbitalSiteLoot` (own stream, richer than
+  surface). **`salvage` now usable ORBITING (embarked && !landed) at an orbital
+  derelict** — no hazard roll (you're aboard), tracked in `salvaged_sites` by the
+  5-seg `planetKey` (surface sites use the 6-seg `regionKey`; same table, PK
+  distinguishes) — OR on foot at a surface site (unchanged, hazard roll).
+  Applicability: `salvage` applies when `!inCombat && ((embarked && !landed) ||
+  !embarked)`. `discoveryBountyFor(cartoRankTier)` (`rules.ts`, pure): base
+  bounty at tier 0, strictly increasing — first discovery pays the rank-scaled
+  amount. Orbital scan surfaces the derelict + salvage hint (P9b red if cleaned).
+  Seeded: `orbital-derelicts.test.ts`.
