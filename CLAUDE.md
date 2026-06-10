@@ -1766,3 +1766,27 @@ gotchas) accrete here as workers surface things worth persisting. See
   (+ a `launch` hint). **This SUPERSEDES `gasGiantScanFrame` and the
   `gas-scan-siblings` land-list** (siblings are `orbit <n>` now). The outpost
   scan also gained `orbit <n>` sibling nav. Seeded: `orbit-land.test.ts`.
+
+### Load-bearing decisions from `faction-ranks` (Keystone 1b)
+
+- **Reputation now pays off via RANKS that gate contract tiers** (the "rising
+  through the ranks" payoff). NO migration — rank is a pure function of the
+  existing `player_reputation.rep`. Builds on `factions-core`.
+- **`RANKS` ladder** (`factions.ts`, 6 tiers): `Unknown`(0) / `Associate`(100) /
+  `Contractor`(300) / `Partner`(700) / `Trusted`(1500) / `Champion`(3000) —
+  `{tier, title, minRep}`, ascending (tier = array index). `rankFor(rep)` =
+  highest rank with `minRep ≤ rep` (tier 0 at/below rep 0; clamps at top);
+  monotonic in rep. `MAX_RANK_TIER` exported.
+- **`contractsAt` gained a `rankTier` param** (`contractsAt(seed, locationKey,
+  factionId, timeBucket, rankTier)`): the contract RNG (which items/slots, the
+  `key`s) is **rank-INDEPENDENT** — only `want.qty`/rewards **scale UP with
+  rank** — so higher standing ⇒ at-least-as-lucrative contracts
+  (monotonic-in-rank) while the `factions-core` invariants (reward PREMIUM,
+  bucket ROTATION, key stability) still hold at EVERY rank. `factions-core.test`/
+  `factions-extra.test` were threaded with the new param (not weakened).
+- **Display**: `handleContracts` reads the player's rep with the hub faction →
+  `rankFor` → passes the tier to `contractsAt`, and the `contracts`/`standing`
+  views show the rank **title** + next-tier threshold (`render.ts`). No new
+  verbs (help-parity/applicability unchanged). Seeded: `faction-ranks.test.ts`.
+- **Deferred (1b-cont / 1c)**: rank-based price discounts, rank-locked goods,
+  faction politics/rivalry.

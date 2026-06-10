@@ -1499,14 +1499,17 @@ export function renderWho(view: WhoView): RenderFrame {
 // ---------------------------------------------------------------------------
 
 export interface StandingView {
-  /** Every faction with the player's reputation (flat list; ranks come in 1b). */
-  factions: { name: string; blurb: string; rep: number }[];
+  /**
+   * Every faction with the player's reputation, rank title, and the rep needed
+   * for the next tier (`nextRep` null = already at the top rank).
+   */
+  factions: { name: string; blurb: string; rep: number; rankTitle: string; nextRep: number | null }[];
 }
 
 /**
- * `standing` — the player's reputation with each NPC faction, a flat list for
- * now (rep ranks/titles arrive in Keystone 1b). Always renders every faction so
- * the player can see who's out there even at rep 0.
+ * `standing` — the player's reputation, rank title, and next-tier threshold with
+ * each NPC faction (Keystone 1b). Always renders every faction so the player can
+ * see who's out there even at rep 0.
  */
 export function renderStanding(view: StandingView): RenderFrame {
   const lines: RenderLine[] = [line(text("Faction standing", "heading"))];
@@ -1514,8 +1517,13 @@ export function renderStanding(view: StandingView): RenderFrame {
     lines.push(
       line([
         text("  • ", "muted"),
-        text(`${f.name}  `, "accent"),
-        text(`rep ${f.rep}`, f.rep > 0 ? "success" : "muted"),
+        text(`${f.name} — `, "accent"),
+        text(f.rankTitle, f.rep > 0 ? "success" : "muted"),
+        text(`  (rep ${f.rep}`, "muted"),
+        text(
+          f.nextRep === null ? ", max rank)" : `, next at ${f.nextRep})`,
+          "muted",
+        ),
       ]),
     );
     lines.push(line(text(`      ${f.blurb}`, "muted")));
@@ -1550,6 +1558,12 @@ export interface ContractsView {
   /** The hub faction (when `atHub`). */
   factionName?: string;
   factionBlurb?: string;
+  /** The player's reputation with the hub faction (when `atHub`). */
+  rep?: number;
+  /** The player's rank title with the hub faction — higher rank unlocks bigger contracts. */
+  rankTitle?: string;
+  /** Rep needed for the next rank (null = at top rank; undefined off-hub). */
+  nextRep?: number | null;
   /** The current bucket's contracts (when `atHub`). */
   contracts?: ContractEntry[];
 }
@@ -1575,6 +1589,20 @@ export function renderContracts(view: ContractsView): RenderFrame {
     ]),
   ];
   if (view.factionBlurb) lines.push(line(text(`  ${view.factionBlurb}`, "muted")));
+  if (view.rankTitle !== undefined) {
+    lines.push(
+      line([
+        text("  Your rank: ", "muted"),
+        text(view.rankTitle, (view.rep ?? 0) > 0 ? "success" : "muted"),
+        text(`  (rep ${view.rep ?? 0}`, "muted"),
+        text(
+          view.nextRep == null ? ", max rank)" : `, next at ${view.nextRep})`,
+          "muted",
+        ),
+        text("  — higher rank unlocks bigger contracts.", "muted"),
+      ]),
+    );
+  }
   const contracts = view.contracts ?? [];
   if (contracts.length === 0) {
     lines.push(line(text("  No contracts on offer right now — check back later.", "muted")));

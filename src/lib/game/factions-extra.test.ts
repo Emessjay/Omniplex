@@ -40,12 +40,12 @@ describe("contract board", () => {
   const fac = factionAt(SEED, hub);
 
   it("has unique keys within a single bucket", () => {
-    const keys = contractsAt(SEED, hub, fac, 4242).map((c) => c.key);
+    const keys = contractsAt(SEED, hub, fac, 4242, 0).map((c) => c.key);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
   it("awards positive, modestly-scaled reputation", () => {
-    for (const c of contractsAt(SEED, hub, fac, 4242)) {
+    for (const c of contractsAt(SEED, hub, fac, 4242, 0)) {
       expect(c.rewardRep).toBeGreaterThan(0);
       // Modest: rep is far smaller than the credit reward.
       expect(c.rewardRep).toBeLessThan(c.rewardCredits);
@@ -59,7 +59,7 @@ describe("contract board", () => {
   it("orbital-outpost hubs (region -1) generate a valid board too", () => {
     const outpostHub = "0:0:0:1:0:-1";
     const f = factionAt(SEED, outpostHub);
-    const board = contractsAt(SEED, outpostHub, f, 1000);
+    const board = contractsAt(SEED, outpostHub, f, 1000, 0);
     expect(board.length).toBeGreaterThan(0);
     for (const c of board) expect(c.want.qty).toBeGreaterThan(0);
   });
