@@ -496,11 +496,12 @@ gotchas) accrete here as workers surface things worth persisting. See
   (per-planet, 5-seg) keys.
 - **`warpDistance(a, b, armCount)`** (`gen.ts`) now takes `armCount`: different
   galaxies → `Infinity` (not a warp); same galaxy → a weighted sum
-  `armRing·ARM_SPAN + |Δcluster|·CLUSTER_SPAN + |Δsystem|·SYSTEM_SPAN` where
-  `armRing = min(|Δarm|, armCount − |Δarm|)` (symmetric wrap) and exported spans
-  satisfy `ARM_SPAN(100) ≫ CLUSTER_SPAN(10) ≫ SYSTEM_SPAN(1)`. 0-to-self,
-  symmetric, positive between distinct same-galaxy coords. `map`/`warp` supply
-  `armCount` via `galaxyAt(coord.galaxy).armCount`.
+  `armRing·ARM_SPAN + |Δcluster|·CLUSTER_SPAN + systemTerm` where
+  `armRing = min(|Δarm|, armCount − |Δarm|)` (symmetric wrap). Exported spans:
+  `CLUSTER_SPAN = ARM_SPAN = 10·STAR_CLUSTER_SIGMA = 100` (arm ≈ cluster cost
+  for now, to be revisited); `SYSTEM_SPAN = 1`. 0-to-self, symmetric, positive
+  between distinct same-galaxy coords. `map`/`warp` supply `armCount` via
+  `galaxyAt(coord.galaxy).armCount`.
 - **All gen RNG streams seed with the full coord** (`makeRng(seed, "...", galaxy,
   arm, cluster, system, …)`); the planet/region generation LOGIC (palette,
   regionCount, deposits, hazard/temperature) is otherwise UNCHANGED — just keyed
@@ -1503,15 +1504,16 @@ gotchas) accrete here as workers surface things worth persisting. See
   cluster, pos)` is the inverse — rounds the query to 2 dp and returns the EXACT-
   match star index or `null` (positions are unique, so unambiguous). `clusterOf`
   drops `system` from a `SystemCoord`.
-- **`warpDistance` is now SEED-FIRST: `warpDistance(seed, a, b, armCount)`**
-  (BREAKING — all three callers in `commands.ts` updated). The arm-ring + cluster
-  terms are unchanged; the SYSTEM term is now GEOMETRIC when `a`/`b` share galaxy
-  AND arm AND cluster — the EUCLIDEAN distance between star positions x `SYSTEM_SPAN`
-  (hence the seed). Across different clusters/arms (different clouds, positions
-  not comparable) it falls back to the old `|Δsystem|·SYSTEM_SPAN`. Tier-weight
-  ordering `ARM_SPAN(100) >> CLUSTER_SPAN(10) >> SYSTEM_SPAN(1)` holds; still
-  0-to-self, symmetric, positive between distinct same-galaxy coords; different
-  galaxies -> `Infinity`. PURE (positions derived from seed).
+- **`warpDistance` is SEED-FIRST: `warpDistance(seed, a, b, armCount)`**
+  (BREAKING — all three callers in `commands.ts` updated). The SYSTEM term is
+  GEOMETRIC when `a`/`b` share galaxy AND arm AND cluster — the EUCLIDEAN distance
+  between star positions × `SYSTEM_SPAN` (hence the seed); across different
+  clusters/arms the system term is **0** (positions are not comparable; the
+  cluster/arm terms fully capture the gap). `CLUSTER_SPAN = ARM_SPAN =
+  10·STAR_CLUSTER_SIGMA = 100` (cluster spacing 10σ > cluster diameter 8σ → no
+  spatial overlap; arm ≈ cluster cost for now, to be revisited); `SYSTEM_SPAN =
+  1`. Still 0-to-self, symmetric, positive between distinct same-galaxy coords;
+  different galaxies → `Infinity`. PURE (positions derived from seed).
 - **`warp <arm> <cluster> <system|x,y,z>`** — the third arg is EITHER a star index
   (0–1023) OR an `x,y,z` coordinate triple (a comma marks the coordinate form;
   `jump`-style opaque arg, resolved handler-side). `resolveWarpCoord` parses three

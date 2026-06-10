@@ -267,13 +267,15 @@ export function systemFromPosition(
 // ---------------------------------------------------------------------------
 
 /**
- * Tier weights for `warpDistance`: arm ≫ cluster ≫ system, so crossing an arm
- * is a long haul, a cluster hop is moderate, and the intra-cluster geometric
- * term is the fine-grained tiebreaker. Exported so callers/tests can reason
- * about the metric.
+ * Tier weights for `warpDistance`. `CLUSTER_SPAN = 10 * STAR_CLUSTER_SIGMA`
+ * (= 100), so a single cluster hop (10σ) cleanly exceeds the cloud diameter
+ * (2 * STAR_CLUSTER_MAX_RADIUS = 8σ) — clusters are spatially non-overlapping.
+ * `ARM_SPAN = CLUSTER_SPAN` (same cost for now; to be revisited). `SYSTEM_SPAN`
+ * is the multiplier on the intra-cluster Euclidean distance. Exported so
+ * callers/tests can reason about the metric.
  */
-export const ARM_SPAN = 100;
-export const CLUSTER_SPAN = 10;
+export const CLUSTER_SPAN = 10 * STAR_CLUSTER_SIGMA; // 100 — a cluster hop exceeds the cloud diameter
+export const ARM_SPAN = CLUSTER_SPAN; // same cost as a cluster hop for now
 export const SYSTEM_SPAN = 1;
 
 /**
@@ -283,15 +285,14 @@ export const SYSTEM_SPAN = 1;
  * in a 12-arm galaxy a difference of 5 and a difference of 7 are the same
  * distance (the ring is symmetric).
  *
- * The SYSTEM term is now GEOMETRIC (star-coordinates): when `a` and `b` are in
- * the same galaxy, arm AND cluster, it is the EUCLIDEAN distance between their
+ * The SYSTEM term is GEOMETRIC (star-coordinates): when `a` and `b` are in the
+ * same galaxy, arm AND cluster, it is the EUCLIDEAN distance between their
  * `(x, y, z)` star positions × `SYSTEM_SPAN` (derived via `systemPosition` —
- * hence the seed). Across different clusters/arms the two stars live in
- * different clouds, so positions aren't comparable; there the system term falls
- * back to the old `|Δsystem|·SYSTEM_SPAN` (the in-practice tiny index offset of
- * the `map`-offered cross-cluster neighbors). Different galaxies return
- * `Infinity` — inter-galaxy travel is NOT a warp (a later, condensate-gated
- * phase). Callers supply `armCount` from `galaxyAt(coord.galaxy).armCount`.
+ * hence the seed). Across different clusters or arms the system term is `0` —
+ * stars live in different clouds (positions not comparable) and the cluster/arm
+ * terms fully capture inter-cluster distance. Different galaxies return
+ * `Infinity` — inter-galaxy travel is NOT a warp (condensate-gated). Callers
+ * supply `armCount` from `galaxyAt(coord.galaxy).armCount`.
  * PURE — positions are derived from the seed, no hidden global.
  */
 export function warpDistance(
@@ -310,7 +311,7 @@ export function warpDistance(
     const pb = systemPosition(seed, b);
     systemTerm = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z) * SYSTEM_SPAN;
   } else {
-    systemTerm = Math.abs(a.system - b.system) * SYSTEM_SPAN;
+    systemTerm = 0; // different clusters/arms: cluster/arm terms capture the gap
   }
   return (
     armRing * ARM_SPAN +

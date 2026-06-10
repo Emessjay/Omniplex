@@ -10,6 +10,8 @@ import {
   ARM_SPAN,
   CLUSTER_SPAN,
   SYSTEM_SPAN,
+  STAR_CLUSTER_SIGMA,
+  STAR_CLUSTER_MAX_RADIUS,
 } from "@/lib/universe";
 import type { SystemCoord, PlanetCoord, RegionCoord } from "@/lib/universe";
 
@@ -65,7 +67,7 @@ describe("warpDistance — arm-wrapping, tier-weighted", () => {
 
   it("wraps arms symmetrically (12 arms: +5 == +7)", () => {
     // Same `system` index across arms ⇒ the system term is 0 in each (different
-    // arm = different cloud, so the index-difference fallback is 0), isolating
+    // arm = different cloud, and cross-cluster system term is always 0), isolating
     // the arm-ring term.
     const plus5: SystemCoord = { ...base, arm: 5 };
     const plus7: SystemCoord = { ...base, arm: 7 };
@@ -80,23 +82,31 @@ describe("warpDistance — arm-wrapping, tier-weighted", () => {
     );
   });
 
-  it("weights arm ≫ cluster (tier span ordering holds; system term is geometric)", () => {
-    // The tier-WEIGHT constants keep their strict ordering.
-    expect(ARM_SPAN).toBeGreaterThan(CLUSTER_SPAN);
+  it("tier span ordering: ARM_SPAN === CLUSTER_SPAN > SYSTEM_SPAN; cluster spacing exceeds cloud diameter", () => {
+    // ARM_SPAN and CLUSTER_SPAN are deliberately equal (arm ≈ cluster cost for
+    // now); both exceed SYSTEM_SPAN and the cluster's geometric diameter.
+    expect(ARM_SPAN).toBeGreaterThanOrEqual(CLUSTER_SPAN);
     expect(CLUSTER_SPAN).toBeGreaterThan(SYSTEM_SPAN);
-    // An arm hop (span 100) strictly dominates a one-cluster hop (span 10), both
-    // with `system` held equal so no geometric term enters.
+    expect(CLUSTER_SPAN).toBe(10 * STAR_CLUSTER_SIGMA);
+    expect(CLUSTER_SPAN).toBeGreaterThan(2 * STAR_CLUSTER_MAX_RADIUS); // no spatial overlap
+    // An arm hop and a cluster hop cost the same (both = 100), while an
+    // intra-cluster hop is strictly cheaper (Euclidean; max ~80 < 100).
     const armHop: SystemCoord = { ...base, arm: 1 };
     const clusterHop: SystemCoord = { ...base, cluster: 1 };
-    expect(warpDistance(SEED, base, armHop, ARM_COUNT)).toBeGreaterThan(
+    expect(warpDistance(SEED, base, armHop, ARM_COUNT)).toBeGreaterThanOrEqual(
       warpDistance(SEED, base, clusterHop, ARM_COUNT),
     );
-    // The arm hop also dominates ANY intra-cluster (system) hop — the arm tier
-    // outweighs the fine-grained Euclidean geometry within a cluster.
+    // The arm/cluster hop dominates ANY intra-cluster (system) hop.
     const systemHop: SystemCoord = { ...base, system: 1 };
     const intra = warpDistance(SEED, base, systemHop, ARM_COUNT);
     expect(intra).toBeGreaterThan(0); // distinct stars in a cluster are apart
     expect(warpDistance(SEED, base, armHop, ARM_COUNT)).toBeGreaterThan(intra);
+    // Cross-cluster system term is 0: a 1-cluster hop costs exactly CLUSTER_SPAN
+    // regardless of destination system index.
+    const clusterHopFarSystem: SystemCoord = { ...base, cluster: 1, system: 999 };
+    expect(warpDistance(SEED, base, clusterHop, ARM_COUNT)).toBe(
+      warpDistance(SEED, base, clusterHopFarSystem, ARM_COUNT),
+    );
   });
 
   it("is Infinity across different galaxies (not a warp)", () => {
