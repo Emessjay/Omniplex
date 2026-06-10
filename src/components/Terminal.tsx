@@ -77,9 +77,11 @@ function bootFrame(player?: Player): RenderFrame {
       ]),
       line(text("")),
       line([
-        text("gameplay not wired yet. Type ", "muted"),
+        text("New here? Type ", "muted"),
+        action("guide", "guide", { title: "get your next step" }),
+        text(" for your next step, or ", "muted"),
         action("help", "help", { title: "list commands" }),
-        text(" or click it to begin.", "muted"),
+        text(" for the full command list.", "muted"),
       ]),
       line(text("")),
     ]);

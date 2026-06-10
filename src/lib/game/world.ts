@@ -952,6 +952,36 @@ export async function setHealthAndEmbarked(
   if (error) throw error;
 }
 
+/**
+ * Emergency rescue (`distress`, player-guidance): dock the player at an orbital
+ * outpost in their current system, fully healed and combat cleared, in ONE
+ * write. Sets `planet` (the chosen outpost planet), `region = -1` (docked at the
+ * orbital station), `embarked = true`, `landed = false`, `health` (the caller
+ * passes `MAX_HEALTH`), and clears any encounter. Galaxy/arm/cluster/system are
+ * unchanged — the rescue stays in-system (not exploitable as free long-haul
+ * travel). The credit charge goes through the atomic `add_player_credits` RPC
+ * separately. The handler validates + picks the destination before calling.
+ */
+export async function setDistressLocation(
+  playerId: string,
+  planet: number,
+  health: number,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({
+      planet,
+      region: -1,
+      embarked: true,
+      landed: false,
+      health,
+      encounter: null,
+    })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
 // ---------------------------------------------------------------------------
 // Bases (P7) — a player's claim on a region. PUBLIC READ (others see them), so
 // these adapters return public-safe data (owner handle + name, never user_id).

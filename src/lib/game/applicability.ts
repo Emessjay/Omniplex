@@ -63,6 +63,10 @@ const INFORMATIONAL = new Set([
   // note itself when you're not at a trade hub (so it stays informational).
   "standing",
   "contracts",
+  // player-guidance — the soft-tutorial advisor. Usable in EVERY state including
+  // combat (it advises `attack`/`flee` then), so it lives with the informational
+  // commands rather than gating on embark/location.
+  "guide",
 ]);
 
 /** Combat actions — applicable ONLY while in an encounter. */
@@ -145,7 +149,14 @@ const DISEMBARKED_ACTIONS = new Set([
  * Combat still overrides — you can't slip to another region, step to a workbench,
  * or fiddle with your callsign mid-fight.
  */
-const ANYTIME_OUT_OF_COMBAT = new Set(["craft", "jump", "rename"]);
+const ANYTIME_OUT_OF_COMBAT = new Set([
+  "craft",
+  "jump",
+  "rename",
+  // player-guidance — emergency rescue. Works stranded in ANY embark/surface
+  // state (the anti-softlock safety net), but not mid-fight: `flee` first.
+  "distress",
+]);
 
 /**
  * `eat` is allowed in EVERY state (including combat) — you can always snack to

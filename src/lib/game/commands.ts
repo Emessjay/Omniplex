@@ -32,6 +32,7 @@ import {
   getResource,
   hasSettlement,
   hasOutpost,
+  systemOutpostPlanets,
   RESOURCES,
   SIZE_CLASS_LABELS,
   type SystemCoord,
@@ -71,6 +72,9 @@ import {
   baseCapacity,
   basePower,
   biofuelYield,
+  interplanetaryDistance,
+  distressCost,
+  DISTRESS_FEE,
   cropMature,
   CROP_FARM_PLOTS,
   livestockCanBreed,
@@ -169,6 +173,7 @@ import {
   renderWho,
   renderStanding,
   renderContracts,
+  renderGuide,
   errorFrame,
   type ContractEntry,
   type MapNeighbor,
@@ -183,6 +188,7 @@ import {
   type RanchHint,
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
+import { nextStep, type GuideSnapshot } from "./advisor";
 import * as world from "./world";
 
 /** Strict integer parse: returns null for missing/non-integer tokens. */
@@ -903,6 +909,10 @@ async function dispatchResolved(
       return handleWho();
     case "rename":
       return handleRename(player, args);
+    case "distress":
+      return handleDistress(player, seed);
+    case "guide":
+      return handleGuide(player, seed);
     default:
       return errorFrame(`Unknown command "${verb}". Type help for the list.`);
   }
@@ -4918,6 +4928,122 @@ async function handleRename(
       text(player.handle, "muted"),
       text(" → ", "muted"),
       text(next, "success"),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// guide / distress — player assistance (player-guidance).
+//
+// `guide` is the soft-tutorial advisor: it reads live state into a pure
+// `GuideSnapshot` and asks `nextStep` for the single best thing to do next.
+// Informational — usable in EVERY state (incl. combat). `distress` is the
+// anti-softlock safety net: an always-affordable (yet expensive) emergency
+// rescue that teleports you to the nearest in-system orbital station, healed.
+// ---------------------------------------------------------------------------
+
+/**
+ * `guide` — advise the player's single immediate next step. Builds the snapshot
+ * from authoritative state (embark/surface, holdings, base ownership, combat),
+ * then renders the pure `nextStep` advice with a clickable command. Read-only:
+ * no mutation. Usable in every state; in combat it advises `attack`/`flee`.
+ */
+async function handleGuide(player: Player, seed: string): Promise<RenderFrame> {
+  const planet = planetAt(seed, locOf(player));
+  const [stacks, materials, parts, base, ownedBases] = await Promise.all([
+    world.getInventory(player.id),
+    world.getPlayerMaterials(player.id),
+    world.getPlayerParts(player.id),
+    baseHere(player, seed),
+    world.basesOwnedBy(player.id),
+  ]);
+  const hasOreInCargo = stacks.length > 0;
+  const hasAnyGoods = hasOreInCargo || materials.length > 0 || parts.length > 0;
+
+  const snapshot: GuideSnapshot = {
+    embarked: player.embarked,
+    landed: player.landed,
+    onFoot: !player.embarked,
+    currentPlanetIsGas: planet.isGas,
+    atTradeLocation: atTradeLocation(player, seed),
+    hasOreInCargo,
+    hasAnyGoods,
+    credits: player.credits,
+    fuel: player.fuel,
+    warpFuel: player.warpFuel,
+    hasBaseHere: base != null,
+    hasAnyBase: ownedBases.length > 0,
+    inCombat: player.encounter != null,
+  };
+  return renderGuide(nextStep(snapshot));
+}
+
+/**
+ * `distress` — call emergency services. Always succeeds: charges
+ * `distressCost(credits) = min(credits, DISTRESS_FEE)` (never drives credits
+ * negative, yet stings the wealthy), then teleports the player to the NEAREST
+ * orbital outpost in their CURRENT system — picked by `interplanetaryDistance`
+ * to the planet they're at (tiebreak lowest index) — docking them there
+ * (`region = -1`, embarked, not landed), fully healed, combat cleared. Stays
+ * in-system, so it can't be abused as free long-haul travel. Validate the
+ * destination before mutating; charge + relocate atomically (two writes, both
+ * commutative and idempotent in effect).
+ */
+async function handleDistress(player: Player, seed: string): Promise<RenderFrame> {
+  const system = systemOf(player);
+  const outposts = systemOutpostPlanets(seed, system);
+  // Every system has ≥ 1 outpost, but guard defensively — never strand a rescue.
+  if (outposts.length === 0) {
+    return errorFrame(
+      "No orbital station could be reached from here. (No outpost in this system — try `warp`ing to a neighbour.)",
+    );
+  }
+
+  // Nearest outpost to the planet we're at, by interplanetary distance now;
+  // deterministic tiebreak on the lower planet index. (If we're already at an
+  // outpost planet, its distance is 0 → it wins, and the rescue just re-docks.)
+  const here = planetAt(seed, locOf(player));
+  const now = Date.now();
+  let best = outposts[0]!;
+  let bestDist = interplanetaryDistance(here, planetAt(seed, { ...system, planet: best }), now);
+  for (const idx of outposts.slice(1)) {
+    const dist = interplanetaryDistance(here, planetAt(seed, { ...system, planet: idx }), now);
+    if (dist < bestDist) {
+      best = idx;
+      bestDist = dist;
+    }
+  }
+
+  const destPlanet = planetAt(seed, { ...system, planet: best });
+  const cost = distressCost(player.credits);
+
+  // Charge first (atomic, clamped ≥ 0), then relocate + heal in one write.
+  if (cost > 0) await world.addPlayerCredits(player.id, -cost);
+  await world.setDistressLocation(player.id, best, MAX_HEALTH);
+
+  const remaining = Math.max(0, player.credits - cost);
+  const feeNote =
+    cost < DISTRESS_FEE
+      ? `Emergency services took everything you had (${cost} cr).`
+      : `Emergency services billed you ${cost} cr.`;
+  return frame([
+    line(text("Distress beacon answered.", "success")),
+    line([
+      text("A rescue tug hauls you to the orbital station above ", "default"),
+      text(destPlanet.name, "accent"),
+      text(", patches your hull, and tops up your med-bay.", "default"),
+    ]),
+    line([
+      text(feeNote + " ", "muted"),
+      text(`Balance ${remaining} cr. `, "muted"),
+      text(`HP restored to ${MAX_HEALTH}.`, "success"),
+    ]),
+    line([
+      text("You're docked — ", "muted"),
+      action("scan", "scan", { style: "link", title: "look around the station" }),
+      text(" the station, or ", "muted"),
+      action("buy fuel", "buy fuel", { style: "link", title: "refuel here" }),
+      text(" to get moving again.", "muted"),
     ]),
   ]);
 }

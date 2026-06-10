@@ -60,6 +60,8 @@ export const VERBS: string[] = [
   "fulfill",
   "who",
   "rename",
+  "distress",
+  "guide",
   "help",
 ];
 
@@ -263,6 +265,14 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [
       { name: "username", hint: "3–20 letters, digits, dashes or underscores" },
     ],
+  },
+  distress: {
+    desc: "call emergency services — teleport to the nearest station, fully healed (costs a hefty fee, or all you have)",
+    slots: [],
+  },
+  guide: {
+    desc: "get advice on your single best next step (great when you're new or stuck)",
+    slots: [],
   },
   help: {
     desc: "list commands, or show usage for one",

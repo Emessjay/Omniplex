@@ -258,6 +258,34 @@ export const MAX_HEALTH = 100;
 /** Fraction of credits lost on death: `floor(credits * (1 - this))` survives. */
 export const DEATH_GOLD_PENALTY = 0.1;
 
+// ---------------------------------------------------------------------------
+// Emergency services (`distress`) — the anti-softlock safety net (player-guidance).
+//
+// `distress` always rescues you (teleport to the nearest station + full heal),
+// even when broke, but it stings: it charges a large flat FEE, capped at
+// whatever you can pay so it NEVER fails for lack of funds and NEVER drives
+// credits negative. The pure cost function takes the player's current credits;
+// the handler picks the destination + applies the atomic mutations.
+// ---------------------------------------------------------------------------
+
+/**
+ * The flat emergency-services fee. Deliberately large — `distress` is a last
+ * resort, not cheap travel — but `distressCost` caps it at what you actually
+ * have, so it always succeeds (the true safety net).
+ */
+export const DISTRESS_FEE = 5000;
+
+/**
+ * What an emergency rescue costs given the player's current `credits`:
+ * `min(credits, DISTRESS_FEE)`. Always `≥ 0` and `≤ credits` (never drives the
+ * balance negative — the rescue is guaranteed) and `≤ DISTRESS_FEE` (the wealthy
+ * pay the full sting). Pure.
+ */
+export function distressCost(credits: number, fee: number = DISTRESS_FEE): number {
+  const have = Math.max(0, credits);
+  return Math.min(have, fee);
+}
+
 /**
  * The most damage a single disembarked action can deal, on a maximally hostile
  * world (hazard 1.0) with the worst magnitude roll. At MAX_HEALTH 100 this means

@@ -15,6 +15,7 @@ import { effectiveAbundance, warpFuelCost, FREEZING_C, BOILING_C } from "./rules
 import { UPGRADES, getUpgrade } from "./upgrades";
 import { USAGE, usageLine } from "./usage";
 import { applicableVerbs, type PlayerStateView } from "./applicability";
+import type { GuideAdvice } from "./advisor";
 
 /** Human description of what owning an upgrade lets you do (UI text only). */
 function capabilityOf(upgradeId: string): string {
@@ -1604,6 +1605,34 @@ export function renderContracts(view: ContractsView): RenderFrame {
           title: short ? "you don't hold enough of the goods" : "deliver the goods",
         }),
         text(short ? `  (have ${c.haveQty}/${c.qty})` : "", "muted"),
+      ]),
+    );
+  }
+  return frame(lines);
+}
+
+/**
+ * `guide` — the soft-tutorial advisor's single next-step advice (player-guidance).
+ * Shows the message plus, when there's a concrete command to run, a clickable
+ * token for it. The advice text already ends with the nudge to check back with
+ * `guide`, so the renderer stays dumb — it just lays out what the engine decided.
+ */
+export function renderGuide(advice: GuideAdvice): RenderFrame {
+  const lines: RenderLine[] = [
+    line([
+      text("Guide", "heading"),
+      text("  — your next step", "muted"),
+    ]),
+    line(text(advice.message, "default")),
+  ];
+  if (advice.suggestedCommand) {
+    lines.push(
+      line([
+        text("→ ", "muted"),
+        action(advice.suggestedCommand, advice.suggestedCommand, {
+          style: "link",
+          title: `run \`${advice.suggestedCommand}\``,
+        }),
       ]),
     );
   }
