@@ -18,7 +18,7 @@ import "server-only";
  * generated, non-identifying callsign instead of the email local-part.
  */
 import { getServerClient } from "@/lib/supabase/server";
-import { startingWorld } from "@/lib/universe";
+import { randomStartingWorld } from "@/lib/universe";
 import { getWorldSeed } from "@/lib/game/seed";
 import { rowToPlayer } from "./mapping";
 import { generateCallsign, uniqueHandle } from "./handle";
@@ -39,14 +39,13 @@ export async function getOrCreatePlayer(
   const existing = await findByUserId(userId);
   if (existing) return existing;
 
-  // New players spawn at the deterministic SAFE STARTING WORLD for this seed —
-  // a rocky, moderate-temperature world (planet-taxonomy). Since ~half of all
-  // planets are now non-landable gas giants, the old hardcoded `(0,0,0,0,0,0)`
-  // spawn could drop a player in orbit of a gas giant with nothing to do, so we
-  // set the location explicitly instead of relying on the DB column defaults.
-  // The same `startingWorld(seed)` backs the reset migration's relocation, so a
-  // fresh player and a relocated one land on the same world.
-  const spawn = startingWorld(getWorldSeed());
+  // New players spawn on a RANDOM habitable world in cluster 0 — rocky,
+  // temperate, low-hazard — so players spread across the starting cluster
+  // rather than all stacking on one world. `Math.random` lives here (the
+  // impure DB boundary); `randomStartingWorld` itself stays pure (injected
+  // rand). Falls back to the deterministic `startingWorld` if no habitable
+  // world is found within the retry budget (very unlikely).
+  const spawn = randomStartingWorld(getWorldSeed(), Math.random);
 
   // Insert, retrying on handle collisions. New players take the DB column
   // defaults for everything EXCEPT location (1000 credits, 100 fuel, 50
