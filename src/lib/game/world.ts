@@ -772,6 +772,22 @@ export async function addPlayerCredits(
 }
 
 /**
+ * Atomically bump a player's worlds-CHARTED count by 1 (Keystone 3b); returns the
+ * new count. Called ONLY inside the first-discovery gate (`recordDiscovery`
+ * returned true), so it fires exactly once per planet. Race-safe via the
+ * `add_charted` RPC (mirrors `add_player_credits`).
+ */
+export async function incrementCharted(playerId: string): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_charted", {
+    p_player: playerId,
+    p_delta: 1,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+/**
  * Set WARP fuel and full location in one update (warp). Region is always reset
  * to 0 and `landed` to false — you ARRIVE IN ORBIT of region 0's planet
  * (orbit-land); you must `land` to descend. Warp burns warp fuel; regular `fuel`
@@ -1421,33 +1437,22 @@ export async function topByCredits(limit: number): Promise<BoardRow[]> {
   return (data ?? []) as BoardRow[];
 }
 
-/** Top players by discovery count, with handles resolved from leaderboard. */
-export async function topByDiscoveries(
+/**
+ * Top explorers by worlds CHARTED (Keystone 3b), from the public-safe leaderboard
+ * view (now exposing `charted`). Players who haven't charted anything (0) are
+ * excluded so the board shows real explorers. The cartography rank/title is
+ * derived render-side from `charted` (`cartographyRank`).
+ */
+export async function topByCharted(
   limit: number,
-): Promise<{ handle: string; count: number }[]> {
+): Promise<{ handle: string; charted: number }[]> {
   const db = getServerClient();
-  const { data, error } = await db.from("discoveries").select("player_id");
-  if (error) throw error;
-
-  const counts = new Map<string, number>();
-  for (const row of data ?? []) {
-    const pid = (row as { player_id: string | null }).player_id;
-    if (pid) counts.set(pid, (counts.get(pid) ?? 0) + 1);
-  }
-  if (counts.size === 0) return [];
-
-  const { data: lb, error: lbErr } = await db
+  const { data, error } = await db
     .from("leaderboard")
-    .select("id, handle");
-  if (lbErr) throw lbErr;
-  const handleById = new Map<string, string>();
-  for (const row of lb ?? []) {
-    const r = row as { id: string; handle: string };
-    handleById.set(r.id, r.handle);
-  }
-
-  return [...counts.entries()]
-    .map(([id, count]) => ({ handle: handleById.get(id) ?? "unknown", count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, limit);
+    .select("handle, charted")
+    .gt("charted", 0)
+    .order("charted", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as { handle: string; charted: number }[];
 }

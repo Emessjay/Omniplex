@@ -216,6 +216,10 @@ export interface ScanView {
   justDiscovered: boolean;
   /** Credit bounty awarded for this first discovery (Keystone 3); set only when `justDiscovered`. */
   discoveryBounty?: number;
+  /** Worlds charted AFTER this first discovery (Keystone 3b); set only when `justDiscovered`. */
+  chartedCount?: number;
+  /** The player's cartography rank title at the new charted count (Keystone 3b). */
+  chartedRankTitle?: string;
   /** Handle of the original discoverer, if known and not this player. */
   discovererNote?: string;
   /** Upgrade id required to land/mine here, or null if survivable bare. */
@@ -472,13 +476,22 @@ export function renderScan(view: ScanView): RenderFrame {
   }
   if (justDiscovered) {
     // Keystone 3: charting a brand-new planet pays a one-time discovery bounty.
+    // Keystone 3b: it also bumps the player's worlds-charted count + cartography
+    // rank — surface both in the same line ("… · N worlds charted (Title)").
     const bounty = view.discoveryBounty;
+    const charted = view.chartedCount;
+    const cartoTail =
+      charted !== undefined
+        ? ` · ${charted} world${charted === 1 ? "" : "s"} charted${
+            view.chartedRankTitle ? ` (${view.chartedRankTitle})` : ""
+          }`
+        : "";
     lines.push(
       line(
         text(
           bounty && bounty > 0
-            ? `⊛ First to chart ${planet.name} — +${bounty} credits.`
-            : "★ First discovery! You charted this world.",
+            ? `⊛ First to chart ${planet.name} — +${bounty} credits${cartoTail}.`
+            : `★ First discovery! You charted this world${cartoTail}.`,
           "success",
         ),
       ),
@@ -1645,7 +1658,11 @@ export function renderStorage(view: StorageView): RenderFrame {
 
 export interface WhoView {
   topCredits: { handle: string; credits: number }[];
-  topDiscoveries: { handle: string; count: number }[];
+  /**
+   * Top explorers ranked by worlds CHARTED (Keystone 3b), each with their
+   * cartography rank title (derived render-side from `charted`). Public-safe.
+   */
+  topExplorers: { handle: string; charted: number; rankTitle: string }[];
 }
 
 export function renderWho(view: WhoView): RenderFrame {
@@ -1665,19 +1682,72 @@ export function renderWho(view: WhoView): RenderFrame {
     });
   }
   lines.push(line(text("Top explorers:", "accent")));
-  if (view.topDiscoveries.length === 0) {
+  if (view.topExplorers.length === 0) {
     lines.push(line(text("  (nothing charted yet)", "muted")));
   } else {
-    view.topDiscoveries.forEach((r, i) => {
+    view.topExplorers.forEach((r, i) => {
       lines.push(
         line([
           text(`  ${i + 1}. `, "muted"),
           text(r.handle, "default"),
-          text(`  ${r.count} discoveries`, "accent"),
+          text(`  ${r.charted} charted`, "accent"),
+          text(`  ${r.rankTitle}`, "success"),
         ]),
       );
     });
   }
+  return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Cartography — the explorer's progression readout (Keystone 3b).
+// ---------------------------------------------------------------------------
+
+export interface CartographyView {
+  /** Worlds the player has charted (first discoveries). */
+  charted: number;
+  /** Current cartography rank title. */
+  rankTitle: string;
+  /** Current rank tier. */
+  tier: number;
+  /** The top tier on the ladder (for the "max rank" case). */
+  maxTier: number;
+  /** Worlds-charted threshold for the next tier, or null at the top. */
+  nextThreshold: number | null;
+  /** Worlds still needed to reach the next tier, or null at the top. */
+  toNext: number | null;
+}
+
+/**
+ * `cartography` — your worlds charted, current rank/title, and progress to the
+ * next tier (the explorer's analogue of `standing`). At the top rank it says so.
+ */
+export function renderCartography(view: CartographyView): RenderFrame {
+  const lines: RenderLine[] = [line(text("Cartography", "heading"))];
+  lines.push(
+    line([
+      text("Rank ", "muted"),
+      text(view.rankTitle, "success"),
+      text(`  (tier ${view.tier}/${view.maxTier})`, "muted"),
+    ]),
+  );
+  lines.push(
+    line([
+      text("Worlds charted ", "muted"),
+      text(`${view.charted}`, "accent"),
+    ]),
+  );
+  if (view.nextThreshold === null || view.toNext === null) {
+    lines.push(line(text("You've reached the highest cartography rank.", "muted")));
+  } else {
+    lines.push(
+      line([
+        text(`${view.toNext} more world${view.toNext === 1 ? "" : "s"} to the next rank `, "muted"),
+        text(`(at ${view.nextThreshold} charted)`, "muted"),
+      ]),
+    );
+  }
+  lines.push(line(text("Be the first to `scan` a planet to chart it.", "muted")));
   return frame(lines);
 }
 

@@ -63,6 +63,9 @@ const INFORMATIONAL = new Set([
   // note itself when you're not at a trade hub (so it stays informational).
   "standing",
   "contracts",
+  // cartography (Keystone 3b) — your exploration progression (worlds charted +
+  // rank). Read-only, usable in every state like the other info commands.
+  "cartography",
   // player-guidance — the soft-tutorial advisor. Usable in EVERY state including
   // combat (it advises `attack`/`flee` then), so it lives with the informational
   // commands rather than gating on embark/location.

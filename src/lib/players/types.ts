@@ -71,6 +71,13 @@ export interface Player {
    * Set on a fauna encounter while exploring; cleared on kill / flee / death.
    */
   encounter: PlayerEncounter | null;
+  /**
+   * Worlds CHARTED — the count of planets this player was the first to discover
+   * (Keystone 3b). Incremented exactly once per planet inside the first-discovery
+   * gate (the same gate that pays `DISCOVERY_BOUNTY`); maps purely to a
+   * cartography rank/title (`cartography.ts`). Starts at 0 (no backfill).
+   */
+  charted: number;
   /** ISO timestamp the row was created. */
   createdAt: string;
 }
@@ -106,5 +113,6 @@ export interface PlayerRow {
   embarked: boolean;
   landed: boolean;
   encounter: PlayerEncounter | null;
+  charted: number;
   created_at: string;
 }

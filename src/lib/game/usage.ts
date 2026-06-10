@@ -62,6 +62,7 @@ export const VERBS: string[] = [
   "standing",
   "contracts",
   "fulfill",
+  "cartography",
   "who",
   "rename",
   "distress",
@@ -278,6 +279,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
   fulfill: {
     desc: "deliver the goods for a hub contract for credits + faction reputation",
     slots: [{ name: "n", hint: "a contract # from `contracts`" }],
+  },
+  cartography: {
+    desc: "show your worlds charted + cartography rank (rises as you discover new worlds)",
+    slots: [],
   },
   who: { desc: "see the shared-world leaderboards", slots: [] },
   rename: {
