@@ -24,7 +24,7 @@ describe("galaxyAt", () => {
     for (let g = 0; g < 30; g++) {
       const arm = galaxyAt(SEED, g).armCount;
       expect(Number.isInteger(arm)).toBe(true);
-      expect(arm).toBeGreaterThanOrEqual(2);
+      expect(arm).toBeGreaterThanOrEqual(8);
       counts.push(arm);
     }
     expect(new Set(counts).size).toBeGreaterThan(1); // different galaxies differ

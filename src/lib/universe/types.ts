@@ -124,7 +124,7 @@ export const PALETTE_MAX = 4;
  * indices are canonical modulo that count — warping to arm `armCount` lands on
  * arm 0, and arm distance wraps symmetrically around the ring.
  */
-export const ARM_COUNT_MIN = 2;
+export const ARM_COUNT_MIN = 8;
 export const ARM_COUNT_MAX = 16;
 
 /**

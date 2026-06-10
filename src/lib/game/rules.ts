@@ -24,7 +24,7 @@ export { atmosphereDensity };
 // ---------------------------------------------------------------------------
 
 /** Warp fuel burned per unit of `warpDistance`. Warp cost = ceil(distance * this). */
-export const WARP_FUEL_PER_DISTANCE = 1;
+export const WARP_FUEL_PER_DISTANCE = 1 / 3;
 
 /**
  * Two fuels (P2). Regular fuel moves you BETWEEN PLANETS within a system
