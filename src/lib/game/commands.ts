@@ -121,6 +121,7 @@ import {
 import {
   SHIPS,
   SHIP_IDS,
+  STARTER_SHIP_ID,
   isShipId,
   getShip,
   shipTradeIn,
@@ -5847,6 +5848,13 @@ async function handleGuide(player: Player, seed: string): Promise<RenderFrame> {
   ]);
   const hasOreInCargo = stacks.length > 0;
   const hasAnyGoods = hasOreInCargo || materials.length > 0 || parts.length > 0;
+  // Whether cargo holds every mineral a base build needs, in the required
+  // amounts — the STABLE gate on the build-base milestone (not generic ore), so
+  // the advice doesn't flip-flop with each haul.
+  const onHand = new Map(stacks.map((s) => [s.resourceId, s.qty]));
+  const hasBaseMinerals = Object.entries(BASE_BUILD_MINERALS).every(
+    ([id, need]) => (onHand.get(id) ?? 0) >= need,
+  );
 
   const snapshot: GuideSnapshot = {
     embarked: player.embarked,
@@ -5854,14 +5862,16 @@ async function handleGuide(player: Player, seed: string): Promise<RenderFrame> {
     onFoot: !player.embarked,
     currentPlanetIsGas: planet.isGas,
     atTradeLocation: atTradeLocation(player, seed),
+    inCombat: player.encounter != null,
+    credits: player.credits,
+    hasAnyBase: ownedBases.length > 0,
+    hasBaseHere: base != null,
     hasOreInCargo,
     hasAnyGoods,
-    credits: player.credits,
+    hasBaseMinerals,
+    shipIsStarter: player.shipId === STARTER_SHIP_ID,
     fuel: player.fuel,
     warpFuel: player.warpFuel,
-    hasBaseHere: base != null,
-    hasAnyBase: ownedBases.length > 0,
-    inCombat: player.encounter != null,
   };
   return renderGuide(nextStep(snapshot));
 }

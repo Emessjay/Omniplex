@@ -1,5 +1,6 @@
 /**
- * The `guide` soft-tutorial advisor — a PURE advice engine (player-guidance).
+ * The `guide` soft-tutorial advisor — a PURE advice engine (player-guidance,
+ * reworked by guide-advisor-fix).
  *
  * `nextStep(snapshot)` reads a plain, IO-free struct of the player's current
  * situation and returns the SINGLE immediate next step to make progress, with a
@@ -11,17 +12,22 @@
  * handler, and unit tests can all share it.
  *
  * The ladder is an ORDERED list of rungs; `nextStep` returns the FIRST one whose
- * condition holds. It is mostly an onboarding ramp (orbit → land → disembark →
- * mine → trade → build → grow) that opens out to open-ended advice once the
- * player is established. A couple of rungs are ordered ahead of the literal
- * spec ladder because the seeded contract (and good UX) demand it:
- *  - "at a trade hub with goods to move" beats the orbit/land navigation rungs
- *    (if you're standing at a market with a haul, sell it — embark state is
- *    irrelevant), and
- *  - "enough credits and no base yet → build one" beats the basic on-foot
- *    mining loop (it's the milestone that distinguishes an established player
- *    with no claim from a fresh one who should keep mining).
+ * condition holds. Crucially it is MILESTONE-based, not micro-step based: each
+ * rung keys off STABLE state (base ownership, ship, credits, holdings of the
+ * specific minerals a base needs), so the advice toward the current milestone is
+ * the SAME whether or not the player momentarily holds ore. This kills the
+ * mine↔sell flip-flop the original ladder produced: there is NO bare "sell" rung
+ * that ping-pongs with "mine" — selling is only ever advised as a means toward a
+ * NAMED goal (e.g. affording the base fee, or saving for a bigger ship).
+ *
+ * The progression it walks: reach a workable surface (orbit → land → disembark)
+ * → mine the minerals a base needs and `build base` → grow the base → buy/build a
+ * bigger ship → explore / factions → open-ended. Each milestone is a different,
+ * FORWARD rung, so a progressing player keeps getting new advice rather than
+ * being trapped before the build-base/grow/ship/explore rungs.
  */
+
+import { BASE_BUILD_MINERALS, BASE_BUILD_CREDITS } from "./bases";
 
 /** A plain, IO-free snapshot of the state the advisor reasons about. */
 export interface GuideSnapshot {
@@ -35,22 +41,30 @@ export interface GuideSnapshot {
   currentPlanetIsGas: boolean;
   /** Physically at a settlement region or orbital outpost (a market). */
   atTradeLocation: boolean;
-  /** Carrying mined resources in the cargo hold. */
-  hasOreInCargo: boolean;
-  /** Carrying anything sellable — resources, materials, or ship parts. */
-  hasAnyGoods: boolean;
-  /** Current credit balance. */
-  credits: number;
-  /** Current regular fuel. */
-  fuel: number;
-  /** Current warp fuel. */
-  warpFuel: number;
-  /** Own a base in the region you're standing in. */
-  hasBaseHere: boolean;
-  /** Own a base anywhere. */
-  hasAnyBase: boolean;
   /** In an active combat encounter. */
   inCombat: boolean;
+  /** Current credit balance (STABLE — keys the build-base / ship milestones). */
+  credits: number;
+  /** Own a base anywhere (STABLE — the production milestone). */
+  hasAnyBase: boolean;
+  /** Own a base in the region you're standing in. */
+  hasBaseHere: boolean;
+  /** Carrying mined resources in the cargo hold (transient — display only). */
+  hasOreInCargo: boolean;
+  /** Carrying anything sellable — resources, materials, or ship parts (transient). */
+  hasAnyGoods: boolean;
+  /**
+   * Cargo holds every mineral a base build needs (`BASE_BUILD_MINERALS`) in the
+   * required amounts. STABLE w.r.t. the base milestone — this, not generic ore,
+   * is what gates the build-base rung, so the advice doesn't flip with each haul.
+   */
+  hasBaseMinerals: boolean;
+  /** Still flying the free starter ship (`STARTER_SHIP_ID`). */
+  shipIsStarter: boolean;
+  /** Current regular fuel (optional; informational). */
+  fuel?: number;
+  /** Current warp fuel (optional; informational). */
+  warpFuel?: number;
 }
 
 /** One step of advice: a human message, an optional clickable command, a stage tag. */
@@ -67,9 +81,20 @@ export interface GuideAdvice {
 const NUDGE = " Run `guide` again once you've done it for your next step.";
 
 /**
+ * Credits at which `guide` starts steering an established (based) player who's
+ * still on the starter ship toward buying/building a bigger hull. Set well above
+ * the starting balance so it only fires once a player has actually accumulated
+ * wealth from production/trade.
+ */
+export const SHIP_GUIDE_CREDITS = 20_000;
+
+/** A human list of the minerals a base needs, e.g. "iron + titanium". */
+const BASE_MINERAL_NAMES: string = Object.keys(BASE_BUILD_MINERALS).join(" + ");
+
+/**
  * The single immediate next step for `snapshot`. Returns the first satisfied
  * rung; the final rung is an open-ended fallback, so a result is always
- * produced (message + stage are always non-empty).
+ * produced (message + stage are always non-empty). PURE and TOTAL.
  */
 export function nextStep(s: GuideSnapshot): GuideAdvice {
   // 1. Combat overrides everything — resolve the fight first.
@@ -81,37 +106,24 @@ export function nextStep(s: GuideSnapshot): GuideAdvice {
     );
   }
 
-  // 2. Standing at a market with a haul: move the goods (sell / fulfil a
-  //    contract). This beats the orbit/land rungs — trading works aboard or on
-  //    foot, and it's the most immediate progress when you're already at a hub.
-  if (s.atTradeLocation && s.hasAnyGoods) {
-    return advice(
-      "trade-hub",
-      "You're at a trade hub. Check `contracts` to see what the local faction wants and `fulfill` one for credits + reputation, or just `sell` your haul.",
-      "contracts",
-    );
-  }
-
-  // 3. Orbiting a gas giant — no surface to land on; go find a rocky world.
-  if (s.embarked && !s.landed && s.currentPlanetIsGas) {
+  // 2-4. Situational: get an embarked player down onto a workable surface so
+  // they can mine / build. Skipped when docked at a trade hub (where the move
+  // is to trade, not to land) — see the milestone rungs below.
+  if (!s.atTradeLocation && s.embarked && !s.landed && s.currentPlanetIsGas) {
     return advice(
       "orbit-gas",
       "This is a gas giant — there's no surface to land on. `scan` the system, then `orbit` a rocky world to set down on.",
       "orbit",
     );
   }
-
-  // 4. Orbiting a rocky world — descend.
-  if (s.embarked && !s.landed) {
+  if (!s.atTradeLocation && s.embarked && !s.landed) {
     return advice(
       "orbit-land",
       "You're in orbit. `land` to descend to the surface.",
       "land",
     );
   }
-
-  // 5. Landed aboard the ship — step out onto the surface.
-  if (s.embarked && s.landed) {
+  if (!s.atTradeLocation && s.embarked && s.landed) {
     return advice(
       "disembark",
       "You're parked on the surface. `disembark` to step out onto the planet.",
@@ -119,59 +131,61 @@ export function nextStep(s: GuideSnapshot): GuideAdvice {
     );
   }
 
-  // 6. On foot, no base, and credits to spare — claim territory. This is the
-  //    milestone that preempts the basic mining loop for an established-but-
-  //    unclaimed player (a fresh player with starter credits stays below the
-  //    threshold and so keeps mining at rung 7).
-  if (s.onFoot && !s.hasAnyBase && s.credits >= BASE_GUIDE_CREDITS) {
+  // 5. No base yet — the first big milestone. This is ONE stable goal (claim a
+  //    base), gated on the SPECIFIC minerals a base needs, not on generic ore,
+  //    so it never flip-flops with "sell". A brand-new player already has the
+  //    credits, so they're told to MINE the base mats, never to sell.
+  if (!s.hasAnyBase) {
+    if (!s.hasBaseMinerals) {
+      return advice(
+        "gather-base-mats",
+        `Your first goal is a base. It needs ${BASE_MINERAL_NAMES} — find a rocky world, \`scan\` a region for those deposits and \`mine\` them, then \`build base\` to start producing.`,
+        "scan",
+      );
+    }
+    if (s.credits >= BASE_BUILD_CREDITS) {
+      return advice(
+        "build-base",
+        `You've got the minerals and the ${BASE_BUILD_CREDITS}cr fee — \`build base\` here (on foot) to claim a region and start producing.`,
+        "build base",
+      );
+    }
+    // Have the minerals but short the cash fee — sell toward the NAMED goal
+    // (the base), not as a bare ping-ponging rung.
     return advice(
       "build-base",
-      "You've got the credits to put down roots — `build base` here (on foot) to claim a region and start producing.",
-      "build base",
+      `You've got the base minerals but need ${BASE_BUILD_CREDITS}cr for the claim fee — \`sell\` some other goods (or fulfill a \`contracts\`) to cover it, then \`build base\`.`,
+      "sell",
     );
   }
 
-  // 7. On foot with an empty hold — find something to mine.
-  if (s.onFoot && !s.hasOreInCargo) {
+  // 6. Established explorer — past the ship milestone (flying a bigger hull).
+  //    Open out to exploration, charting, and factions.
+  if (!s.shipIsStarter) {
     return advice(
-      "mine",
-      "`scan` the region for deposits, then `mine <resource>` to fill your hold.",
-      "scan",
-    );
-  }
-
-  // 8. Carrying goods but not at a market — go somewhere you can sell/trade.
-  if (s.hasAnyGoods && !s.atTradeLocation) {
-    return advice(
-      "find-hub",
-      "Your hold is worth something — find a settlement or orbital outpost to sell at. Use `map`/`regions` to look around, then travel there (`jump O` docks at a station).",
+      "explore",
+      "You're well-established. `warp`/`hyperwarp` to chart new worlds — `salvage` derelicts for discovery bounties, raise faction `standing` with `contracts`, and push coreward for the rarest ore.",
       "map",
     );
   }
 
-  // 9. You have a base — grow it.
-  if (s.hasBaseHere || s.hasAnyBase) {
+  // 7. Based, still on the starter ship, but wealthy — buy or build a real hold.
+  if (s.credits >= SHIP_GUIDE_CREDITS) {
     return advice(
-      "grow-base",
-      "Grow your base: `build excavator`/`silo`, `produce` ship parts, or farm with `plant`/`ranch`. `storage` shows what it's holding.",
-      "storage",
+      "bigger-ship",
+      "You're flush — trade up the starter shuttle for a bigger hold. Check the `shipyard` to buy one, or `produce` a ship at a base with a production line. More cargo means bigger hauls and contract deliveries.",
+      "shipyard",
     );
   }
 
-  // 10. Established — open-ended exploration / industry / reputation.
+  // 8. Have a base — grow it (and earn from it). Many forward options; the
+  //    message names them so the player picks what's not yet done.
   return advice(
-    "established",
-    "You're well underway — `warp` to explore new systems, raise faction `standing`, or expand your industry. There's no single next step now; play how you like.",
-    "map",
+    "grow-base",
+    "Grow your base: `build` an excavator/silo/production_line, `produce` parts, or farm with `plant`/`ranch` — `storage` shows what it holds. Fulfill `contracts` at a trade hub for credits + reputation to keep climbing.",
+    "storage",
   );
 }
-
-/**
- * Credits at which `guide` starts steering an unclaimed player toward building a
- * base. Set well above the starting balance (1000) so a brand-new player is told
- * to mine first and only sees the base nudge after some successful trading.
- */
-export const BASE_GUIDE_CREDITS = 2000;
 
 /** Assemble a `GuideAdvice`, appending the standard "check back" nudge. */
 function advice(stage: string, message: string, suggestedCommand?: string): GuideAdvice {
