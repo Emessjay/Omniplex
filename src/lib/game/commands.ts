@@ -25,6 +25,10 @@ import {
   regionKey,
   parseLocationKey,
   warpDistance,
+  clusterStars,
+  clusterOf,
+  systemFromPosition,
+  STARS_PER_CLUSTER,
   getResource,
   hasSettlement,
   hasOutpost,
@@ -32,6 +36,7 @@ import {
   SIZE_CLASS_LABELS,
   type SystemCoord,
   type PlanetCoord,
+  type StarPosition,
   type Region,
   type Planet,
 } from "@/lib/universe";
@@ -208,6 +213,10 @@ function gasGiantScanFrame(player: Player, seed: string, planet: Planet): Render
       text(`  (${system.name}, class-${system.starClass})`, "muted"),
     ]),
     line([
+      text("position ", "muted"),
+      text(`(${system.position.x}, ${system.position.y}, ${system.position.z})`, "accent"),
+    ]),
+    line([
       text("HP ", "muted"),
       text(`${player.health}/${MAX_HEALTH}`, player.health <= MAX_HEALTH * 0.3 ? "danger" : "default"),
       text("   ", "muted"),
@@ -348,6 +357,7 @@ async function regionScanFrame(
   return renderScan({
     planet,
     system,
+    position: system.position,
     region,
     settlement: hasSettlement(seed, region.coord),
     depletionMap,
@@ -919,10 +929,15 @@ async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
  */
 function outpostScanFrame(player: Player, seed: string): RenderFrame {
   const planet = planetAt(seed, locOf(player));
+  const system = systemAt(seed, locOf(player));
   return frame([
     line([
       text(`${planet.name} — Orbital Outpost`, "heading"),
       text("  (in orbit)", "muted"),
+    ]),
+    line([
+      text("position ", "muted"),
+      text(`(${system.position.x}, ${system.position.y}, ${system.position.z})`, "accent"),
     ]),
     line([
       text("HP ", "muted"),
@@ -1073,34 +1088,38 @@ function handleRegions(player: Player, seed: string, args: string[]): RenderFram
 // ---------------------------------------------------------------------------
 
 /**
- * Candidate system offsets around the current system, spanning the three
- * in-galaxy tiers (arm / cluster / system). Arm and cluster indices never go
- * negative (cluster ≥ 0, and arm is normalized into `[0, armCount)` since the
- * ring wraps); system is clamped at 0. Galaxy is fixed (no inter-galaxy travel
- * this phase).
+ * Cross-cluster / cross-arm neighbor systems around the current one (the
+ * intra-cluster neighbors are now the nearest STARS by Euclidean distance, built
+ * separately in `handleMap`). Walks arm ±1 and cluster ±1, holding the `system`
+ * index at the current one (a representative star of that other cloud), so each
+ * is a `warp <arm> <cluster> <system>` hop one tier out. Arm wraps into
+ * `[0, armCount)`; cluster never goes negative; galaxy is fixed.
  */
 function neighborCandidates(current: SystemCoord, armCount: number): SystemCoord[] {
   const out: SystemCoord[] = [];
   const seen = new Set<string>();
+  // A representative star index in the neighbor cloud — keep the current index
+  // when it's valid (clusters are finite now), else fall back to star 0.
+  const system = current.system < STARS_PER_CLUSTER ? current.system : 0;
   for (let da = -1; da <= 1; da++) {
     for (let dc = -1; dc <= 1; dc++) {
-      for (let dsys = -3; dsys <= 3; dsys++) {
-        if (da === 0 && dc === 0 && dsys === 0) continue;
-        const cluster = current.cluster + dc;
-        const system = current.system + dsys;
-        if (cluster < 0 || system < 0) continue;
-        // Arm wraps around the ring and is canonicalized into [0, armCount).
-        const arm = ((current.arm + da) % armCount + armCount) % armCount;
-        const coord: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
-        const key = systemKey(coord);
-        if (key === systemKey(current) || seen.has(key)) continue;
-        seen.add(key);
-        out.push(coord);
-      }
+      if (da === 0 && dc === 0) continue; // same cluster → handled by the star list
+      const cluster = current.cluster + dc;
+      if (cluster < 0) continue;
+      // Arm wraps around the ring and is canonicalized into [0, armCount).
+      const arm = ((current.arm + da) % armCount + armCount) % armCount;
+      const coord: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
+      const key = systemKey(coord);
+      if (key === systemKey(current) || seen.has(key)) continue;
+      seen.add(key);
+      out.push(coord);
     }
   }
   return out;
 }
+
+/** Number of nearest in-cluster stars `map` lists. */
+const MAP_NEAR_STARS = 10;
 
 async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
   const current = systemOf(player);
@@ -1112,7 +1131,41 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
   // Condensate count drives the `hyperwarp` affordance (red when you have none).
   const condensate =
     materials.find((m) => m.materialId === HYPERWARP_CONDENSATE_ID)?.qty ?? 0;
-  const neighbors: MapNeighbor[] = neighborCandidates(current, galaxy.armCount)
+
+  // Nearest stars WITHIN the current cluster, by real (Euclidean) distance — the
+  // primary `map` listing now that stars have positions. Each carries its
+  // `(x,y,z)` so a player can `warp <arm> <cluster> <x,y,z>` from the display.
+  const stars = clusterStars(seed, clusterOf(current));
+  const herePos = stars[current.system]!;
+  const nearStars: MapNeighbor[] = stars
+    .map((position, idx) => ({ idx, position }))
+    .filter((s) => s.idx !== current.system)
+    .map((s) => ({
+      ...s,
+      d: Math.hypot(
+        s.position.x - herePos.x,
+        s.position.y - herePos.y,
+        s.position.z - herePos.z,
+      ),
+    }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, MAP_NEAR_STARS)
+    .map((s) => {
+      const coord: SystemCoord = { ...current, system: s.idx };
+      return {
+        arm: coord.arm,
+        cluster: coord.cluster,
+        system: coord.system,
+        name: systemAt(seed, coord).name,
+        distance: warpDistance(seed, current, coord, galaxy.armCount),
+        position: s.position,
+        discovered: discovered.has(systemKey(coord)),
+      };
+    });
+
+  // Plus the cross-cluster / cross-arm neighbors (one tier out), so `map` still
+  // shows how to leave this cluster.
+  const farNeighbors: MapNeighbor[] = neighborCandidates(current, galaxy.armCount)
     .map((coord) => {
       const sys = systemAt(seed, coord);
       return {
@@ -1120,12 +1173,13 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
         cluster: coord.cluster,
         system: coord.system,
         name: sys.name,
-        distance: warpDistance(current, coord, galaxy.armCount),
+        distance: warpDistance(seed, current, coord, galaxy.armCount),
         discovered: discovered.has(systemKey(coord)),
       };
     })
-    .sort((a, b) => a.distance - b.distance)
-    .slice(0, 8);
+    .sort((a, b) => a.distance - b.distance);
+
+  const neighbors: MapNeighbor[] = [...nearStars, ...farNeighbors];
   // `map` lists `warp` targets, which burn WARP fuel — affordability is checked
   // against the warp-fuel pool.
   const here = planetAt(seed, locOf(player));
@@ -1136,6 +1190,7 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
     arm: current.arm,
     cluster: current.cluster,
     system: current.system,
+    position: herePos,
     planet: player.planet,
     region: player.region,
     condensate,
@@ -1149,6 +1204,50 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
 // warp
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve a `warp` coordinate token (`"x,y,z"`) to a star index in the
+ * destination cluster (star-coordinates). Parses three finite floats, rounds to
+ * 2 dp (matching the stored star precision), and looks up the EXACT star via
+ * `systemFromPosition`. On a miss it names the NEAREST star's coords + index, so
+ * the player can re-aim. No fuzzy/nearest-match warp — the coordinate must hit a
+ * star exactly.
+ */
+function resolveWarpCoord(
+  seed: string,
+  cluster: { galaxy: number; arm: number; cluster: number },
+  token: string,
+): { ok: true; system: number } | { ok: false; error: string } {
+  const parts = token.split(",");
+  if (parts.length !== 3) {
+    return { ok: false, error: "Coordinates must be three numbers: x,y,z (e.g. 3.27,-1.04,0.88)." };
+  }
+  const nums = parts.map((p) => Number(p.trim()));
+  if (nums.some((n) => !Number.isFinite(n))) {
+    return { ok: false, error: `Bad coordinates "${token}" — use three numbers x,y,z.` };
+  }
+  const pos: StarPosition = { x: nums[0]!, y: nums[1]!, z: nums[2]! };
+  const found = systemFromPosition(seed, cluster, pos);
+  if (found !== null) return { ok: true, system: found };
+
+  // No star exactly there — point at the nearest one to help the player re-aim.
+  const stars = clusterStars(seed, cluster);
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i]!;
+    const d = Math.hypot(s.x - pos.x, s.y - pos.y, s.z - pos.z);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  const np = stars[best]!;
+  return {
+    ok: false,
+    error: `No star at (${pos.x}, ${pos.y}, ${pos.z}). Nearest is #${best} at (${np.x}, ${np.y}, ${np.z}).`,
+  };
+}
+
 async function handleWarp(
   player: Player,
   seed: string,
@@ -1156,12 +1255,14 @@ async function handleWarp(
 ): Promise<RenderFrame> {
   const armArg = toInt(args[0]);
   const cluster = toInt(args[1]);
-  const system = toInt(args[2]);
-  if (armArg === null || cluster === null || system === null) {
-    return errorFrame("Usage: warp <arm> <cluster> <system>  (e.g. warp 0 0 1)");
+  const systemToken = args[2];
+  if (armArg === null || cluster === null || systemToken === undefined) {
+    return errorFrame(
+      "Usage: warp <arm> <cluster> <system|x,y,z>  (e.g. warp 0 0 1 or warp 0 0 3.27,-1.04,0.88)",
+    );
   }
-  if (cluster < 0 || system < 0) {
-    return errorFrame("Cluster and system must be 0 or greater.");
+  if (cluster < 0) {
+    return errorFrame("Cluster must be 0 or greater.");
   }
 
   const current = systemOf(player);
@@ -1169,6 +1270,25 @@ async function handleWarp(
   // `warp 13 …` in a 12-arm galaxy lands on arm 1. Negative inputs wrap too.
   const { armCount } = galaxyAt(seed, current.galaxy);
   const arm = ((armArg % armCount) + armCount) % armCount;
+  const destCluster = { galaxy: current.galaxy, arm, cluster };
+
+  // The third arg is EITHER a star index OR an `x,y,z` coordinate triple
+  // (star-coordinates). A comma marks the coordinate form.
+  let system: number;
+  if (systemToken.includes(",")) {
+    const resolved = resolveWarpCoord(seed, destCluster, systemToken);
+    if (!resolved.ok) return errorFrame(resolved.error);
+    system = resolved.system;
+  } else {
+    const idx = toInt(systemToken);
+    if (idx === null || idx < 0 || idx >= STARS_PER_CLUSTER) {
+      return errorFrame(
+        `System must be an index 0–${STARS_PER_CLUSTER - 1} or an x,y,z coordinate. Try \`map\`.`,
+      );
+    }
+    system = idx;
+  }
+
   // Galaxy is unchanged this phase (inter-galaxy travel is later).
   const dest: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
   if (
@@ -1179,7 +1299,7 @@ async function handleWarp(
     return errorFrame("You're already in that system. Try `map` for neighbors.");
   }
 
-  const distance = warpDistance(current, dest, armCount);
+  const distance = warpDistance(seed, current, dest, armCount);
   // Warp burns WARP fuel, scaling only with distance (P2).
   const cost = warpFuelCost(distance);
   if (cost > player.warpFuel) {

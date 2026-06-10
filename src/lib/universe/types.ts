@@ -125,6 +125,31 @@ export interface SystemCoord {
   readonly system: number;
 }
 
+/**
+ * Address of a CLUSTER (a `SystemCoord` minus its `system`): the cloud of
+ * `STARS_PER_CLUSTER` stars a `system` index addresses into. Used by the
+ * per-cluster star-position generator (`clusterStars` / `systemPosition` /
+ * `systemFromPosition`).
+ */
+export interface ClusterCoord {
+  readonly galaxy: number;
+  readonly arm: number;
+  readonly cluster: number;
+}
+
+/**
+ * A star's floating-point position within its cluster (`star-coordinates`).
+ * Sampled from an isotropic Gaussian cloud centered on the cluster origin and
+ * ROUNDED to 2 decimals (so two stars never share a position, and a coordinate
+ * warp is an exact 2-dp match). Each `system` index `0..STARS_PER_CLUSTER-1`
+ * maps to exactly one of these.
+ */
+export interface StarPosition {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
 /** Integer six-tier address of a planet; `planet` is its 0-based index. */
 export interface PlanetCoord extends SystemCoord {
   readonly planet: number;
@@ -253,6 +278,12 @@ export interface StarSystem {
   /** Deterministic, human-readable name, e.g. "KEPLER-442". */
   readonly name: string;
   readonly starClass: StarClass;
+  /**
+   * The star's floating-point position within its cluster (`star-coordinates`),
+   * from `systemPosition(seed, coord)`. Intra-cluster `warpDistance` is the
+   * Euclidean distance between two systems' positions.
+   */
+  readonly position: StarPosition;
   /** Number of planets; in [1, MAX_PLANETS]. */
   readonly planetCount: number;
   /** The system's planets; `planets.length === planetCount`. */

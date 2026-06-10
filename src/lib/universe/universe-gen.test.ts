@@ -332,9 +332,14 @@ describe("navigation (AC#8)", () => {
   const c: SystemCoord = { galaxy: 0, arm: 2, cluster: 2, system: 1 };
 
   it("warpDistance is zero to self, symmetric, positive between distinct", () => {
-    expect(warpDistance(a, a, ARM_COUNT)).toBe(0);
-    expect(warpDistance(a, b, ARM_COUNT)).toBeGreaterThan(0);
-    expect(warpDistance(a, b, ARM_COUNT)).toBe(warpDistance(b, a, ARM_COUNT));
-    expect(warpDistance(a, c, ARM_COUNT)).toBeGreaterThan(0);
+    // `warpDistance` is seed-first now (star-coordinates): the intra-cluster
+    // system term is the Euclidean distance between star positions.
+    expect(warpDistance(SEED, a, a, ARM_COUNT)).toBe(0);
+    expect(warpDistance(SEED, a, b, ARM_COUNT)).toBeGreaterThan(0);
+    expect(warpDistance(SEED, a, b, ARM_COUNT)).toBeCloseTo(
+      warpDistance(SEED, b, a, ARM_COUNT),
+      9,
+    );
+    expect(warpDistance(SEED, a, c, ARM_COUNT)).toBeGreaterThan(0);
   });
 });

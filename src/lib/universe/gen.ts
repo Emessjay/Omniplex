@@ -28,6 +28,7 @@ import {
   STAR_CLASSES,
   type Atmosphere,
   type Biome,
+  type ClusterCoord,
   type Galaxy,
   type Planet,
   type PlanetCoord,
@@ -36,6 +37,7 @@ import {
   type ResourceDeposit,
   type SizeClass,
   type StarClass,
+  type StarPosition,
   type StarSystem,
   type SystemCoord,
 } from "./types";
@@ -117,13 +119,158 @@ export function parseLocationKey(
 }
 
 // ---------------------------------------------------------------------------
+// Star positions within a cluster (star-coordinates).
+//
+// A cluster is no longer an open-ended ribbon of systems addressed by a linear
+// index: it is a FIXED CLOUD of exactly `STARS_PER_CLUSTER` stars, each with a
+// real floating-point `(x, y, z)` position sampled from an isotropic Gaussian
+// centered on the cluster origin (σ = `STAR_CLUSTER_SIGMA`). Positions are
+// rounded to 2 decimals and de-duplicated (no two stars in a cluster share a
+// rounded position), so a coordinate warp is an exact 2-dp match. The whole
+// cloud is a PURE, deterministic function of the cluster coord — nothing stored.
+// The `system` index `0..STARS_PER_CLUSTER-1` simply indexes into this cloud,
+// so existing stored `system` identities (DB column, location keys) are
+// unaffected; clusters just became finite.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stars per cluster. A `system` index is canonical in `[0, STARS_PER_CLUSTER)`;
+ * the cluster index itself stays unbounded (`cluster ≥ 0`).
+ */
+export const STARS_PER_CLUSTER = 1024;
+
+/**
+ * Standard deviation (per axis) of the isotropic Gaussian star cloud. A single
+ * global constant — the cloud is isotropic (same σ on every axis) and the same
+ * for every cluster. EXTENSION POINT: a per-cluster σ or an anisotropic Σ would
+ * make clouds vary in size/shape; out of scope here.
+ */
+export const STAR_CLUSTER_SIGMA = 10;
+
+/**
+ * Hard radius bound on the star cloud (cluster origin to star). The Gaussian is
+ * TRUNCATED to this finite sphere — a cluster is a bounded region of space, not
+ * an infinite tail. Default ≈ 4σ, so truncation is rare but the cloud is
+ * provably finite. Because every star sits within this sphere, intra-cluster
+ * `warpDistance` is bounded by `2 · STAR_CLUSTER_MAX_RADIUS · SYSTEM_SPAN`. The
+ * bound is checked on the FINAL ROUNDED position, so a returned star is always
+ * in-sphere.
+ */
+export const STAR_CLUSTER_MAX_RADIUS = 40;
+
+/** Round a position component to 2 decimals (the stored star-position precision). */
+function round2(n: number): number {
+  // `+0` collapses a possible `-0` to `0` so position keys/equality never split
+  // on signed zero.
+  return Math.round(n * 100) / 100 + 0;
+}
+
+/**
+ * One standard-normal sample via the Box–Muller transform over two of the
+ * PRNG's uniforms (NO `Math.random`). `1 - u` keeps the log argument in `(0, 1]`
+ * so it is never `log(0)`. Deterministic: consumes exactly two stream draws.
+ */
+function gaussian(rng: Rng): number {
+  const u1 = rng();
+  const u2 = rng();
+  return Math.sqrt(-2 * Math.log(1 - u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+/** The cluster a system coordinate belongs to (drops `system`). */
+export function clusterOf(coord: SystemCoord): ClusterCoord {
+  return { galaxy: coord.galaxy, arm: coord.arm, cluster: coord.cluster };
+}
+
+const POS_KEY = (p: StarPosition): string => `${p.x},${p.y},${p.z}`;
+
+/**
+ * The full cloud of `STARS_PER_CLUSTER` star positions for a cluster, in
+ * `system`-index order (index `i` is the position of `system = i`). PURE &
+ * deterministic, with its own RNG stream keyed by the cluster coord. Each star's
+ * three components are isotropic-Gaussian (σ = `STAR_CLUSTER_SIGMA`), rounded to
+ * 2 dp, and the cloud is TRUNCATED to a finite sphere of radius
+ * `STAR_CLUSTER_MAX_RADIUS`. A freshly-sampled rounded position is RESAMPLED
+ * from the same stream when it is either out-of-sphere OR a duplicate of an
+ * already-placed star — one deterministic reject-and-resample loop covering both
+ * — so every returned position is distinct AND provably within the sphere, and
+ * the result is reproducible byte-for-byte.
+ */
+export function clusterStars(seed: string, cluster: ClusterCoord): StarPosition[] {
+  const rng = makeRng(
+    seed,
+    "cluster-stars",
+    cluster.galaxy,
+    cluster.arm,
+    cluster.cluster,
+  );
+  const positions: StarPosition[] = [];
+  const seen = new Set<string>();
+  const maxR2 = STAR_CLUSTER_MAX_RADIUS * STAR_CLUSTER_MAX_RADIUS;
+  for (let i = 0; i < STARS_PER_CLUSTER; i++) {
+    let pos: StarPosition;
+    let k: string;
+    // Reject-and-resample (deterministic — the stream order is fixed) until the
+    // ROUNDED position is BOTH inside the sphere AND not a duplicate.
+    do {
+      pos = {
+        x: round2(gaussian(rng) * STAR_CLUSTER_SIGMA),
+        y: round2(gaussian(rng) * STAR_CLUSTER_SIGMA),
+        z: round2(gaussian(rng) * STAR_CLUSTER_SIGMA),
+      };
+      k = POS_KEY(pos);
+    } while (pos.x * pos.x + pos.y * pos.y + pos.z * pos.z > maxR2 || seen.has(k));
+    seen.add(k);
+    positions.push(pos);
+  }
+  return positions;
+}
+
+/**
+ * The position of the star at `coord` = `clusterStars(seed, clusterOf(coord))`
+ * indexed by `coord.system`. Throws a clear error if `system` is outside
+ * `[0, STARS_PER_CLUSTER)` (clusters are finite now).
+ */
+export function systemPosition(seed: string, coord: SystemCoord): StarPosition {
+  if (
+    !Number.isInteger(coord.system) ||
+    coord.system < 0 ||
+    coord.system >= STARS_PER_CLUSTER
+  ) {
+    throw new Error(
+      `systemPosition: system ${coord.system} out of range (valid 0–${STARS_PER_CLUSTER - 1})`,
+    );
+  }
+  return clusterStars(seed, clusterOf(coord))[coord.system]!;
+}
+
+/**
+ * The `system` index whose rounded position equals `pos` (an exact 2-dp match),
+ * or `null` if no star in the cluster sits there. The query position is rounded
+ * to 2 dp first, so callers may pass raw floats. Positions are unique by
+ * construction, so the match (if any) is unambiguous.
+ */
+export function systemFromPosition(
+  seed: string,
+  cluster: ClusterCoord,
+  pos: StarPosition,
+): number | null {
+  const target = POS_KEY({ x: round2(pos.x), y: round2(pos.y), z: round2(pos.z) });
+  const stars = clusterStars(seed, cluster);
+  for (let i = 0; i < stars.length; i++) {
+    if (POS_KEY(stars[i]!) === target) return i;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Navigation (AC#8).
 // ---------------------------------------------------------------------------
 
 /**
  * Tier weights for `warpDistance`: arm ≫ cluster ≫ system, so crossing an arm
- * is a long haul, a cluster hop is moderate, and a neighboring-system hop is
- * cheap. Exported so callers/tests can reason about the metric.
+ * is a long haul, a cluster hop is moderate, and the intra-cluster geometric
+ * term is the fine-grained tiebreaker. Exported so callers/tests can reason
+ * about the metric.
  */
 export const ARM_SPAN = 100;
 export const CLUSTER_SPAN = 10;
@@ -134,12 +281,21 @@ export const SYSTEM_SPAN = 1;
  * positive between distinct same-galaxy coords). A weighted sum over the tiers
  * with arm-ring wrapping: the arm term is `min(|Δarm|, armCount − |Δarm|)`, so
  * in a 12-arm galaxy a difference of 5 and a difference of 7 are the same
- * distance (the ring is symmetric). Different galaxies return `Infinity` —
- * inter-galaxy travel is NOT a warp (handled in a later, condensate-gated
+ * distance (the ring is symmetric).
+ *
+ * The SYSTEM term is now GEOMETRIC (star-coordinates): when `a` and `b` are in
+ * the same galaxy, arm AND cluster, it is the EUCLIDEAN distance between their
+ * `(x, y, z)` star positions × `SYSTEM_SPAN` (derived via `systemPosition` —
+ * hence the seed). Across different clusters/arms the two stars live in
+ * different clouds, so positions aren't comparable; there the system term falls
+ * back to the old `|Δsystem|·SYSTEM_SPAN` (the in-practice tiny index offset of
+ * the `map`-offered cross-cluster neighbors). Different galaxies return
+ * `Infinity` — inter-galaxy travel is NOT a warp (a later, condensate-gated
  * phase). Callers supply `armCount` from `galaxyAt(coord.galaxy).armCount`.
- * Fuel-cost scaling off this is `command-core`'s concern.
+ * PURE — positions are derived from the seed, no hidden global.
  */
 export function warpDistance(
+  seed: string,
   a: SystemCoord,
   b: SystemCoord,
   armCount: number,
@@ -147,10 +303,19 @@ export function warpDistance(
   if (a.galaxy !== b.galaxy) return Infinity;
   const rawArm = Math.abs(a.arm - b.arm);
   const armRing = Math.min(rawArm, armCount - rawArm);
+  const sameCluster = a.arm === b.arm && a.cluster === b.cluster;
+  let systemTerm: number;
+  if (sameCluster) {
+    const pa = systemPosition(seed, a);
+    const pb = systemPosition(seed, b);
+    systemTerm = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z) * SYSTEM_SPAN;
+  } else {
+    systemTerm = Math.abs(a.system - b.system) * SYSTEM_SPAN;
+  }
   return (
     armRing * ARM_SPAN +
     Math.abs(a.cluster - b.cluster) * CLUSTER_SPAN +
-    Math.abs(a.system - b.system) * SYSTEM_SPAN
+    systemTerm
   );
 }
 
@@ -838,7 +1003,7 @@ export function systemAt(seed: string, coord: SystemCoord): StarSystem {
       name: planetName(name, i),
     }));
 
-  return { coord, name, starClass, planetCount, planets };
+  return { coord, name, starClass, position: systemPosition(seed, coord), planetCount, planets };
 }
 
 /**

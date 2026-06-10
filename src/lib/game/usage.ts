@@ -97,7 +97,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [
       { name: "arm", hint: "an arm # (wraps around the galaxy); see `map`" },
       { name: "cluster", hint: "see `map` for destinations" },
-      { name: "system", hint: "see `map` for destinations" },
+      { name: "system", hint: "a star index 0–1023 OR an x,y,z position; see `map`" },
     ],
   },
   hyperwarp: {

@@ -49,46 +49,59 @@ describe("keys round-trip at 4 / 5 / 6 segments", () => {
 
 describe("warpDistance — arm-wrapping, tier-weighted", () => {
   const ARM_COUNT = 12;
+  // `warpDistance` is seed-first now (star-coordinates) — the intra-cluster
+  // system term is the Euclidean distance between star positions.
   const base: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system: 0 };
 
   it("is zero to self and symmetric", () => {
-    expect(warpDistance(base, base, ARM_COUNT)).toBe(0);
+    expect(warpDistance(SEED, base, base, ARM_COUNT)).toBe(0);
     const x: SystemCoord = { galaxy: 0, arm: 3, cluster: 2, system: 5 };
-    expect(warpDistance(base, x, ARM_COUNT)).toBe(warpDistance(x, base, ARM_COUNT));
-    expect(warpDistance(base, x, ARM_COUNT)).toBeGreaterThan(0);
+    expect(warpDistance(SEED, base, x, ARM_COUNT)).toBeCloseTo(
+      warpDistance(SEED, x, base, ARM_COUNT),
+      9,
+    );
+    expect(warpDistance(SEED, base, x, ARM_COUNT)).toBeGreaterThan(0);
   });
 
   it("wraps arms symmetrically (12 arms: +5 == +7)", () => {
+    // Same `system` index across arms ⇒ the system term is 0 in each (different
+    // arm = different cloud, so the index-difference fallback is 0), isolating
+    // the arm-ring term.
     const plus5: SystemCoord = { ...base, arm: 5 };
     const plus7: SystemCoord = { ...base, arm: 7 };
-    expect(warpDistance(base, plus5, ARM_COUNT)).toBe(
-      warpDistance(base, plus7, ARM_COUNT),
+    expect(warpDistance(SEED, base, plus5, ARM_COUNT)).toBe(
+      warpDistance(SEED, base, plus7, ARM_COUNT),
     );
     // arm 11 is distance 1 from arm 0 (wrap), not 11.
     const arm11: SystemCoord = { ...base, arm: 11 };
     const arm1: SystemCoord = { ...base, arm: 1 };
-    expect(warpDistance(base, arm11, ARM_COUNT)).toBe(
-      warpDistance(base, arm1, ARM_COUNT),
+    expect(warpDistance(SEED, base, arm11, ARM_COUNT)).toBe(
+      warpDistance(SEED, base, arm1, ARM_COUNT),
     );
   });
 
-  it("weights arm ≫ cluster ≫ system", () => {
+  it("weights arm ≫ cluster (tier span ordering holds; system term is geometric)", () => {
+    // The tier-WEIGHT constants keep their strict ordering.
     expect(ARM_SPAN).toBeGreaterThan(CLUSTER_SPAN);
     expect(CLUSTER_SPAN).toBeGreaterThan(SYSTEM_SPAN);
+    // An arm hop (span 100) strictly dominates a one-cluster hop (span 10), both
+    // with `system` held equal so no geometric term enters.
     const armHop: SystemCoord = { ...base, arm: 1 };
     const clusterHop: SystemCoord = { ...base, cluster: 1 };
+    expect(warpDistance(SEED, base, armHop, ARM_COUNT)).toBeGreaterThan(
+      warpDistance(SEED, base, clusterHop, ARM_COUNT),
+    );
+    // The arm hop also dominates ANY intra-cluster (system) hop — the arm tier
+    // outweighs the fine-grained Euclidean geometry within a cluster.
     const systemHop: SystemCoord = { ...base, system: 1 };
-    expect(warpDistance(base, armHop, ARM_COUNT)).toBeGreaterThan(
-      warpDistance(base, clusterHop, ARM_COUNT),
-    );
-    expect(warpDistance(base, clusterHop, ARM_COUNT)).toBeGreaterThan(
-      warpDistance(base, systemHop, ARM_COUNT),
-    );
+    const intra = warpDistance(SEED, base, systemHop, ARM_COUNT);
+    expect(intra).toBeGreaterThan(0); // distinct stars in a cluster are apart
+    expect(warpDistance(SEED, base, armHop, ARM_COUNT)).toBeGreaterThan(intra);
   });
 
   it("is Infinity across different galaxies (not a warp)", () => {
     const other: SystemCoord = { galaxy: 1, arm: 0, cluster: 0, system: 0 };
-    expect(warpDistance(base, other, ARM_COUNT)).toBe(Infinity);
+    expect(warpDistance(SEED, base, other, ARM_COUNT)).toBe(Infinity);
   });
 });
 
