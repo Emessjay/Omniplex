@@ -1,9 +1,12 @@
 name: CI
 
-# Runs the full Vitest suite + a production build on every push to main and
-# every pull request. No secrets required: the app is built to compile and
-# test without Supabase env (lazy/memoized clients, non-throwing env checks),
-# so CI needs no configuration.
+# Two gates on every push to main and every PR:
+#  - test + build: the full Vitest suite + a production build (no secrets — the
+#    app builds/tests without Supabase env by design).
+#  - migrations: apply EVERY migration to a real, clean Postgres and re-run for
+#    idempotency. Vitest mocks Supabase, so it can't catch a SQL migration that
+#    fails against real Postgres (e.g. a CREATE OR REPLACE VIEW that reorders
+#    columns) — this job does, before such a bug ever reaches a deploy.
 
 on:
   push:
@@ -38,3 +41,48 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+
+  migrations:
+    name: migrations (clean DB + idempotency)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: omniplex
+        ports:
+          - 5432:5432
+        # Wait until Postgres is accepting connections before the steps run.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Applies every supabase/migrations/*.sql to a clean DB via scripts/migrate.mjs
+      # (the same runner Railway's start command uses). Fails the build if any
+      # migration errors against real Postgres — the gate that would have caught
+      # the leaderboard-view column-order bug before deploy.
+      - name: Apply all migrations to a clean DB
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/omniplex
+        run: node scripts/migrate.mjs
+
+      # Forward-only + schema_migrations-tracked → a second run must be a clean
+      # no-op. Catches non-idempotent migrations (e.g. a missing IF NOT EXISTS).
+      - name: Re-run to prove idempotency
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/omniplex
+        run: node scripts/migrate.mjs
