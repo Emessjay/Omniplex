@@ -1983,3 +1983,32 @@ gotchas) accrete here as workers surface things worth persisting. See
   bounty at tier 0, strictly increasing — first discovery pays the rank-scaled
   amount. Orbital scan surfaces the derelict + salvage hint (P9b red if cleaned).
   Seeded: `orbital-derelicts.test.ts`.
+
+### Load-bearing decisions from `galactic-structure` (cascade Phase 0)
+
+- **The galaxy is now a polar (r, θ) disk** (see `docs/design/generation-cascade.md`
+  tier 1): `arm` = angle, `cluster` = radius. NO migration (coords unchanged;
+  everything derived/validation). SUBSUMES `cluster-span-retune` (the spans
+  became the radial scale).
+- **Polar helpers** (`gen.ts`): `armAngle(arm, armCount) = arm·2π/armCount`;
+  `clusterRadius(cluster) = (cluster + CLUSTER_R0) · CLUSTER_RING_SPAN`
+  (`CLUSTER_RING_SPAN > 2·STAR_CLUSTER_MAX_RADIUS` so rings don't overlap);
+  `clusterCenter(arm, cluster, armCount) = (r·cosθ, r·sinθ)`.
+- **`warpDistance(seed, a, b, armCount)` reworked to planar polar geometry**:
+  cross-galaxy → `Infinity`; same cluster → intra-cluster star Euclidean ×
+  `SYSTEM_SPAN` (the `star-coordinates` term, preserved); different cluster →
+  `|clusterCenter(a) − clusterCenter(b)|` (law of cosines). Replaced the
+  `armRing·ARM_SPAN + |Δcluster|·CLUSTER_SPAN + system` sum (those flat spans are
+  gone). 0-to-self, symmetric, `Infinity` across galaxies — and the **emergent
+  arms-converge-at-the-core** property (fixed Δarm costs far less near the core
+  than the rim: ~200 vs ~6400 at cl1 vs cl63). `addressing.test.ts` migrated +
+  strengthened to the polar contract.
+- **Finite galaxy disk**: `MAX_CLUSTERS_PER_ARM` (= 64) caps the radius;
+  `handleWarp` rejects clusters `<0` or `≥ MAX` ("beyond the rim"); `map` only
+  offers in-range neighbors. Infinite-universe property lives at the (unbounded)
+  galaxy tier.
+- **`galacticRadiation(cluster)`** ∈ [0, RADIATION_MAX], max at the core
+  (cluster 0), monotonically decaying to ~0 at the rim — **value + `map` display
+  only this phase** (band + radius + rim). NO hazard/gameplay coupling yet
+  (deliberately deferred to **0b**: radiation→hazard floor + a radiation-shield
+  upgrade gate). Seeded: `galactic-structure.test.ts`.
