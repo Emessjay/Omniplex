@@ -29,6 +29,10 @@ import {
   clusterOf,
   systemFromPosition,
   STARS_PER_CLUSTER,
+  MAX_CLUSTERS_PER_ARM,
+  clusterRadius,
+  galacticRadiation,
+  RADIATION_MAX,
   getResource,
   hasSettlement,
   hasOutpost,
@@ -1500,7 +1504,9 @@ function neighborCandidates(current: SystemCoord, armCount: number): SystemCoord
     for (let dc = -1; dc <= 1; dc++) {
       if (da === 0 && dc === 0) continue; // same cluster → handled by the star list
       const cluster = current.cluster + dc;
-      if (cluster < 0) continue;
+      // Stay inside the finite disk: no ring below the core or past the rim
+      // (galactic-structure). `map` only offers reachable clusters.
+      if (cluster < 0 || cluster >= MAX_CLUSTERS_PER_ARM) continue;
       // Arm wraps around the ring and is canonicalized into [0, armCount).
       const arm = ((current.arm + da) % armCount + armCount) % armCount;
       const coord: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
@@ -1589,6 +1595,12 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
     planet: player.planet,
     region: player.region,
     condensate,
+    // Polar disk context (galactic-structure): the player's radius from the
+    // core, the local center-radiation level, and the finite-disk rim cap.
+    radiusFromCore: clusterRadius(current.cluster),
+    radiation: galacticRadiation(current.cluster),
+    radiationMax: RADIATION_MAX,
+    maxClusters: MAX_CLUSTERS_PER_ARM,
     planetSize: SIZE_CLASS_LABELS[here.sizeClass],
     planetRadius: here.radius,
     planetIsGas: here.isGas,
@@ -1658,6 +1670,13 @@ async function handleWarp(
   }
   if (cluster < 0) {
     return errorFrame("Cluster must be 0 or greater.");
+  }
+  // The galaxy is a FINITE disk: cluster ∈ [0, MAX_CLUSTERS_PER_ARM). The rim is
+  // a hard edge — there is nothing beyond it to warp to (galactic-structure).
+  if (cluster >= MAX_CLUSTERS_PER_ARM) {
+    return errorFrame(
+      `Cluster ${cluster} is beyond the galactic rim (outermost ring is ${MAX_CLUSTERS_PER_ARM - 1}). The disk ends there.`,
+    );
   }
 
   const current = systemOf(player);

@@ -893,6 +893,26 @@ export interface MapLocation {
   planetRadius?: number;
   /** Whether the current planet is a gas giant (orbit-only). */
   planetIsGas?: boolean;
+  /** Radius of the current cluster ring from the galactic core (galactic-structure). */
+  radiusFromCore?: number;
+  /** Local galactic-center radiation level (`[0, radiationMax]`). */
+  radiation?: number;
+  /** Peak (core) radiation, used to derive the labeled band. */
+  radiationMax?: number;
+  /** The finite-disk rim: clusters are valid in `[0, maxClusters)`. */
+  maxClusters?: number;
+}
+
+/**
+ * Labeled radiation band from a radiation level vs its peak: high near the core,
+ * low toward the rim. Display-only this phase (no hazard coupling yet).
+ */
+function radiationBandLabel(radiation: number, max: number): string {
+  const frac = max > 0 ? radiation / max : 0;
+  if (frac >= 0.66) return "high (core)";
+  if (frac >= 0.33) return "moderate";
+  if (frac > 0.05) return "low";
+  return "minimal (rim)";
 }
 
 /**
@@ -928,6 +948,24 @@ export function renderMap(
         text(starPositionLabel(loc.position), "accent"),
       ]),
     );
+  }
+  // Polar disk context (galactic-structure): radius from the core, the local
+  // galactic-center radiation band, and the finite-disk rim. Display-only this
+  // phase — radiation has no gameplay effect yet.
+  if (loc.radiation !== undefined && loc.radiationMax !== undefined) {
+    const band = radiationBandLabel(loc.radiation, loc.radiationMax);
+    const spans: RenderSpan[] = [text("galaxy disk  ", "muted")];
+    if (loc.radiusFromCore !== undefined) {
+      spans.push(text(`radius ${Math.round(loc.radiusFromCore)} from core   `, "default"));
+    }
+    spans.push(
+      text("radiation: ", "muted"),
+      text(`${band} (${Math.round(loc.radiation)}/${Math.round(loc.radiationMax)})`, "accent"),
+    );
+    if (loc.maxClusters !== undefined) {
+      spans.push(text(`   rim at cluster ${loc.maxClusters - 1}`, "muted"));
+    }
+    lines.push(line(spans));
   }
   // Current planet's physical size (planet-taxonomy), when known.
   if (loc.planetSize !== undefined) {

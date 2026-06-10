@@ -268,34 +268,103 @@ export function systemFromPosition(
 // Navigation (AC#8).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Polar galaxy geometry (galactic-structure).
+//
+// A galaxy is a flat DISK. Within it we treat `arm` as an ANGLE θ (arm ·
+// 2π/armCount — arms are evenly-spaced rays from the core) and `cluster` as a
+// RADIUS r (rings of clusters marching outward from the core). So a cluster's
+// position in the galactic plane is the polar point `(r cosθ, r sinθ)`, and the
+// warp distance between two clusters is just the real planar distance between
+// those points (the law of cosines). This SUBSUMES the old flat
+// `ARM_SPAN`/`CLUSTER_SPAN` weighted sum — the radial scale `CLUSTER_RING_SPAN`
+// now plays the `CLUSTER_SPAN` role, and the arm term emerges from the geometry
+// (arms CONVERGE near the core and SPLAY at the rim: a fixed arm gap is a
+// shorter chord at small r). `SYSTEM_SPAN` survives as the intra-cluster
+// multiplier (the fine, sub-cluster Euclidean term). The galaxy is FINITE:
+// `cluster ∈ [0, MAX_CLUSTERS_PER_ARM)` — the rim is a hard edge enforced by the
+// game layer (`warp`/`map`).
+// ---------------------------------------------------------------------------
+
 /**
- * Tier weights for `warpDistance`. `CLUSTER_SPAN = 10 * STAR_CLUSTER_SIGMA`
- * (= 100), so a single cluster hop (10σ) cleanly exceeds the cloud diameter
- * (2 * STAR_CLUSTER_MAX_RADIUS = 8σ) — clusters are spatially non-overlapping.
- * `ARM_SPAN = CLUSTER_SPAN` (same cost for now; to be revisited). `SYSTEM_SPAN`
- * is the multiplier on the intra-cluster Euclidean distance. Exported so
- * callers/tests can reason about the metric.
+ * Radial distance per cluster ring. Plays the old `CLUSTER_SPAN` role. Set to
+ * `10 * STAR_CLUSTER_SIGMA` (= 100) so a one-ring radial step cleanly exceeds
+ * the star-cloud diameter (`2 * STAR_CLUSTER_MAX_RADIUS` = 8σ = 80) — rings
+ * don't overlap radially, the `cluster-span-retune` non-overlap rule made radial.
  */
-export const CLUSTER_SPAN = 10 * STAR_CLUSTER_SIGMA; // 100 — a cluster hop exceeds the cloud diameter
-export const ARM_SPAN = CLUSTER_SPAN; // same cost as a cluster hop for now
+export const CLUSTER_RING_SPAN = 10 * STAR_CLUSTER_SIGMA; // 100
+/**
+ * Core offset (in ring units) so cluster 0 is a real ring with a positive radius
+ * rather than the degenerate galactic center (where every arm coincides and the
+ * polar metric would collapse). Must be ≥ 1.
+ */
+export const CLUSTER_R0 = 1;
+/**
+ * The galaxy's radius in cluster rings — a FINITE disk. `cluster` is valid in
+ * `[0, MAX_CLUSTERS_PER_ARM)`; the game layer rejects targets at/beyond this rim.
+ * Tunable (~32–128).
+ */
+export const MAX_CLUSTERS_PER_ARM = 64;
+/** Multiplier on the intra-cluster (sub-cluster) Euclidean star distance. */
 export const SYSTEM_SPAN = 1;
+/** Peak galactic-center radiation (arbitrary "level" units); the core maxes out here. */
+export const RADIATION_MAX = 100;
+
+/** The angle (radians) of an arm: `arm · 2π / armCount` (evenly-spaced rays). */
+export function armAngle(arm: number, armCount: number): number {
+  return (arm * 2 * Math.PI) / armCount;
+}
+
+/**
+ * The radius (galactic-plane distance from the core) of a cluster ring:
+ * `(cluster + CLUSTER_R0) · CLUSTER_RING_SPAN`. Strictly increasing in `cluster`,
+ * positive at cluster 0 (the `CLUSTER_R0` offset keeps the core non-degenerate).
+ */
+export function clusterRadius(cluster: number): number {
+  return (cluster + CLUSTER_R0) * CLUSTER_RING_SPAN;
+}
+
+/**
+ * The Cartesian position of a cluster in the galactic plane: the polar point
+ * `(r cosθ, r sinθ)` where `r = clusterRadius(cluster)` and
+ * `θ = armAngle(arm, armCount)`.
+ */
+export function clusterCenter(
+  arm: number,
+  cluster: number,
+  armCount: number,
+): { x: number; y: number } {
+  const r = clusterRadius(cluster);
+  const theta = armAngle(arm, armCount);
+  return { x: r * Math.cos(theta), y: r * Math.sin(theta) };
+}
+
+/**
+ * Galactic-center radiation at a cluster ring: maximal at the core (cluster 0)
+ * and decaying linearly to ~0 at the rim. In `[0, RADIATION_MAX]`, monotonically
+ * non-increasing in `cluster`. Pure & display-only THIS phase — its gameplay
+ * consequences (a hazard floor + a radiation-shield gate) are a later 0b.
+ */
+export function galacticRadiation(cluster: number): number {
+  return RADIATION_MAX * Math.max(0, 1 - cluster / MAX_CLUSTERS_PER_ARM);
+}
 
 /**
  * Distance between two systems within the SAME galaxy (0 to self, symmetric,
- * positive between distinct same-galaxy coords). A weighted sum over the tiers
- * with arm-ring wrapping: the arm term is `min(|Δarm|, armCount − |Δarm|)`, so
- * in a 12-arm galaxy a difference of 5 and a difference of 7 are the same
- * distance (the ring is symmetric).
+ * positive between distinct same-galaxy coords), in the polar disk geometry:
  *
- * The SYSTEM term is GEOMETRIC (star-coordinates): when `a` and `b` are in the
- * same galaxy, arm AND cluster, it is the EUCLIDEAN distance between their
- * `(x, y, z)` star positions × `SYSTEM_SPAN` (derived via `systemPosition` —
- * hence the seed). Across different clusters or arms the system term is `0` —
- * stars live in different clouds (positions not comparable) and the cluster/arm
- * terms fully capture inter-cluster distance. Different galaxies return
- * `Infinity` — inter-galaxy travel is NOT a warp (condensate-gated). Callers
- * supply `armCount` from `galaxyAt(coord.galaxy).armCount`.
- * PURE — positions are derived from the seed, no hidden global.
+ *  - Same arm AND same cluster (same star cloud) → the fine intra-cluster term:
+ *    the EUCLIDEAN distance between the two stars' `(x, y, z)` positions ×
+ *    `SYSTEM_SPAN` (derived via `systemPosition` — hence the seed). 0 to self.
+ *  - Different cluster/arm → the planar distance between the two clusters'
+ *    CENTERS, `|clusterCenter(a) − clusterCenter(b)|` (law of cosines
+ *    `√(rₐ² + r_b² − 2 rₐ r_b cos(θₐ − θ_b))`). Because arms are rays from the
+ *    core, a fixed arm gap is a shorter chord near the core than at the rim —
+ *    arms converge coreward, splay rimward.
+ *
+ * Different galaxies return `Infinity` — inter-galaxy travel is NOT a warp
+ * (condensate-gated). Callers supply `armCount` from
+ * `galaxyAt(coord.galaxy).armCount`. PURE — positions are derived from the seed.
  */
 export function warpDistance(
   seed: string,
@@ -304,22 +373,16 @@ export function warpDistance(
   armCount: number,
 ): number {
   if (a.galaxy !== b.galaxy) return Infinity;
-  const rawArm = Math.abs(a.arm - b.arm);
-  const armRing = Math.min(rawArm, armCount - rawArm);
-  const sameCluster = a.arm === b.arm && a.cluster === b.cluster;
-  let systemTerm: number;
-  if (sameCluster) {
+  if (a.arm === b.arm && a.cluster === b.cluster) {
+    // Same star cloud: fine-grained intra-cluster Euclidean distance.
     const pa = systemPosition(seed, a);
     const pb = systemPosition(seed, b);
-    systemTerm = Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z) * SYSTEM_SPAN;
-  } else {
-    systemTerm = 0; // different clusters/arms: cluster/arm terms capture the gap
+    return Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z) * SYSTEM_SPAN;
   }
-  return (
-    armRing * ARM_SPAN +
-    Math.abs(a.cluster - b.cluster) * CLUSTER_SPAN +
-    systemTerm
-  );
+  // Different cluster/arm: real planar distance between the cluster centers.
+  const ca = clusterCenter(a.arm, a.cluster, armCount);
+  const cb = clusterCenter(b.arm, b.cluster, armCount);
+  return Math.hypot(ca.x - cb.x, ca.y - cb.y);
 }
 
 // ---------------------------------------------------------------------------
