@@ -787,10 +787,15 @@ function inapplicableReason(verb: string, state: PlayerStateView): string {
       ? "You're already in orbit — nothing to launch from."
       : "You must `embark` your ship first.";
   }
-  // Orbiting-only travel/selection: orbit / land / warp / hyperwarp.
-  if (verb === "orbit" || verb === "land" || verb === "warp" || verb === "hyperwarp") {
+  // Long jumps need to be in orbit already (they don't auto-launch).
+  if (verb === "warp" || verb === "hyperwarp") {
     if (!state.embarked) return "You must `embark` and `launch` to orbit first.";
     return "You must `launch` to orbit first."; // landed
+  }
+  // `orbit`/`land` work in either aboard state (from the surface they chain a
+  // launch), so they're only inapplicable when you're on foot.
+  if (verb === "orbit" || verb === "land") {
+    return "You must `embark` your ship first.";
   }
   // Remaining (surface/base) actions need you ON FOOT.
   if (state.embarked) {
@@ -1699,10 +1704,24 @@ async function landBlockedReason(
 }
 
 /**
+ * Regular-fuel surcharge for taking off when you issue an in-system move from the
+ * SURFACE: the atmosphere climb (`launchFuelCost`, ceil'd) of the planet you're
+ * leaving, or 0 when you're already in orbit. This is what lets `orbit`/`land`
+ * CHAIN a launch from the surface so ordinary planet-to-planet travel doesn't
+ * force an explicit `launch`. (The long jumps `warp`/`hyperwarp` never chain —
+ * they require being in orbit already.)
+ */
+function launchSurcharge(player: Player, fromPlanet: Planet): number {
+  if (!player.landed) return 0;
+  return Math.max(1, Math.ceil(launchFuelCost(fromPlanet.atmosphere, fromPlanet.gravity)));
+}
+
+/**
  * `orbit <planet>` — fly to ORBIT another planet in this system (orbit-land).
- * Burns DISTANCE fuel only (`orbitFuelCost`, time-varying) — NO atmosphere/
- * takeoff term. Reaches ANY planet, gas giants included (that's the whole point:
- * gas giants are orbit-only but no longer unreachable). Validates the index +
+ * Burns DISTANCE fuel (`orbitFuelCost`, time-varying) — NO descent term. Reaches
+ * ANY planet, gas giants included (that's the whole point: gas giants are
+ * orbit-only but no longer unreachable). When issued from the SURFACE it CHAINS a
+ * launch first, so the cost is takeoff + flight. Validates index + (combined)
  * fuel before mutating; arrives Orbiting (landed=false, region nominal 0).
  */
 async function handleOrbit(
@@ -1723,10 +1742,14 @@ async function handleOrbit(
   const coord: PlanetCoord = { ...systemOf(player), planet: idx };
   const target = planetAt(seed, coord);
   const fromPlanet = planetAt(seed, locOf(player));
-  const cost = orbitFuelCost(fromPlanet, target, Date.now());
+  // From the surface, orbiting first lifts off (atmosphere climb), then flies.
+  const launchCost = launchSurcharge(player, fromPlanet);
+  const hopCost = orbitFuelCost(fromPlanet, target, Date.now());
+  const cost = launchCost + hopCost;
   if (cost > player.fuel) {
+    const breakdown = launchCost > 0 ? " (launch + flight)" : "";
     return errorFrame(
-      `Not enough fuel: orbiting ${target.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` (or \`craft biofuel\`) first.`,
+      `Not enough fuel: orbiting ${target.name} needs ${cost}${breakdown}, you have ${player.fuel}. \`buy fuel\` (or \`craft biofuel\`) first.`,
     );
   }
 
@@ -1735,9 +1758,10 @@ async function handleOrbit(
 
   const arrived: Player = { ...player, planet: idx, region: 0, fuel: newFuel, landed: false };
   const scan = await orbitalScanFrame(arrived, seed, target);
+  const prefix = launchCost > 0 ? "Launched and flew — " : "";
   return frame([
     line([
-      text(`Now orbiting ${target.name}. `, "success"),
+      text(`${prefix}now orbiting ${target.name}. `, "success"),
       text(`−${cost} fuel (${newFuel} left).`, "muted"),
     ]),
     ...scan.lines,
@@ -1747,16 +1771,26 @@ async function handleOrbit(
 /**
  * `land` (no arg) — DESCEND to the surface of the planet you're orbiting. FREE
  * (no fuel; the atmosphere is billed on `launch`). Rocky worlds only; the
- * freezing/boiling landing gate applies. `land <planet>` is the combo: orbit
- * there (distance fuel) then descend. Both arrive Landed (region 0).
+ * freezing/boiling landing gate applies. Bare `land` requires being in ORBIT —
+ * while already Landed it's a friendly no-op error (you're already down). `land
+ * <planet>` is the combo (orbit there + descend; chains a launch from a surface).
  */
 async function handleLand(
   player: Player,
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
-  // `land <planet>`: fly to ORBIT that planet (distance fuel) then descend free.
+  // `land <planet>`: fly to ORBIT that planet (distance fuel, +launch if landed)
+  // then descend free.
   if (args.length > 0) return handleLandCombo(player, seed, args);
+
+  // Bare `land` requires being in orbit (descend the planet you're orbiting).
+  if (player.landed) {
+    const planet = planetAt(seed, locOf(player));
+    return errorFrame(
+      `You're already on the surface of ${planet.name}. \`launch\` to return to orbit, or \`land <planet>\` to fly elsewhere.`,
+    );
+  }
 
   // `land`: free descent onto the planet you're currently orbiting.
   const coord = locOf(player);
@@ -1777,9 +1811,11 @@ async function handleLand(
 }
 
 /**
- * `land <planet>` — the convenience combo: `orbit <planet>` (distance fuel) then
- * `land` (free descent) in one. Rocky target only; gated + fuel-checked before
- * any mutation so a blocked combo consumes nothing. Arrives Landed (region 0).
+ * `land <planet>` — the convenience combo: orbit that planet (distance fuel) then
+ * descend free (`land`), in one. From the SURFACE it also CHAINS a launch first
+ * (so the cost is takeoff + flight; descent stays free). Rocky target only;
+ * gated + fuel-checked before any mutation so a blocked combo consumes nothing.
+ * Arrives Landed (region 0).
  */
 async function handleLandCombo(
   player: Player,
@@ -1802,17 +1838,20 @@ async function handleLandCombo(
 
   const coord: PlanetCoord = { ...systemOf(player), planet: idx };
   const target = planetAt(seed, coord);
-  // Gate the DESCENT first (rocky + landing gear) so we never burn orbit fuel
-  // flying somewhere we can't land. No mutation on a blocked combo.
+  // Gate the DESCENT first (rocky + landing gear) so we never burn fuel flying
+  // somewhere we can't land. No mutation on a blocked combo.
   const blocked = await landBlockedReason(player, target);
   if (blocked) return blocked;
 
-  // The fuel is the orbit hop (distance); the descent itself is free.
+  // Fuel = launch (only if leaving a surface) + the orbit hop; the descent is free.
   const fromPlanet = planetAt(seed, locOf(player));
-  const cost = orbitFuelCost(fromPlanet, target, Date.now());
+  const launchCost = launchSurcharge(player, fromPlanet);
+  const hopCost = orbitFuelCost(fromPlanet, target, Date.now());
+  const cost = launchCost + hopCost;
   if (cost > player.fuel) {
+    const breakdown = launchCost > 0 ? " (launch + flight)" : "";
     return errorFrame(
-      `Not enough fuel: flying to ${target.name} needs ${cost}, you have ${player.fuel}. \`buy fuel\` first.`,
+      `Not enough fuel: flying to ${target.name} needs ${cost}${breakdown}, you have ${player.fuel}. \`buy fuel\` first.`,
     );
   }
 
@@ -1821,9 +1860,10 @@ async function handleLandCombo(
 
   const landed: Player = { ...player, planet: idx, region: 0, fuel: newFuel, landed: true };
   const scan = await regionScanFrame(landed, seed, coord, 0);
+  const prefix = launchCost > 0 ? "Launched, flew" : "Flew";
   return frame([
     line([
-      text(`Flew to ${target.name} and landed. `, "success"),
+      text(`${prefix} to ${target.name} and landed. `, "success"),
       text(`−${cost} fuel (${newFuel} left); descent free.`, "muted"),
     ]),
     ...scan.lines,

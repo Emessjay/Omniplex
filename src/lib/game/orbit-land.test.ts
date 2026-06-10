@@ -51,9 +51,9 @@ describe("applicability across orbit/landed/on-foot states", () => {
     for (const v of ["launch", "disembark", "mine", "embark"]) expect(isApplicable(v, orbiting)).toBe(false);
   });
 
-  it("Landed: can launch/disembark; cannot warp/land/mine/embark", () => {
-    for (const v of ["launch", "disembark"]) expect(isApplicable(v, landed)).toBe(true);
-    for (const v of ["warp", "land", "mine", "embark"]) expect(isApplicable(v, landed)).toBe(false);
+  it("Landed: can launch/disembark + land/orbit (they chain launch); cannot warp/hyperwarp/mine/embark", () => {
+    for (const v of ["launch", "disembark", "land", "orbit"]) expect(isApplicable(v, landed)).toBe(true);
+    for (const v of ["warp", "hyperwarp", "mine", "embark"]) expect(isApplicable(v, landed)).toBe(false);
   });
 
   it("On foot: can mine/embark; cannot launch/disembark/warp/land", () => {

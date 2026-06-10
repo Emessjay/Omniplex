@@ -88,12 +88,14 @@ describe("travel + surface split by orbit/landed/on-foot (out of combat)", () =>
     }
   });
 
-  it("landed aboard (embarked && landed): launch/disembark yes, travel/surface no", () => {
+  it("landed aboard (embarked && landed): launch/disembark + orbit/land (they chain launch) yes; warp/hyperwarp/surface no", () => {
     const LANDED = { embarked: true, landed: true, inCombat: false, atTradeLocation: true };
-    for (const v of ["launch", "disembark"]) {
+    // `orbit`/`land` work from the surface too — they chain an implicit launch.
+    for (const v of ["launch", "disembark", "orbit", "land"]) {
       expect(isApplicable(v, LANDED)).toBe(true);
     }
-    for (const v of ["warp", "land", "hyperwarp", "orbit", "mine", "build", "embark"]) {
+    // The long jumps require an explicit launch first; surface work needs on-foot.
+    for (const v of ["warp", "hyperwarp", "mine", "build", "embark"]) {
       expect(isApplicable(v, LANDED)).toBe(false);
     }
   });

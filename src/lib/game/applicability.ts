@@ -79,16 +79,25 @@ const COMBAT_ONLY = new Set(["attack", "flee"]);
 const ECONOMY = new Set(["buy", "sell", "fulfill"]);
 
 /**
- * Orbiting actions — usable while ABOARD and UP IN ORBIT (`embarked && !landed`,
- * out of combat). Selecting/flying to another planet (`orbit`), descending to a
- * surface (`land`), and the long jumps (`warp`/`hyperwarp`) all happen from
- * orbit. `land` with no arg descends the planet you're orbiting; `land <planet>`
- * is the orbit-then-descend combo. You must `launch` back to orbit before any of
- * these once you're on the surface.
+ * In-system travel usable ABOARD in EITHER orbit/surface state (out of combat).
+ * `orbit <planet>` flies you to orbit another planet; `land` descends to a
+ * surface (no-arg = the planet you're orbiting; `land <planet>` = the orbit-then-
+ * descend combo). From the SURFACE these CHAIN an implicit launch first (you lift
+ * off, then fly/descend) — so they don't force an explicit `launch` for ordinary
+ * planet-to-planet movement. (The long jumps `warp`/`hyperwarp` deliberately do
+ * NOT chain: they require being in orbit already — see `ORBITING_ONLY`.)
  */
-const ORBITING_ACTIONS = new Set([
+const ABOARD_TRAVEL = new Set([
   "orbit",
   "land",
+]);
+
+/**
+ * Long jumps — usable ONLY while ABOARD and already UP IN ORBIT
+ * (`embarked && !landed`, out of combat). Unlike `orbit`/`land`, these do not
+ * auto-launch: you must `launch` to orbit first when on the surface.
+ */
+const ORBITING_ONLY = new Set([
   "warp",
   "hyperwarp",
 ]);
@@ -169,8 +178,11 @@ export function isApplicable(verb: string, state: PlayerStateView): boolean {
   // Economy is gated by LOCATION (a settlement/outpost), not embark state.
   if (ECONOMY.has(verb)) return state.atTradeLocation;
   if (!state.embarked) return DISEMBARKED_ACTIONS.has(verb); // on foot ⇒ landed
-  // Aboard: orbit-vs-surface split.
-  return state.landed ? SURFACE_ABOARD_ACTIONS.has(verb) : ORBITING_ACTIONS.has(verb);
+  // Aboard: `orbit`/`land` work in EITHER orbit/surface state (from the surface
+  // they chain an implicit launch); the long jumps need to be in orbit already;
+  // `launch`/`disembark` need to be on the surface.
+  if (ABOARD_TRAVEL.has(verb)) return true;
+  return state.landed ? SURFACE_ABOARD_ACTIONS.has(verb) : ORBITING_ONLY.has(verb);
 }
 
 /** Whether `verb` is an economy command (gated by being at a trade location). */
