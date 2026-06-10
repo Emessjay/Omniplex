@@ -16,6 +16,46 @@ current model.) Goal: make a planet a **coherent navigable surface** whose biome
 are shaped by **new planetary characteristics**, explorable in a **grid/polar**
 pattern — the foundation the later geology + creature-genome layers build on.
 
+## Galactic structure (the EARLY addition — astronomical tier)
+
+> Build this **first** in the next arc — it's the top of the generation cascade
+> (`astronomical → planetary → local climate/geology → biology`), so its outputs
+> (radiation) feed everything below. It reworks `warpDistance` once more, cleanly
+> **subsuming** the `cluster-span-retune` (the spans become the radial/angular
+> scale).
+
+**Treat `arm` and `cluster` as polar coordinates `(r, θ)` within a galaxy** — one
+structure driving BOTH navigation distance AND galactic-center radiation:
+
+- `θ(arm) = arm · (2π / armCount)` — `arm` already wraps mod `armCount`, so it's
+  naturally an angle. `r(cluster) = (cluster + R₀) · CLUSTER_SPAN` — radial
+  distance from the core (`R₀ > 0` so cluster 0 isn't a degenerate point where
+  all arms collapse). A cluster's galactic-plane position is
+  `P(arm,cluster) = (r·cosθ, r·sinθ)`.
+- **Warp distance** = the planar distance between two systems' clusters,
+  `|P(a) − P(b)| = √(rₐ² + r_b² − 2·rₐ·r_b·cos Δθ)` (law of cosines), PLUS the
+  intra-cluster star-cloud Euclidean (from `star-coordinates`) as the fine term
+  when in the same cluster. Different galaxy → `Infinity` (hyperwarp only). This
+  replaces the weighted-sum spans (`ARM_SPAN`/`CLUSTER_SPAN`/`SYSTEM_SPAN`) with
+  real geometry.
+- **Emergent shape (the payoff):** angular separation is an arc (`r·Δθ`), so
+  **arms converge toward the core and splay apart at the rim** — a spiral-galaxy
+  shape for free. Near the core, hopping arms is cheap and everything's packed;
+  the rim is sparse and arms are isolated.
+- **Radiation** `galacticRadiation(cluster) = f(r)` — max at the core, decaying
+  outward (e.g. `RADIATION_CORE / (1 + cluster/falloff)`). This is a galaxy-scale
+  risk/reward gradient: **coreward = high radiation + dense + the rarest
+  resources; rimward = safe + sparse + poor** — the savage→rare coupling lifted
+  to galactic scale, giving long-range exploration a *direction*.
+- **Cascade:** radiation → higher planet hazard floor → irradiated/toxic biomes
+  more common → radiation-tolerant creature variants (a genome trait) →
+  radiation-forged rare ore. And it wants a **radiation-shield** upgrade as the
+  gate to operate in high-radiation clusters — a clean sibling to the
+  Ablative/Antifreeze landing gear (`canLand`-style gate).
+- **Design knobs to pin at spec time:** the core offset `R₀`; the radiation
+  falloff shape + which clusters demand the shield; whether radiation is pure
+  `f(r)` or carries a little per-system jitter.
+
 ## Settled decisions
 
 1. **Region model = index↔grid bijection (NO universe reset).** Reinterpret the
@@ -63,6 +103,11 @@ pattern — the foundation the later geology + creature-genome layers build on.
 
 ## Likely phase breakdown (refine at execution time)
 
+- **Phase 0 — galactic structure (EARLY, build first)**: `arm`/`cluster` as
+  polar `(r, θ)`; rework `warpDistance` to planar polar geometry (subsuming the
+  span constants); `galacticRadiation(cluster) = f(r)` + a radiation-shield
+  upgrade gate; radiation feeds the planetary hazard floor. (Astronomical tier —
+  upstream of everything below.)
 - **Phase A — surface grid + climatic biomes**: planetary params (tilt/day/
   eccentricity/rotation) on `Planet` (appended RNG draws); `regionAt` biome
   derived from `(lat, lon)` + climate instead of an independent palette draw;
