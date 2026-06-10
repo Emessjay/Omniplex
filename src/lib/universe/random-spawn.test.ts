@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planetAt, randomStartingWorld } from "@/lib/universe";
+import { planetAt, randomStartingWorld, SPAWN_CLUSTER } from "@/lib/universe";
 
 const SEED = "omniplex-prod-1";
 
@@ -23,11 +23,13 @@ function makeLcg(seed: number): () => number {
 }
 
 describe("randomStartingWorld", () => {
-  it("returns a coord in galaxy 0 / arm 0 / cluster 0 / region 0", () => {
+  it("returns a coord in galaxy 0 / arm 0 / the rim spawn ring / region 0", () => {
     const coord = randomStartingWorld(SEED, makeCounter(0.1));
     expect(coord.galaxy).toBe(0);
     expect(coord.arm).toBe(0);
-    expect(coord.cluster).toBe(0);
+    // Cascade 0b: new players spawn on the SAFE rim (SPAWN_CLUSTER), not the
+    // lethally-irradiated core (cluster 0, which now demands a radiation shield).
+    expect(coord.cluster).toBe(SPAWN_CLUSTER);
     // region is not part of PlanetCoord — it is always 0 when the player spawns
   });
 
@@ -62,6 +64,6 @@ describe("randomStartingWorld", () => {
     expect(planet.temperature).toBeLessThan(100);
     expect(coord.galaxy).toBe(0);
     expect(coord.arm).toBe(0);
-    expect(coord.cluster).toBe(0);
+    expect(coord.cluster).toBe(SPAWN_CLUSTER);
   });
 });

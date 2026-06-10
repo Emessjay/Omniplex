@@ -15,9 +15,15 @@ import type { PlanetCoord, RegionCoord } from "@/lib/universe";
 
 const SEED = "omniplex-regions-test";
 
+// Sample planet 0 across the FULL cluster range (core → rim). Cascade 0b floors
+// planet hazard coreward via galactic radiation, so calm worlds now live at the
+// RIM (high clusters) and savage worlds at the CORE (low clusters). Sampling both
+// ends is what keeps both populations present (the old core-only `cluster < 4`
+// sample would now be uniformly high-hazard — no calm planets).
+const SAMPLE_CLUSTERS = [0, 1, 2, 3, 31, 47, 55, 60, 62, 63];
 function samplePlanets(seed: string) {
   const out = [];
-  for (let cluster = 0; cluster < 4; cluster++) {
+  for (const cluster of SAMPLE_CLUSTERS) {
     for (let system = 0; system < 25; system++) {
       // planet 0 of each sampled system is plenty.
       out.push(planetAt(seed, { galaxy: 0, arm: 0, cluster, system, planet: 0 }));

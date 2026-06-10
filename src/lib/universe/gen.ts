@@ -350,6 +350,29 @@ export function galacticRadiation(cluster: number): number {
 }
 
 /**
+ * Maximum hazard FLOOR imposed by galactic radiation (reached at the core,
+ * radiation `RADIATION_MAX`). Tunable (~0.5–0.6) — high enough that coreward
+ * worlds are reliably savage (rare ore + dangerous surfaces via the
+ * hazard→rarity / hazard→damage couplings), but below 1 so it never erases all
+ * variation. Lives in the universe layer (a physical property of the cluster),
+ * re-exported from `rules.ts` for the game layer (mirrors `atmosphereDensity`).
+ */
+export const RAD_HAZARD_FLOOR_MAX = 0.55;
+
+/**
+ * The minimum planet hazard imposed by galactic radiation at a given radiation
+ * level: linear from 0 at no radiation up to `RAD_HAZARD_FLOOR_MAX` at
+ * `RADIATION_MAX`. Pure, monotonically non-decreasing, clamped to
+ * `[0, RAD_HAZARD_FLOOR_MAX]`. Planet hazard is `max(tempHazard, this(rad))`, so
+ * the floor raises hazard coreward without erasing the temperature signal at the
+ * rim (where radiation → 0 → floor 0 → hazard is fully temperature-driven).
+ */
+export function radiationHazardFloor(radiation: number): number {
+  const r = Math.max(0, Math.min(RADIATION_MAX, radiation));
+  return (r / RADIATION_MAX) * RAD_HAZARD_FLOOR_MAX;
+}
+
+/**
  * Distance between two systems within the SAME galaxy (0 to self, symmetric,
  * positive between distinct same-galaxy coords), in the polar disk geometry:
  *
@@ -989,7 +1012,13 @@ function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Plan
   // it (extreme temps ⇒ savage). For rocky worlds the palette's composition +
   // size derive from it too; a gas giant is orbit-only (`["gas"]`, 0 regions).
   const temperature = Number(temperatureFromRadius(radius, rng).toFixed(1));
-  const hazard = Number(hazardFor(rng, temperature).toFixed(4));
+  // Hazard is the temperature-driven hazard FLOORED by galactic radiation
+  // (cascade 0b): coreward (high-radiation) clusters carry a minimum hazard
+  // regardless of temperature, which (via the hazard→rarity / hazard→damage
+  // couplings) makes the core lethal AND lucrative. `max`, not replace — so a
+  // rim world (radiation→0) stays purely temperature-driven.
+  const radFloor = radiationHazardFloor(galacticRadiation(coord.cluster));
+  const hazard = Number(Math.max(hazardFor(rng, temperature), radFloor).toFixed(4));
   const biomePalette: Biome[] = isGas ? ["gas"] : biomePaletteFor(rng, temperature);
   const regionCount = isGas ? 0 : regionCountFor(rng);
   const orbitalPeriod = Math.round(randFloat(rng, ORBIT_PERIOD_MIN_MS, ORBIT_PERIOD_MAX_MS));
@@ -1522,18 +1551,29 @@ export function hasOutpost(seed: string, coord: PlanetCoord): boolean {
 const STARTING_WORLD_MAX_HAZARD = 0.4;
 /** How many systems out from the origin to scan before giving up (a match is found early). */
 const STARTING_WORLD_SCAN_LIMIT = 10000;
+/**
+ * The cluster ring new players spawn in (cascade 0b). The CORE (cluster 0) is now
+ * lethally irradiated — every cluster-0 planet carries the radiation hazard floor
+ * AND demands a `radiation_shield` to land on, which a fresh player can't have, so
+ * spawning there is a softlock. We spawn at the OUTERMOST rim ring instead, where
+ * galactic radiation → 0: no shield needed, low hazard floor, genuinely calm
+ * worlds. This also sets up the intended progression — start on the quiet rim,
+ * journey inward toward the dangerous, ore-rich core.
+ */
+export const SPAWN_CLUSTER = MAX_CLUSTERS_PER_ARM - 1;
 
 /**
  * The deterministic safe starting world for `seed`: the FIRST planet — scanning
- * systems outward from the origin (galaxy 0, arm 0, cluster 0, system 0, 1, 2…),
- * and planets in index order within each — that is ROCKY (not a gas giant),
- * MODERATE-temperature (`0 < T < 100`), and low-hazard. Pure & deterministic.
- * Moderate-temperature rocky worlds are common, so the scan terminates within a
- * handful of systems; the bounded limit + origin fallback guarantee it returns.
+ * systems outward from the rim spawn ring (galaxy 0, arm 0, `SPAWN_CLUSTER`,
+ * system 0, 1, 2…), and planets in index order within each — that is ROCKY (not a
+ * gas giant), MODERATE-temperature (`0 < T < 100`), and low-hazard. Pure &
+ * deterministic. Moderate-temperature rocky worlds are common, so the scan
+ * terminates within a handful of systems; the bounded limit + origin fallback
+ * guarantee it returns.
  */
 export function startingWorld(seed: string): PlanetCoord {
   for (let system = 0; system < STARTING_WORLD_SCAN_LIMIT; system++) {
-    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system };
+    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system };
     const sys = systemAt(seed, sysCoord);
     for (let p = 0; p < sys.planetCount; p++) {
       const planet = sys.planets[p]!;
@@ -1543,27 +1583,29 @@ export function startingWorld(seed: string): PlanetCoord {
         planet.temperature < BOILING_C &&
         planet.hazard <= STARTING_WORLD_MAX_HAZARD
       ) {
-        return { galaxy: 0, arm: 0, cluster: 0, system, planet: p };
+        return { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system, planet: p };
       }
     }
   }
-  // Unreachable in practice (moderate rocky worlds are plentiful); the origin is
-  // a deterministic last resort.
-  return { galaxy: 0, arm: 0, cluster: 0, system: 0, planet: 0 };
+  // Unreachable in practice (moderate rocky worlds are plentiful); the rim spawn
+  // ring's first system is a deterministic last resort.
+  return { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system: 0, planet: 0 };
 }
 
 /** Max retry budget for `randomStartingWorld` before falling back to `startingWorld`. */
 const RANDOM_SPAWN_MAX_TRIES = 64;
 
 /**
- * A RANDOM habitable planet coord in cluster 0 (galaxy 0, arm 0, cluster 0).
- * "Habitable" = same criteria as `startingWorld`: rocky, temperate (0 < T < 100),
- * low-hazard. Each attempt draws a random system index via the injected `rand`
- * (∈ [0,1)), generates that system, collects its habitable planets, and if any
- * exist picks one uniformly. `rand` is INJECTED (not `Math.random` inside) so
- * the function stays pure/deterministic given a fixed `rand` sequence and is
- * unit-testable without side-effects. Falls back to `startingWorld(seed)` if
- * the retry budget is exhausted.
+ * A RANDOM habitable planet coord on the rim spawn ring (galaxy 0, arm 0,
+ * `SPAWN_CLUSTER`). "Habitable" = same criteria as `startingWorld`: rocky,
+ * temperate (0 < T < 100), low-hazard. Spawns at the rim (not the lethally
+ * irradiated core) for the reasons documented on `SPAWN_CLUSTER`. Each attempt
+ * draws a random system index via the injected `rand` (∈ [0,1)), generates that
+ * system, collects its habitable planets, and if any exist picks one uniformly.
+ * `rand` is INJECTED (not `Math.random` inside) so the function stays
+ * pure/deterministic given a fixed `rand` sequence and is unit-testable without
+ * side-effects. Falls back to `startingWorld(seed)` if the retry budget is
+ * exhausted.
  */
 export function randomStartingWorld(
   seed: string,
@@ -1571,7 +1613,7 @@ export function randomStartingWorld(
 ): PlanetCoord {
   for (let i = 0; i < RANDOM_SPAWN_MAX_TRIES; i++) {
     const system = Math.floor(rand() * STARS_PER_CLUSTER);
-    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system };
+    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system };
     const sys = systemAt(seed, sysCoord);
     const habitable = sys.planets.filter(
       (p) =>
@@ -1582,7 +1624,7 @@ export function randomStartingWorld(
     );
     if (habitable.length > 0) {
       const planet = habitable[Math.floor(rand() * habitable.length)]!;
-      return { galaxy: 0, arm: 0, cluster: 0, system, planet: planet.coord.planet };
+      return { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system, planet: planet.coord.planet };
     }
   }
   return startingWorld(seed);

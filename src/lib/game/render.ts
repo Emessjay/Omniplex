@@ -226,6 +226,10 @@ export interface ScanView {
   requiredUpgrade?: string | null;
   /** Whether the player currently satisfies `requiredUpgrade`. */
   hasRequiredUpgrade?: boolean;
+  /** True when this surface's cluster radiation demands a radiation shield (cascade 0b). */
+  radiationRequired?: boolean;
+  /** Whether the player owns a radiation shield. */
+  hasRadiationShield?: boolean;
   /** Current hit points. */
   health: number;
   /** Maximum hit points (for the `HP n/max` readout). */
@@ -658,13 +662,26 @@ export function renderScan(view: ScanView): RenderFrame {
     }
   }
 
+  // Radiation shielding requirement (cascade 0b) — a coreward, high-radiation
+  // cluster. A separate HARD gate from the temperature gear (you may need both);
+  // red when unmet, ✓ when owned (P9b).
+  if (view.radiationRequired) {
+    if (view.hasRadiationShield) {
+      lines.push(line(text("Radiation shielding required — Radiation Shield equipped ✓", "success")));
+    } else {
+      lines.push(line(text("Radiation shielding required — lethal stellar radiation, equip a Radiation Shield.", "danger")));
+    }
+  }
+
   // Deposits (this region) with effective (post-depletion) abundance. A `mine`
   // action is shown disabled (red) when the player can't mine right now — using
   // the SAME gates the `mine` command enforces: you must be on foot (`mine` is a
   // DISEMBARKED action in the applicability model) and, on a hostile surface,
   // hold the landing gear.
   const mineBlocked =
-    view.embarked || (!!view.requiredUpgrade && view.hasRequiredUpgrade === false);
+    view.embarked ||
+    (!!view.requiredUpgrade && view.hasRequiredUpgrade === false) ||
+    (view.radiationRequired === true && view.hasRadiationShield === false);
   if (region.deposits.length === 0) {
     lines.push(line(text("No mineable deposits in this region.", "muted")));
   } else {

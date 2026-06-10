@@ -72,6 +72,8 @@ import {
   canProduce,
   canLand,
   landingRequirement,
+  radiationShieldRequired,
+  RADIATION_SHIELD_UPGRADE_ID,
   rollHazardDamage,
   creditsAfterDeath,
   combatRound,
@@ -303,9 +305,17 @@ async function orbitalScanFrame(
 ): Promise<RenderFrame> {
   const system = systemAt(seed, locOf(player));
   const now = Date.now();
-  const requiredUpgrade = planet.isGas ? null : landingRequirement(planet.temperature);
-  const owned = requiredUpgrade ? await world.getOwnedUpgradeIds(player.id) : new Set<string>();
-  const canDescend = !planet.isGas && (requiredUpgrade === null || owned.has(requiredUpgrade));
+  // Descent gate (orbit-land): freezing/boiling landing gear AND, in a coreward
+  // (high-radiation) cluster, a radiation shield (cascade 0b). Fetch owned gear
+  // whenever EITHER gate could apply; a gas giant has no surface at all.
+  const tempReq = planet.isGas ? null : landingRequirement(planet.temperature);
+  const radNeeded = !planet.isGas && planetRadiationShielded(planet);
+  const owned =
+    tempReq !== null || radNeeded
+      ? await world.getOwnedUpgradeIds(player.id)
+      : new Set<string>();
+  const missingGear = planet.isGas ? [] : surfaceGateMissing(planet, owned);
+  const canDescend = !planet.isGas && missingGear.length === 0;
   const lowHealth = player.health <= MAX_HEALTH * 0.3;
   // Orbital derelict (Keystone 3c): a RARE drifting wreck in this orbit (works on
   // gas giants too — orbit, not surface). Show whether the player has already
@@ -364,12 +374,16 @@ async function orbitalScanFrame(
       ]),
     );
   } else {
-    const up = getUpgrade(requiredUpgrade!);
-    const why = planet.temperature < 0 ? "freezing" : "boiling";
+    const names = missingGear.map((id) => getUpgrade(id).name).join(" + ");
+    const reason = missingGear.includes(RADIATION_SHIELD_UPGRADE_ID)
+      ? missingGear.length > 1
+        ? `hostile surface (${planet.temperature}°C) + lethal radiation`
+        : "lethal stellar radiation"
+      : `${planet.temperature < 0 ? "freezing" : "boiling"} surface (${planet.temperature}°C)`;
     lines.push(
       line([
-        action("land", "land", { style: "link", title: `needs ${up.name} to land here`, disabled: true }),
-        text(` — ${why} surface (${planet.temperature}°C), requires ${up.name}.`, "danger"),
+        action("land", "land", { style: "link", title: `needs ${names} to land here`, disabled: true }),
+        text(` — ${reason}, requires ${names}.`, "danger"),
       ]),
     );
   }
@@ -575,6 +589,8 @@ async function regionScanFrame(
     chartedRankTitle,
     requiredUpgrade,
     hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
+    radiationRequired: planetRadiationShielded(planet),
+    hasRadiationShield: owned.has(RADIATION_SHIELD_UPGRADE_ID),
     health: player.health,
     maxHealth: MAX_HEALTH,
     embarked: player.embarked,
@@ -1892,10 +1908,65 @@ async function handleHyperwarp(
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether `planet`'s cluster is lethally irradiated (cascade 0b) — the
+ * radiation-shield gate, mirroring the freezing/boiling temperature gate.
+ * Per-cluster (radiation is `galacticRadiation(cluster)`).
+ */
+function planetRadiationShielded(planet: Planet): boolean {
+  return radiationShieldRequired(galacticRadiation(planet.coord.cluster));
+}
+
+/**
+ * The combined HARD surface gate: the freezing/boiling landing gear (`canLand`)
+ * AND the radiation shield for a coreward (high-radiation) cluster. Returns the
+ * missing upgrade ids (empty ⇒ clear to operate). Server-authoritative; composes
+ * the two gates so a coreward freezing/boiling world can demand BOTH. Reused by
+ * every surface action (`land`/`mine`/`explore`/`salvage`) and the scan
+ * surfacing, so "shown blocked" ⇔ "would be rejected".
+ */
+function surfaceGateMissing(planet: Planet, owned: Set<string>): string[] {
+  const missing: string[] = [];
+  const tempGate = canLand(planet.temperature, owned);
+  if (!tempGate.ok) missing.push(tempGate.required);
+  if (planetRadiationShielded(planet) && !owned.has(RADIATION_SHIELD_UPGRADE_ID)) {
+    missing.push(RADIATION_SHIELD_UPGRADE_ID);
+  }
+  return missing;
+}
+
+/**
+ * The error frame explaining why `action` (e.g. "landing", "mining") onto
+ * `planet`'s surface is blocked, or `null` when it's allowed. Combines the
+ * freezing/boiling and radiation gates with clear, specific reasons.
+ */
+function surfaceGateError(
+  planet: Planet,
+  owned: Set<string>,
+  action: string,
+): RenderFrame | null {
+  const missing = surfaceGateMissing(planet, owned);
+  if (missing.length === 0) return null;
+  const reasons: string[] = [];
+  for (const id of missing) {
+    const up = getUpgrade(id);
+    if (id === RADIATION_SHIELD_UPGRADE_ID) {
+      reasons.push(`lethal stellar radiation — equip a ${up.name}`);
+    } else {
+      const why = planet.temperature < 0 ? "freezing" : "boiling";
+      reasons.push(`${why} surface (${planet.temperature}°C) requires ${up.name}`);
+    }
+  }
+  return errorFrame(
+    `${planet.name}: ${action} blocked — ${reasons.join("; ")}. \`produce\` or \`buy\` the gear first.`,
+  );
+}
+
+/**
  * Why a descent onto `planet`'s surface is blocked, as an error frame — or
  * `null` when it's allowed. Gas giants have no surface; a freezing/boiling world
- * needs the matching landing upgrade. Shared by `land` (descend) and the
- * `land <planet>` combo so both gate identically.
+ * needs the matching landing upgrade; a coreward cluster needs a radiation
+ * shield. Shared by `land` (descend) and the `land <planet>` combo so both gate
+ * identically.
  */
 async function landBlockedReason(
   player: Player,
@@ -1905,15 +1976,7 @@ async function landBlockedReason(
   // `orbit` them, so the model stays honest.
   if (planet.isGas) return gasGiantError(planet);
   const owned = await world.getOwnedUpgradeIds(player.id);
-  const gate = canLand(planet.temperature, owned);
-  if (!gate.ok) {
-    const up = getUpgrade(gate.required);
-    const why = planet.temperature < 0 ? "freezing" : "boiling";
-    return errorFrame(
-      `${planet.name} is ${why} (${planet.temperature}°C) — landing requires ${up.name}. \`produce\` or \`buy\` it first.`,
-    );
-  }
-  return null;
+  return surfaceGateError(planet, owned, "landing");
 }
 
 /**
@@ -2198,16 +2261,11 @@ async function handleMine(
   // A gas giant has no surface to mine (planet-taxonomy).
   if (planet.isGas) return gasGiantError(planet);
 
-  // Same gate as `land`: you can't work a hostile surface without the gear.
+  // Same gate as `land`: you can't work a hostile surface without the gear
+  // (freezing/boiling landing gear AND a radiation shield in a coreward cluster).
   const owned = await world.getOwnedUpgradeIds(player.id);
-  const gate = canLand(planet.temperature, owned);
-  if (!gate.ok) {
-    const up = getUpgrade(gate.required);
-    const why = planet.temperature < 0 ? "freezing" : "boiling";
-    return errorFrame(
-      `${planet.name} is ${why} (${planet.temperature}°C) — mining requires ${up.name}. \`craft\` or \`buy\` it first.`,
-    );
-  }
+  const blocked = surfaceGateError(planet, owned, "mining");
+  if (blocked) return blocked;
 
   const region = regionAt(seed, coord, player.region);
   const deposit = region.deposits.find((d) => d.resourceId === resourceId);
@@ -2325,16 +2383,11 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
   if (planet.isGas) return gasGiantError(planet);
 
   // Same surface gate as `mine`/`land`: you can't safely roam a hostile world
-  // without the matching upgrade. No state change when blocked.
+  // without the matching upgrade (landing gear AND a radiation shield coreward).
+  // No state change when blocked.
   const owned = await world.getOwnedUpgradeIds(player.id);
-  const gate = canLand(planet.temperature, owned);
-  if (!gate.ok) {
-    const up = getUpgrade(gate.required);
-    const why = planet.temperature < 0 ? "freezing" : "boiling";
-    return errorFrame(
-      `${planet.name} is ${why} (${planet.temperature}°C) — exploring requires ${up.name}. \`craft\` or \`buy\` it first.`,
-    );
-  }
+  const blocked = surfaceGateError(planet, owned, "exploring");
+  if (blocked) return blocked;
 
   const region = regionAt(seed, coord, player.region);
   const biome = region.biome;
@@ -2471,17 +2524,12 @@ async function handleSalvage(player: Player, seed: string): Promise<RenderFrame>
   // at one anyway — disembark is blocked there); guard defensively.
   if (planet.isGas) return gasGiantError(planet);
 
-  // Same surface gate as `mine`/`explore`: a hostile (freezing/boiling) surface
-  // needs the matching upgrade before you can work it. No state change blocked.
+  // Same surface gate as `mine`/`explore`: a hostile (freezing/boiling) surface,
+  // or a coreward irradiated one, needs the matching upgrade before you can work
+  // it. No state change when blocked.
   const owned = await world.getOwnedUpgradeIds(player.id);
-  const gate = canLand(planet.temperature, owned);
-  if (!gate.ok) {
-    const up = getUpgrade(gate.required);
-    const why = planet.temperature < 0 ? "freezing" : "boiling";
-    return errorFrame(
-      `${planet.name} is ${why} (${planet.temperature}°C) — salvaging requires ${up.name}. \`craft\` or \`buy\` it first.`,
-    );
-  }
+  const blocked = surfaceGateError(planet, owned, "salvaging");
+  if (blocked) return blocked;
 
   const region = regionAt(seed, coord, player.region);
   const site = siteAt(seed, region.coord);

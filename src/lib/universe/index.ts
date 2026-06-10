@@ -58,6 +58,7 @@ export {
   ORBITAL_SITE_SPAWN_CHANCE,
   startingWorld,
   randomStartingWorld,
+  SPAWN_CLUSTER,
   clusterStars,
   clusterOf,
   systemPosition,
@@ -84,8 +85,10 @@ export {
   CLUSTER_R0,
   MAX_CLUSTERS_PER_ARM,
   RADIATION_MAX,
+  RAD_HAZARD_FLOOR_MAX,
   armAngle,
   clusterRadius,
   clusterCenter,
   galacticRadiation,
+  radiationHazardFloor,
 } from "./gen";

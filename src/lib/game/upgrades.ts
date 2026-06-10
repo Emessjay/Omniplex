@@ -23,7 +23,7 @@ import { getPart } from "./parts";
 import { CRAFT_VALUE_MARKUP } from "./rules";
 
 export interface Upgrade {
-  id: "ablative_shields" | "antifreeze_tanks";
+  id: "ablative_shields" | "antifreeze_tanks" | "radiation_shield";
   name: string;
   /** partId -> quantity consumed at a production line to manufacture one. */
   recipe: Record<string, number>;
@@ -45,6 +45,14 @@ export const UPGRADES: readonly Upgrade[] = [
     id: "antifreeze_tanks",
     name: "Antifreeze Tanks",
     recipe: { circuit_board: 2, sensor_array: 1 },
+  },
+  {
+    // cascade 0b: gates operating on lethally-irradiated coreward surfaces, the
+    // sibling of the freezing/boiling landing gear. Heavy hull + sensors to keep
+    // the radiation out — its summed part value is the priciest of the three.
+    id: "radiation_shield",
+    name: "Radiation Shield",
+    recipe: { hull_plating: 2, sensor_array: 2, alloy_beam: 1 },
   },
 ] as const;
 

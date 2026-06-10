@@ -15,17 +15,39 @@ import {
   planetKey,
   parseLocationKey,
   warpDistance,
+  MAX_CLUSTERS_PER_ARM,
 } from "@/lib/universe";
 import type { SystemCoord, PlanetCoord, Planet, Region } from "@/lib/universe";
 
 const SEED = "omniplex-test-seed";
 
-// Deterministic sample of systems across several clusters/systems.
+// Deterministic sample of systems across the FULL cluster range (core → rim).
+// Cascade 0b floors planet hazard coreward via galactic radiation, so calm
+// worlds now concentrate at the RIM (high clusters, radiation → 0) and savage
+// worlds at the CORE (low clusters). Sampling both core AND rim clusters is what
+// guarantees the sample still contains both populations (coverage preserved —
+// the old `cluster < 4` core-only sample would now be uniformly high-hazard).
+const SAMPLE_CLUSTERS = [0, 1, 2, 3, 31, 47, 55, 60, 62, 63];
 function sampleSystems(seed: string): ReturnType<typeof systemAt>[] {
   const out = [];
-  for (let cluster = 0; cluster < 4; cluster++) {
-    for (let system = 0; system < 30; system++) {
+  for (const cluster of SAMPLE_CLUSTERS) {
+    for (let system = 0; system < 24; system++) {
       out.push(systemAt(seed, { galaxy: 0, arm: 0, cluster, system }));
+    }
+  }
+  return out;
+}
+
+// Rim-only planet sample (the outermost cluster rings) where galactic radiation
+// → 0, so the radiation hazard FLOOR is negligible and planet hazard is driven
+// by TEMPERATURE alone. Used by the temperature→hazard coupling test so the
+// coreward radiation floor (cascade 0b) doesn't confound a check that is purely
+// about temperature extremity.
+function sampleRimPlanets(seed: string): Planet[] {
+  const out: Planet[] = [];
+  for (let cluster = MAX_CLUSTERS_PER_ARM - 10; cluster < MAX_CLUSTERS_PER_ARM; cluster++) {
+    for (let system = 0; system < 30; system++) {
+      out.push(...systemAt(seed, { galaxy: 0, arm: 0, cluster, system }).planets);
     }
   }
   return out;
@@ -288,7 +310,9 @@ describe("hazard scales with temperature extremity", () => {
   // Over a large deterministic sample, planets with extreme temperatures (very
   // hot OR very cold) should be markedly more hazardous on average than
   // temperate worlds. Directional with a margin — robust to RNG, not exact.
-  const planets = samplePlanets(SEED);
+  // Sampled at the RIM (radiation floor ≈ 0) so the temperature signal isn't
+  // confounded by cascade 0b's coreward radiation hazard floor.
+  const planets = sampleRimPlanets(SEED);
   const mean = (xs: number[]) =>
     xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
 

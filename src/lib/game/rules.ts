@@ -10,13 +10,20 @@
  */
 
 import type { Atmosphere } from "@/lib/universe/types";
-import { atmosphereDensity } from "@/lib/universe";
+import { atmosphereDensity, radiationHazardFloor, RAD_HAZARD_FLOOR_MAX } from "@/lib/universe";
 
 // `atmosphereDensity` is a physical property of an atmosphere type, so it lives
 // in the (pure) universe layer now. Re-exported here because the fuel/orbital
 // math (`takeoffCost`) and the solar-power curve below both read it, and existing
 // importers expect it from `rules`.
 export { atmosphereDensity };
+
+// `radiationHazardFloor` / `RAD_HAZARD_FLOOR_MAX` are the radiation→hazard-floor
+// model (cascade 0b). They live in the universe layer (a physical property of a
+// cluster's radiation, applied to planet hazard in `gen.ts`) and are re-exported
+// here so the game layer / tests can read them alongside the rest of the hazard
+// model (mirrors `atmosphereDensity`).
+export { radiationHazardFloor, RAD_HAZARD_FLOOR_MAX };
 
 // ---------------------------------------------------------------------------
 // Tuning constants. Exported so handlers, render, and the data adapters share
@@ -177,6 +184,29 @@ export const CRAFT_VALUE_MARKUP = 1.2;
 export const FREEZING_C = 0;
 /** Above this surface temperature (°C) a world is boiling — needs Ablative Shields. */
 export const BOILING_C = 100;
+
+/**
+ * Above this galactic-radiation level (the inner/coreward clusters), a planet's
+ * surface is lethally irradiated and operating on it requires a `radiation_shield`
+ * upgrade (cascade 0b). Tunable cutoff in `(0, RADIATION_MAX)`. At
+ * `RADIATION_MAX/MAX_CLUSTERS_PER_ARM` decay, this corresponds to roughly the
+ * inner ~40% of cluster rings.
+ */
+export const RADIATION_SHIELD_THRESHOLD = 60;
+
+/**
+ * Whether a surface in a cluster of the given `radiation` level demands a
+ * `radiation_shield` to operate on (land / disembark / mine / explore / salvage).
+ * Pure; a HARD gate (like the freezing/boiling landing gear), not a
+ * damage-mitigation model. True strictly ABOVE the threshold (the rim, where
+ * radiation → 0, never requires it).
+ */
+export function radiationShieldRequired(radiation: number): boolean {
+  return radiation > RADIATION_SHIELD_THRESHOLD;
+}
+
+/** The upgrade id that gates operating on a lethally-irradiated surface. */
+export const RADIATION_SHIELD_UPGRADE_ID = "radiation_shield";
 
 /**
  * Whether the held resource quantities `have` cover every component of
