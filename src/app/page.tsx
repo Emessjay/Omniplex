@@ -5,6 +5,8 @@ import { getSessionClient } from "@/lib/supabase/auth-server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { getOrCreatePlayer } from "@/lib/players/getOrCreatePlayer";
 import { isDevLoginEnabled } from "@/lib/devAuth";
+import { buildStatusBar } from "@/lib/game/commands";
+import { getWorldSeed } from "@/lib/game/seed";
 
 /**
  * Auth-gated entry point. Resolved entirely server-side so the terminal never
@@ -47,6 +49,9 @@ export default async function Home({
   }
 
   const player = await getOrCreatePlayer(user.id, user.email ?? "");
+  // Resolve the HUD snapshot server-side (it needs the procedural universe) so
+  // the persistent header shows real names on first paint, before any command.
+  const initialStatus = buildStatusBar(player, getWorldSeed());
 
   return (
     <main className="crt flex min-h-screen w-full flex-col bg-term-bg p-2 sm:p-4">
@@ -63,7 +68,7 @@ export default async function Home({
           </button>
         </form>
       </div>
-      <Terminal player={player} />
+      <Terminal player={player} initialStatus={initialStatus} />
     </main>
   );
 }

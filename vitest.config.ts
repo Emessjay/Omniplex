@@ -6,6 +6,9 @@ export default defineConfig({
     alias: {
       // Mirror the tsconfig "@/*" path alias so tests can import app modules.
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // `server-only` is a Next.js build-time marker with no Node runtime; stub
+      // it so pure-logic tests can import server modules (e.g. game/commands).
+      "server-only": fileURLToPath(new URL("./src/test/server-only-stub.ts", import.meta.url)),
     },
   },
   test: {

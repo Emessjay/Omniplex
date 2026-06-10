@@ -68,9 +68,41 @@ export type RenderSpan = TextSpan | ActionSpan;
 export type RenderLine = RenderSpan[];
 
 /**
+ * A persistent HUD snapshot — the key player vitals shown in the terminal's
+ * always-visible status header (money + location so the player is never lost,
+ * even after `clear`). A fixed sensible set this phase; custom "pin what you
+ * want" is a noted v2. Built server-side by `buildStatusBar(player, seed)` and
+ * attached to the outgoing frame; the client keeps the latest one as its own
+ * state, separate from the scrolling log (so `clear` doesn't wipe it).
+ */
+export interface StatusBar {
+  /** Credits balance. */
+  credits: number;
+  /** Friendly, human-readable location label (e.g. "Kepler-7 · Aris III"). */
+  location: string;
+  /** Regular fuel (planet-to-planet `land`/`orbit`/`launch`). */
+  fuel: number;
+  /** Warp fuel (system-and-larger `warp` jumps). */
+  warpFuel: number;
+  /** Current hit points. */
+  health: number;
+  /** Maximum hit points (so the client can render `n/max` and a low-HP color). */
+  maxHealth: number;
+  /** Current ship's display name. */
+  ship: string;
+}
+
+/**
  * A unit of terminal output appended to the scrollback. The result of one
  * command (or the boot banner) is one frame.
+ *
+ * `status` is ADDITIVE (per the "extend RenderFrame additively" rule): frames
+ * without it render unchanged. When present, it carries the post-command HUD
+ * snapshot so the persistent status header can update. `submitCommand`'s
+ * `(input: string) => Promise<RenderFrame>` signature is unaffected.
  */
 export interface RenderFrame {
   lines: RenderLine[];
+  /** Optional post-command HUD snapshot for the persistent status header. */
+  status?: StatusBar;
 }
