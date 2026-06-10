@@ -181,6 +181,8 @@ import {
   CONDENSATE_RECIPE,
   HYPERWARP_CONDENSATE_ID,
   canHyperwarp,
+  isValidInGalaxyTarget,
+  isAdjacentGalaxy,
 } from "./galaxy-jump";
 import {
   BASE_BUILD_COST,
@@ -1753,77 +1755,125 @@ async function handleWarp(
 }
 
 // ---------------------------------------------------------------------------
-// hyperwarp — the ONLY command that changes `galaxy` (P3). Consumes one
-// Hyperwarp Condensate to jump to another galaxy, landing at a fixed entry
-// point. Embarked-only (gated in `dispatchResolved`). Cross-galaxy `warpDistance`
-// is Infinity, so normal `warp` never offers this — the condensate path is it.
+// hyperwarp — the long-haul fast-travel tier, and the ONLY command that changes
+// `galaxy`. Consumes ONE Hyperwarp Condensate to jump either ANYWHERE in the
+// current galaxy (`<arm> <cluster> <system>`) or to an ADJACENT galaxy's rim
+// (`<galaxy>`). Embarked + orbiting only (gated in `dispatchResolved`). Normal
+// warp-fuel `warp` is the local tier; hyperwarp is how you cross arms / reach the
+// core or rim / hop galaxies. This REPLACES the old fixed-core-entry jump.
 // ---------------------------------------------------------------------------
 
 /**
- * `hyperwarp <galaxy>` — jump to galaxy index `<galaxy>` (any non-negative
- * integer; galaxies are infinite outward). Requires being embarked (gated
- * upstream), owning ≥1 Hyperwarp Condensate, and a target different from the
- * current galaxy. Validates ALL of that BEFORE mutating: a refusal consumes
- * nothing and leaves the player put. On success it consumes one condensate, then
- * relocates to the destination's fixed entry point — arm 0 (mod the destination
- * galaxy's arm count), cluster 0, system 0, planet 0, region 0 — with NO fuel
- * charge (the condensate is the cost). Reports arrival (new galaxy + arm count)
- * and scans the entry region.
+ * `hyperwarp` — long-haul jump for ONE Hyperwarp Condensate. The arg count
+ * disambiguates the two forms:
+ *
+ *  - `hyperwarp <arm> <cluster> <system>` (3 args) → fast-travel to that system
+ *    in the CURRENT galaxy. `cluster ∈ [0, MAX_CLUSTERS_PER_ARM)`, `system ∈
+ *    [0, STARS_PER_CLUSTER)`; arm is taken modulo the galaxy's `armCount` (a
+ *    ring, like `warp`). NO warp-fuel/distance cost — flat 1 condensate.
+ *  - `hyperwarp <galaxy>` (1 arg) → jump to an ADJACENT galaxy (`|Δ| === 1`,
+ *    galaxy ≥ 0) and arrive at its RIM (cluster `MAX_CLUSTERS_PER_ARM − 1`, arm
+ *    0, system 0). Flat 1 condensate.
+ *
+ * Both gate on owning ≥1 condensate and validate the destination BEFORE mutating
+ * (an invalid destination consumes nothing and leaves the player put). On success
+ * one condensate is consumed and the player relocates, arriving IN ORBIT of
+ * planet 0, region 0 (orbit-land: `embarked` stays true, `landed=false`). Reuses
+ * `world.setGalaxyLocation` (galaxy + full coords + region 0 + landed false) as
+ * the single-write mover for both forms.
  */
 async function handleHyperwarp(
   player: Player,
   seed: string,
   args: string[],
 ): Promise<RenderFrame> {
-  const target = toInt(args[0]);
-  if (target === null || target < 0) {
-    return errorFrame("Usage: hyperwarp <galaxy>  (a galaxy index ≥ 0, e.g. hyperwarp 1)");
-  }
-
-  // Gate on a LIVE condensate count + distinct-galaxy. Validate before mutating.
+  // Read the LIVE condensate count and gate on it FIRST — the most actionable
+  // message when empty-handed, regardless of which destination form was typed.
   const materials = await world.getPlayerMaterials(player.id);
   const owned = materials.find((m) => m.materialId === HYPERWARP_CONDENSATE_ID)?.qty ?? 0;
-  const gate = canHyperwarp(owned, player.galaxy, target);
+  const gate = canHyperwarp(owned);
   if (!gate.ok) {
-    if (gate.reason === "no-condensate") {
-      return errorFrame(
-        "You need a Hyperwarp Condensate to jump galaxies — `craft hyperwarp_condensate` from voidstone first.",
-      );
-    }
     return errorFrame(
-      `You're already in galaxy ${player.galaxy}. Pick a different galaxy index.`,
+      "You need a Hyperwarp Condensate to hyperwarp — `craft hyperwarp_condensate` from voidstone first.",
     );
   }
 
-  // Consume the condensate, then relocate to the destination's fixed entry
-  // point. Arm wraps into the destination galaxy's ring (arm 0 always valid).
+  // Resolve + validate the destination coord (no mutation yet).
+  let arrivalCoord: PlanetCoord;
+  let banner: RenderLine;
+  const remaining = owned - 1;
+
+  if (args.length >= 3) {
+    // In-galaxy form: hyperwarp <arm> <cluster> <system>.
+    const armArg = toInt(args[0]);
+    const cluster = toInt(args[1]);
+    const system = toInt(args[2]);
+    if (armArg === null || cluster === null || system === null) {
+      return errorFrame(
+        "Usage: hyperwarp <arm> <cluster> <system>  (whole numbers; see `map`).",
+      );
+    }
+    const { armCount } = galaxyAt(seed, player.galaxy);
+    if (!isValidInGalaxyTarget(armArg, cluster, system, armCount)) {
+      return errorFrame(
+        `Out of range: cluster must be 0–${MAX_CLUSTERS_PER_ARM - 1} (the rim) and system 0–${STARS_PER_CLUSTER - 1}.`,
+      );
+    }
+    const arm = ((armArg % armCount) + armCount) % armCount;
+    const dest: SystemCoord = { galaxy: player.galaxy, arm, cluster, system };
+    arrivalCoord = { ...dest, planet: 0 };
+    const destSystem = systemAt(seed, dest);
+    banner = line([
+      text(`Hyperwarp engaged — you fold space to ${destSystem.name}. `, "success"),
+      text(`arm ${arm} · cluster ${cluster} · system ${system}. `, "default"),
+      text(`Condensate spent (${remaining} left).`, "muted"),
+    ]);
+  } else {
+    // Adjacent-galaxy form: hyperwarp <galaxy> → arrive at that galaxy's rim.
+    const target = toInt(args[0]);
+    if (target === null) {
+      return errorFrame(
+        "Usage: hyperwarp <galaxy>  or  hyperwarp <arm> <cluster> <system>.",
+      );
+    }
+    if (!isAdjacentGalaxy(player.galaxy, target)) {
+      return errorFrame(
+        `You can only hyperwarp to an ADJACENT galaxy (${player.galaxy === 0 ? "1" : `${player.galaxy - 1} or ${player.galaxy + 1}`}). For longer hops, chain jumps galaxy by galaxy.`,
+      );
+    }
+    const destGalaxy = galaxyAt(seed, target);
+    const arm = 0 % destGalaxy.armCount; // always 0 — explicit about the ring wrap.
+    arrivalCoord = {
+      galaxy: target,
+      arm,
+      cluster: MAX_CLUSTERS_PER_ARM - 1, // arrive at the rim
+      system: 0,
+      planet: 0,
+    };
+    banner = line([
+      text(`Hyperwarp engaged — you breach into ${destGalaxy.name}. `, "success"),
+      text(`Galaxy ${target} (${destGalaxy.armCount} arms), arriving at the rim. `, "default"),
+      text(`Condensate spent (${remaining} left).`, "muted"),
+    ]);
+  }
+
+  // Validated — consume exactly one condensate, then relocate in a single write
+  // (region 0, landed false → you arrive ORBITING planet 0). No fuel charge.
   await world.addPlayerMaterial(player.id, HYPERWARP_CONDENSATE_ID, -1);
-  const destGalaxy = galaxyAt(seed, target);
-  const arm = 0 % destGalaxy.armCount; // always 0 — explicit about the ring wrap.
-  const arrivalCoord: PlanetCoord = {
-    galaxy: target,
-    arm,
-    cluster: 0,
-    system: 0,
-    planet: 0,
-  };
   await world.setGalaxyLocation(player.id, arrivalCoord);
 
-  const remaining = owned - 1;
-  // You arrive IN ORBIT of the entry planet (orbit-land); `land` to descend.
   const arrived: Player = {
     ...player,
-    galaxy: target, arm, cluster: 0, system: 0, planet: 0, region: 0, landed: false,
+    galaxy: arrivalCoord.galaxy,
+    arm: arrivalCoord.arm,
+    cluster: arrivalCoord.cluster,
+    system: arrivalCoord.system,
+    planet: 0,
+    region: 0,
+    landed: false,
   };
   const scan = await orbitalScanFrame(arrived, seed, planetAt(seed, arrivalCoord));
-  return frame([
-    line([
-      text(`Hyperwarp engaged — you tear into ${destGalaxy.name}. `, "success"),
-      text(`Galaxy ${target} (${destGalaxy.armCount} arms). `, "default"),
-      text(`Condensate spent (${remaining} left).`, "muted"),
-    ]),
-    ...scan.lines,
-  ]);
+  return frame([banner, ...scan.lines]);
 }
 
 // ---------------------------------------------------------------------------

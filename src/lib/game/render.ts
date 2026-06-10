@@ -981,25 +981,48 @@ export function renderMap(
     );
   }
 
-  // Galaxy jump (P3): `hyperwarp` consumes a Hyperwarp Condensate to leave this
-  // galaxy. The action reads RED (P9b) when you hold none — clicking it still
-  // returns the helpful "craft one from voidstone" error. The suggested target is
-  // the next galaxy outward; any index ≥ 0 works.
+  // Hyperwarp — the long-haul tier: ONE Hyperwarp Condensate jumps you ANYWHERE
+  // in this galaxy (`<arm> <cluster> <system>`) or to an ADJACENT galaxy's rim
+  // (`<galaxy>`). The actions read RED (P9b) when you hold no condensate —
+  // clicking still returns the helpful "craft one from voidstone" error.
   const condensate = loc.condensate ?? 0;
   const canJump = condensate > 0;
-  lines.push(line(text("Galaxy jump", "heading")));
+  // Sample destinations: a far in-galaxy system + the next galaxy outward.
+  const sampleArm = (loc.arm + 1) % loc.armCount;
+  const inGalaxyExample = `hyperwarp ${sampleArm} ${loc.cluster} ${loc.system}`;
+  const adjGalaxyExample = `hyperwarp ${loc.galaxy + 1}`;
+  lines.push(line(text("Hyperwarp (long-haul)", "heading")));
   lines.push(
     line([
       text("Hyperwarp Condensate ", "muted"),
-      text(`×${condensate}   `, canJump ? "accent" : "danger"),
-      action(`hyperwarp ${loc.galaxy + 1}`, `hyperwarp ${loc.galaxy + 1}`, {
+      text(`×${condensate}`, canJump ? "accent" : "danger"),
+      text("   1 jumps anywhere in-galaxy or to an adjacent galaxy's rim", "muted"),
+    ]),
+  );
+  lines.push(
+    line([
+      text("in-galaxy   ", "muted"),
+      action(inGalaxyExample, inGalaxyExample, {
         style: "link",
         title: canJump
-          ? `jump to galaxy ${loc.galaxy + 1} (consumes one condensate)`
+          ? "jump to any system in this galaxy (consumes one condensate)"
           : "need Hyperwarp Condensate — craft one from voidstone",
         disabled: !canJump,
       }),
-      text("  (any galaxy index ≥ 0; consumes one condensate)", "muted"),
+      text("  (any arm · cluster · system)", "muted"),
+    ]),
+  );
+  lines.push(
+    line([
+      text("adjacent    ", "muted"),
+      action(adjGalaxyExample, adjGalaxyExample, {
+        style: "link",
+        title: canJump
+          ? `jump to galaxy ${loc.galaxy + 1}'s rim (consumes one condensate)`
+          : "need Hyperwarp Condensate — craft one from voidstone",
+        disabled: !canJump,
+      }),
+      text(`  (galaxy ±1; arrive at the rim)`, "muted"),
     ]),
   );
 

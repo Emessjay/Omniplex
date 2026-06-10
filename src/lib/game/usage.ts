@@ -117,8 +117,12 @@ export const USAGE: Record<string, UsageDescriptor> = {
     ],
   },
   hyperwarp: {
-    desc: "jump to another galaxy (consumes a Hyperwarp Condensate)",
-    slots: [{ name: "galaxy", hint: "a galaxy index ≥ 0 (galaxies are infinite outward)" }],
+    desc: "long-haul jump: anywhere in-galaxy (arm cluster system) or to an adjacent galaxy's rim (galaxy) — consumes a Hyperwarp Condensate",
+    slots: [
+      { name: "arm|galaxy", hint: "3 args = in-galaxy `<arm> <cluster> <system>`; 1 arg = adjacent `<galaxy>` (±1)" },
+      { name: "cluster", optional: true, hint: "in-galaxy form: 0–63 (the rim)" },
+      { name: "system", optional: true, hint: "in-galaxy form: a star index 0–1023; see `map`" },
+    ],
   },
   orbit: {
     desc: "fly to orbit another planet in this system (burns regular fuel by distance)",
