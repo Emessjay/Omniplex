@@ -33,6 +33,12 @@ export interface Faction {
   blurb: string;
   /** Item ids this faction demands (real resource / material / part ids). */
   demand: readonly string[];
+  /**
+   * The faction id this one is OPPOSED to (Keystone 1c). A SYMMETRIC pairing
+   * (`X.rival === Y ⟺ Y.rival === X`), never itself — gaining rep with one
+   * costs you rep with its rival, so you can't befriend everyone.
+   */
+  rival: string;
 }
 
 /**
@@ -44,6 +50,11 @@ export interface Faction {
  * Every `demand` id is a real carriable good (resource/material/part); no silo-
  * only ingots or capability upgrades. (Invariant unit-tested in
  * `factions-core.test.ts`.)
+ *
+ * RIVALRIES (Keystone 1c) pair the four into two opposed camps — force vs.
+ * knowledge (Iron Vanguard ↔ Arcanum Collegium) and self-sufficiency vs. open
+ * trade (Verdant Compact ↔ Free Traders' League). Each `rival` points at the
+ * other half of its pair; symmetry + totality are unit-tested.
  */
 export const FACTIONS: readonly Faction[] = [
   {
@@ -51,24 +62,28 @@ export const FACTIONS: readonly Faction[] = [
     name: "Iron Vanguard",
     blurb: "A militarist order forever rearming — they want metal and ship parts.",
     demand: ["iron", "titanium", "iridium", "hull_plating", "alloy_beam"],
+    rival: "arcanum_collegium",
   },
   {
     id: "verdant_compact",
     name: "Verdant Compact",
     blurb: "Agrarian settlers who feed the frontier — crops, livestock, and rations.",
     demand: ["verdant_fruit", "jungle_tuber", "sunmelon", "poultry_meat", "tender_loin", "spore_broth"],
+    rival: "free_traders_league",
   },
   {
     id: "arcanum_collegium",
     name: "Arcanum Collegium",
     blurb: "Scholars chasing the rare and the ancient — exotic minerals and relics.",
     demand: ["xenon", "voidstone", "prismatic_gem", "precursor_relic", "void_idol", "meteoric_dust"],
+    rival: "iron_vanguard",
   },
   {
     id: "free_traders_league",
     name: "Free Traders' League",
     blurb: "Merchant princes who deal in everything — a broad, mixed basket of goods.",
     demand: ["copper", "cobalt", "silica", "geode_cluster", "circuit_board", "scaled_hide"],
+    rival: "verdant_compact",
   },
 ] as const;
 
@@ -90,6 +105,14 @@ export function getFaction(id: string): Faction {
   const f = BY_ID.get(id);
   if (!f) throw new Error(`unknown faction id: ${id}`);
   return f;
+}
+
+/**
+ * The faction `id` is opposed to (Keystone 1c). Symmetric + total: every faction
+ * has exactly one rival, never itself. Throws on an unknown id (via `getFaction`).
+ */
+export function rivalOf(id: string): string {
+  return getFaction(id).rival;
 }
 
 /**
@@ -153,6 +176,48 @@ export function rankFor(rep: number): Rank {
     else break;
   }
   return rank;
+}
+
+// ---------------------------------------------------------------------------
+// Faction politics (Keystone 1c). Two pure trade-offs make standing a STRATEGIC
+// choice rather than something you max with everyone:
+//   1. RIVAL_REP_PENALTY — gaining rep with a faction costs you rep with its
+//      rival (`rivalOf`), so you can't befriend both halves of a pair.
+//   2. REP_PRICE_DISCOUNT — high standing with a faction earns a trade discount
+//      at that faction's hubs (the tangible rank payoff deferred from 1b).
+// Both are pure functions of their inputs (no IO/`Date`/`Math.random`).
+// ---------------------------------------------------------------------------
+
+/**
+ * The fraction of reputation GAINED with a faction that is SUBTRACTED from its
+ * rival when you fulfil a contract. ~0.5 — a real bite (you lose half as much as
+ * you gain with the rival) without zeroing the rival on a single delivery.
+ */
+export const RIVAL_REP_PENALTY_FRACTION = 0.5;
+
+/**
+ * Reputation lost with a faction's rival for gaining `gainedRep` with it:
+ * `floor(gainedRep × RIVAL_REP_PENALTY_FRACTION)`. Non-negative, ≤ `gainedRep`
+ * (the fraction is in `(0, 1]`), and monotonic non-decreasing in `gainedRep`.
+ * The store clamps the rival's rep at ≥ 0, so this never drives it negative.
+ */
+export function rivalRepPenalty(gainedRep: number): number {
+  return Math.floor(Math.max(0, gainedRep) * RIVAL_REP_PENALTY_FRACTION);
+}
+
+/** The discount a higher rank adds per tier, and the ceiling it can reach. */
+export const RANK_DISCOUNT_PER_TIER = 0.03;
+export const RANK_DISCOUNT_CAP = 0.15;
+
+/**
+ * The trade discount (a fraction in `[0, RANK_DISCOUNT_CAP]`) you get at a hub of
+ * a faction you hold `rankTier` standing with: `min(cap, rankTier × perTier)`.
+ * 0 at tier 0 (and below), monotonic non-decreasing, and strictly below 1 — so a
+ * discounted price is never free or negative. At `MAX_RANK_TIER` (5) with the
+ * defaults this is the full 0.15 cap; tier 0 gets nothing (the perk is real).
+ */
+export function repPriceDiscount(rankTier: number): number {
+  return Math.min(RANK_DISCOUNT_CAP, Math.max(0, rankTier) * RANK_DISCOUNT_PER_TIER);
 }
 
 // ---------------------------------------------------------------------------

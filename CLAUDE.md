@@ -1817,3 +1817,25 @@ gotchas) accrete here as workers surface things worth persisting. See
   `world.setDistressLocation` is the single-write mutator. Only rescues to the
   current system, so the broke-free rescue isn't exploitable as free travel.
   Seeded: `player-guidance.test.ts`.
+
+### Load-bearing decisions from `faction-politics` (Keystone 1c)
+
+- **Faction standing is now strategic** — rivalries + standing trade-offs + a
+  rank trade perk. NO migration (uses `player_reputation`), NO new verbs.
+- **Rivalries** (`factions.ts`): each `Faction.rival` points at exactly one
+  other faction, SYMMETRIC (`X.rival===Y ⟺ Y.rival===X`), 2 opposed pairs among
+  the 4 — `iron_vanguard ↔ arcanum_collegium`, `verdant_compact ↔
+  free_traders_league`. `rivalOf(id)` helper.
+- **Standing trade-off**: `rivalRepPenalty(gain) = floor(gain ×
+  RIVAL_REP_PENALTY_FRACTION[=0.5])` (pure). `handleFulfill` awards `rewardRep`
+  to the hub faction THEN `addReputation(rivalOf(F), -rivalRepPenalty(rewardRep))`
+  (RPC clamps ≥0); both the gain and the rival loss are reported. So you can't
+  max everyone — allying antagonizes the rival.
+- **Rank trade perk**: `repPriceDiscount(tier) = min(0.15, tier × 0.03)` (pure,
+  0 at tier 0, monotonic, capped). At a faction's hub, `buy`/`sell` apply it per
+  the player's rank with THAT hub's faction (resolved via `factionAt(hubKey)`):
+  buy unit cost `floor(× (1−d))` (≥1), sell payout `round(× (1+d))`. Applies to
+  resource/material/part/upgrade hub trades; NOT the distress fee. `standing`
+  shows each faction's rival + both sides; `contracts`/`buy`/`sell` surface the
+  active discount. Seeded: `faction-politics.test.ts`. (Keystone 1 — factions —
+  is now complete: 1a contracts/rep, 1b ranks, 1c politics.)

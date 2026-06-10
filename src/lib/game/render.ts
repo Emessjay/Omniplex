@@ -1581,9 +1581,20 @@ export function renderWho(view: WhoView): RenderFrame {
 export interface StandingView {
   /**
    * Every faction with the player's reputation, rank title, and the rep needed
-   * for the next tier (`nextRep` null = already at the top rank).
+   * for the next tier (`nextRep` null = already at the top rank). `rivalName` /
+   * `rivalRep` name the opposed faction and the player's standing with it, so the
+   * Keystone-1c trade-off (gaining rep with one costs rep with its rival) is
+   * legible at a glance.
    */
-  factions: { name: string; blurb: string; rep: number; rankTitle: string; nextRep: number | null }[];
+  factions: {
+    name: string;
+    blurb: string;
+    rep: number;
+    rankTitle: string;
+    nextRep: number | null;
+    rivalName: string;
+    rivalRep: number;
+  }[];
 }
 
 /**
@@ -1607,6 +1618,13 @@ export function renderStanding(view: StandingView): RenderFrame {
       ]),
     );
     lines.push(line(text(`      ${f.blurb}`, "muted")));
+    lines.push(
+      line([
+        text("      rival: ", "muted"),
+        text(f.rivalName, "danger"),
+        text(` (rep ${f.rivalRep}) — pleasing one angers the other`, "muted"),
+      ]),
+    );
   }
   lines.push(
     line([
@@ -1644,6 +1662,11 @@ export interface ContractsView {
   rankTitle?: string;
   /** Rep needed for the next rank (null = at top rank; undefined off-hub). */
   nextRep?: number | null;
+  /**
+   * The active rank trade discount fraction at this hub (Keystone 1c) — 0/absent
+   * when the player has no standing. Surfaced so the buy/sell perk is legible.
+   */
+  discount?: number;
   /** The current bucket's contracts (when `atHub`). */
   contracts?: ContractEntry[];
 }
@@ -1680,6 +1703,15 @@ export function renderContracts(view: ContractsView): RenderFrame {
           "muted",
         ),
         text("  — higher rank unlocks bigger contracts.", "muted"),
+      ]),
+    );
+  }
+  if (view.discount !== undefined && view.discount > 0) {
+    lines.push(
+      line([
+        text("  Trade perk: ", "muted"),
+        text(`−${Math.round(view.discount * 100)}% `, "success"),
+        text("on `buy`/`sell` here while you hold this standing.", "muted"),
       ]),
     );
   }
