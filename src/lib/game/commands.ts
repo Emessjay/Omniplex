@@ -73,6 +73,8 @@ import {
   healValue,
   excavatorYield,
   baseCapacity,
+  baseTierMultiplier,
+  MAX_BASE_TIER,
   basePower,
   biofuelYield,
   interplanetaryDistance,
@@ -177,6 +179,9 @@ import {
   buildingCost,
   creditsOf,
   mineralsOf,
+  baseUpgradeCost,
+  upgradeCredits,
+  upgradeMinerals,
   type StructureKind,
 } from "./bases";
 import {
@@ -754,6 +759,9 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // animal-husbandry livestock pen).
       if (verb === "build" && argIndex === 0)
         return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm", "livestock_pen"];
+      // `upgrade`'s domain (Keystone 2c): just the base today — `upgrade base`
+      // raises the base's tier (more storage capacity). Extensible later.
+      if (verb === "upgrade" && argIndex === 0) return ["base"];
       // `produce`'s domain: the ingots a blast furnace smelts from siloed raw
       // metal, the ship parts a production line banks into storage, the upgrades
       // it manufactures (P9a — consuming siloed parts, granting the upgrade), PLUS
@@ -938,6 +946,8 @@ async function dispatchResolved(
       return handleEat(player, args);
     case "build":
       return handleBuild(player, seed, args);
+    case "upgrade":
+      return handleUpgrade(player, seed, args);
     case "bases":
       return handleBases(player);
     case "base":
@@ -3548,7 +3558,7 @@ async function handleBuildStructure(
   let detail: string;
   switch (kind) {
     case "silo":
-      detail = `Storage capacity is now ${baseCapacity(silos)} (${silos} silo${silos === 1 ? "" : "s"}).`;
+      detail = `Storage capacity is now ${baseCapacity(silos, base.tier)} (${silos} silo${silos === 1 ? "" : "s"}, tier ${base.tier}).`;
       break;
     case "excavator":
       detail = `${excavators} excavator${excavators === 1 ? "" : "s"} draining this region automatically (no \`collect\` needed). ${powerNote}`;
@@ -3585,6 +3595,97 @@ async function handleBuildStructure(
       text(`Cost: ${costSummary(cost)}.`, "muted"),
     ]),
     line(text(detail, "muted")),
+  ]);
+}
+
+/**
+ * `upgrade base` (Keystone 2c) — raise the current region's base by one tier,
+ * multiplying its storage capacity (`baseTierMultiplier`/`baseCapacity`). The
+ * cost is credits (from the wallet) + siloed PARTS/INGOTS (from `base_storage`),
+ * scaling UP with the current tier — an ongoing production sink. Disembarked-only
+ * (a surface/base action, gated in `dispatchResolved`); gas/outpost guarded like
+ * the other base commands. Validates max-tier + affordability BEFORE mutating;
+ * consumes credits + siloed inputs atomically, then increments `bases.tier`.
+ *
+ * The arg domain is just `["base"]` today (extensible later). `handleBuild`'s
+ * cost machinery isn't reused verbatim because the inputs come from the SILO
+ * (`add_base_storage(-)`), not the cargo hold (`removeInventory`).
+ */
+async function handleUpgrade(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
+  const planet = planetAt(seed, locOf(player));
+  if (planet.isGas) return gasGiantError(planet);
+
+  const target = args[0]?.toLowerCase();
+  if (target !== "base") {
+    return errorFrame("Usage: upgrade base  — raise your base's tier for more storage capacity.");
+  }
+
+  const base = await baseHere(player, seed);
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name} to upgrade. \`build base\` first.`,
+    );
+  }
+
+  if (base.tier >= MAX_BASE_TIER) {
+    return errorFrame(`Your base is already at the maximum tier (${MAX_BASE_TIER}).`);
+  }
+
+  const cost = baseUpgradeCost(base.tier);
+  const credits = upgradeCredits(base.tier);
+  const inputs = upgradeMinerals(base.tier);
+
+  // Affordability: credits from the live wallet + the part/ingot inputs from the
+  // SILO (base_storage), not the cargo hold.
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const stored = await world.getBaseStorage(base.id);
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+  const have: Record<string, number> = { credits: fresh.credits, ...siloed };
+  if (!canAffordBase(have, cost)) {
+    const short = Object.entries(cost)
+      .filter(([k, q]) => (have[k] ?? 0) < q)
+      .map(([k, q]) =>
+        k === "credits"
+          ? `${q} cr (have ${have.credits ?? 0})`
+          : `${q} ${storageItemName(k)} in the silo (have ${siloed[k] ?? 0})`,
+      );
+    return errorFrame(`Can't upgrade to tier ${base.tier + 1} — short on ${short.join(", ")}.`);
+  }
+
+  // Consume atomically: siloed inputs via the storage RPC, then credits.
+  for (const [itemId, qty] of Object.entries(inputs)) {
+    await world.addBaseStorage(base.id, itemId, -qty);
+  }
+  if (credits > 0) await world.addPlayerCredits(player.id, -credits);
+  const newTier = base.tier + 1;
+  await world.setBaseTier(base.id, newTier);
+
+  // Recompute capacity off the new tier for the report.
+  const buildings = await world.getBaseBuildings(base.id);
+  const silos = buildings.filter((b) => b.kind === "silo").length;
+  const newCapacity = baseCapacity(silos, newTier);
+  const consumed = [
+    ...Object.entries(inputs).map(([itemId, qty]) => `${qty} ${storageItemName(itemId)}`),
+    `${credits} cr`,
+  ].join(" + ");
+
+  return frame([
+    line([
+      text(`Upgraded your base to tier ${newTier}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+    ]),
+    line(
+      text(
+        `Storage capacity is now ${newCapacity} (${silos} silo${silos === 1 ? "" : "s"} × ${baseTierMultiplier(newTier)}).`,
+        "accent",
+      ),
+    ),
   ]);
 }
 
@@ -3694,7 +3795,7 @@ function ranchHints(biome: Biome, penFull: boolean): RanchHint[] {
 async function baseHere(
   player: Player,
   seed: string,
-): Promise<{ id: string; name: string | null; rKey: string } | null> {
+): Promise<{ id: string; name: string | null; rKey: string; tier: number } | null> {
   // No base/region at the orbital outpost — there is no surface here.
   if (atOutpost(player)) return null;
   // A gas giant has no surface region, so no base can exist there.
@@ -3702,7 +3803,7 @@ async function baseHere(
   const region = regionAt(seed, locOf(player), player.region);
   const rKey = regionKey(region.coord);
   const base = await world.getBaseInRegion(player.id, rKey);
-  return base ? { id: base.id, name: base.name, rKey } : null;
+  return base ? { id: base.id, name: base.name, rKey, tier: base.tier } : null;
 }
 
 /**
@@ -3730,7 +3831,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   // Realize any pending excavator output BEFORE reading the silos, so what we
   // display already includes the ore the (powered) excavators just funneled in.
   const region = regionAt(seed, locOf(player), player.region);
-  await accrueExcavators(player, base.id, base.rKey, region, planet);
+  await accrueExcavators(player, base.id, base.rKey, region, planet, base.tier);
 
   const [buildings, stored, have, rawPlots, rawHerds, cargoUsed] = await Promise.all([
     world.getBaseBuildings(base.id),
@@ -3748,7 +3849,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
   const livestockPens = buildings.filter((b) => b.kind === "livestock_pen").length;
-  const capacity = baseCapacity(silos);
+  const capacity = baseCapacity(silos, base.tier);
   // Crop plots (crop-farming): summary + capacity + clickable plant hints (red
   // when no free plot — P9b). Only surfaced once a crop farm exists.
   const plotCapacity = CROP_FARM_PLOTS * cropFarms;
@@ -3780,9 +3881,33 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const siloed: Record<string, number> = {};
   for (const s of stored) siloed[s.itemId] = s.qty;
 
+  // Tier upgrade (Keystone 2c): the next tier's cost (credits + siloed
+  // parts/ingots) and the capacity it unlocks, plus affordability (credits from
+  // the wallet + inputs from the silo). Absent at the max tier.
+  const nextUpgrade =
+    base.tier < MAX_BASE_TIER
+      ? (() => {
+          const cost = baseUpgradeCost(base.tier);
+          const upgradeHave: Record<string, number> = { credits: have.credits ?? 0, ...siloed };
+          return {
+            tier: base.tier + 1,
+            cost: [
+              ...Object.entries(upgradeMinerals(base.tier)).map(
+                ([itemId, qty]) => `${qty} ${storageItemName(itemId)}`,
+              ),
+              `${upgradeCredits(base.tier)} cr`,
+            ].join(" + "),
+            capacity: baseCapacity(silos, base.tier + 1),
+            affordable: canAffordBase(upgradeHave, cost),
+          };
+        })()
+      : undefined;
+
   return renderStorage({
     name: base.name,
     location: describeRegionKey(base.rKey),
+    tier: base.tier,
+    nextUpgrade,
     silos,
     excavators,
     productionLines,
@@ -3892,7 +4017,7 @@ async function handleDeposit(
     );
   }
   // Realize pending excavator output first so the capacity math below sees it.
-  await accrueExcavators(player, base.id, base.rKey, regionAt(seed, locOf(player), player.region), planet);
+  await accrueExcavators(player, base.id, base.rKey, regionAt(seed, locOf(player), player.region), planet, base.tier);
 
   // Items deposit from the resource cargo hold (`inventory`) OR — for ship parts
   // (P12b) — the ship's parts store (`player_parts`). Either way they land in the
@@ -3909,7 +4034,7 @@ async function handleDeposit(
     world.getBaseStorage(base.id),
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
-  const capacity = baseCapacity(silos);
+  const capacity = baseCapacity(silos, base.tier);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   const remaining = capacity - used;
   if (remaining <= 0) {
@@ -3965,7 +4090,7 @@ async function handleWithdraw(
     );
   }
   // Realize pending excavator output first so you can withdraw what just accrued.
-  await accrueExcavators(player, base.id, base.rKey, regionAt(seed, locOf(player), player.region), planet);
+  await accrueExcavators(player, base.id, base.rKey, regionAt(seed, locOf(player), player.region), planet, base.tier);
 
   // P12b: ship parts are a commodity now — withdraw moves them from the silo back
   // into the ship's parts store (`player_parts`), which is uncapped (separate
@@ -4057,6 +4182,7 @@ async function accrueExcavators(
   rKey: string,
   region: Region,
   planet: Planet,
+  tier: number,
 ): Promise<void> {
   const buildings = await world.getBaseBuildings(baseId);
   const excavators = buildings.filter((b) => b.kind === "excavator");
@@ -4079,7 +4205,7 @@ async function accrueExcavators(
     world.getEffectiveDepletionMap(rKey),
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
-  const capacity = baseCapacity(silos);
+  const capacity = baseCapacity(silos, tier);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   let remaining = capacity - used;
   if (remaining <= 0) return; // no room: don't advance (accrued time is preserved)
@@ -4141,7 +4267,7 @@ async function maybeAccrueExcavators(
 ): Promise<void> {
   const rKey = regionKey(region.coord);
   const base = await world.getBaseInRegion(player.id, rKey);
-  if (base) await accrueExcavators(player, base.id, rKey, region, planet);
+  if (base) await accrueExcavators(player, base.id, rKey, region, planet, base.tier);
 }
 
 // ---------------------------------------------------------------------------
@@ -4182,7 +4308,7 @@ async function handleProduce(
   }
   // Realize pending excavator output first (a base read), then read the silos.
   const region = regionAt(seed, locOf(player), player.region);
-  await accrueExcavators(player, base.id, base.rKey, region, planet);
+  await accrueExcavators(player, base.id, base.rKey, region, planet, base.tier);
 
   const [buildings, stored] = await Promise.all([
     world.getBaseBuildings(base.id),
@@ -4223,7 +4349,7 @@ async function handleProduce(
 
   // Smelting branch (blast furnace): raw metal in the silo → ingot in the silo.
   if (isIngotId(targetId)) {
-    return handleProduceIngot(base, stored, args[1], targetId, silos);
+    return handleProduceIngot(base, stored, args[1], targetId, silos, base.tier);
   }
 
   // P9a: an upgrade id manufactures the UPGRADE (consuming siloed PARTS, granting
@@ -4264,7 +4390,7 @@ async function handleProduce(
 
   // Capacity: consuming inputs frees space, banking parts uses it. Validate the
   // net result fits before mutating (defensive — inputs ≥ outputs in practice).
-  const capacity = baseCapacity(silos);
+  const capacity = baseCapacity(silos, base.tier);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   const inputsConsumed = Object.values(recipe).reduce((sum, q) => sum + q, 0) * requested;
   const usedAfter = used - inputsConsumed + requested;
@@ -4304,11 +4430,12 @@ async function handleProduce(
  * already ran in `handleProduce`.
  */
 async function handleProduceIngot(
-  base: { id: string; name: string | null; rKey: string },
+  base: { id: string; name: string | null; rKey: string; tier: number },
   stored: world.StorageStack[],
   qtyArg: string | undefined,
   ingotId: string,
   silos: number,
+  tier: number,
 ): Promise<RenderFrame> {
   const ingot = getIngot(ingotId);
   const recipe = ingot.recipe;
@@ -4331,7 +4458,7 @@ async function handleProduceIngot(
 
   // Capacity: consuming raw frees space, banking ingots uses it. Validate the net
   // fits before mutating (raw inputs ≥ ingot outputs in practice).
-  const capacity = baseCapacity(silos);
+  const capacity = baseCapacity(silos, tier);
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
   const inputsConsumed = Object.values(recipe).reduce((sum, q) => sum + q, 0) * requested;
   const usedAfter = used - inputsConsumed + requested;

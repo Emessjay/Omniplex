@@ -482,12 +482,33 @@ export function excavatorYield(
 }
 
 /**
- * Total storage capacity of a base with `siloCount` silos: `SILO_CAPACITY`
- * per silo. 0 with no silos. Negative/fractional counts are floored at 0 / down
+ * Highest base tier reachable via `upgrade base`. A base starts at tier 1; each
+ * upgrade raises the tier (and so its storage capacity, via
+ * `baseTierMultiplier`) by one, up to this ceiling. Tunable.
+ */
+export const MAX_BASE_TIER = 5;
+
+/**
+ * Storage-capacity multiplier for a base of `tier` (1..MAX_BASE_TIER). 1 at tier
+ * 1 (so an un-upgraded base behaves exactly as before tiers existed) and
+ * strictly increasing — currently the identity (`= tier`), so tier 3 = 3×
+ * capacity. Tunable. Out-of-range tiers are clamped to [1, MAX_BASE_TIER]
+ * defensively (the caller passes the stored tier, which the DB constrains ≥ 1).
+ */
+export function baseTierMultiplier(tier: number): number {
+  const t = Math.max(1, Math.min(MAX_BASE_TIER, Math.floor(tier)));
+  return t;
+}
+
+/**
+ * Total storage capacity of a base with `siloCount` silos at `tier`:
+ * `SILO_CAPACITY` per silo, scaled by `baseTierMultiplier(tier)`. 0 with no
+ * silos (regardless of tier). `tier` defaults to 1 so pre-tier call sites and
+ * tests read unchanged. Negative/fractional silo counts are floored at 0 / down
  * defensively (the caller passes an integer building count).
  */
-export function baseCapacity(siloCount: number): number {
-  return SILO_CAPACITY * Math.max(0, Math.floor(siloCount));
+export function baseCapacity(siloCount: number, tier: number = 1): number {
+  return SILO_CAPACITY * Math.max(0, Math.floor(siloCount)) * baseTierMultiplier(tier);
 }
 
 // ---------------------------------------------------------------------------

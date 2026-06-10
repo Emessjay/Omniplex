@@ -139,6 +139,7 @@ const DISEMBARKED_ACTIONS = new Set([
   "feed",
   "slaughter",
   "build",
+  "upgrade",
   "produce",
   "deposit",
   "withdraw",

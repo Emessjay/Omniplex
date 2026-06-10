@@ -1357,7 +1357,19 @@ export interface StorageView {
    * Absent on bases with no power-relevant buildings (back-compatible).
    */
   power?: { supply: number; demand: number; powered: boolean };
-  /** Stored units used + total capacity (= SILO_CAPACITY × silos). */
+  /**
+   * The base's tier (1..MAX_BASE_TIER), which multiplies its storage capacity
+   * (Keystone 2c). Absent = treat as tier 1 (back-compatible).
+   */
+  tier?: number;
+  /**
+   * The next-tier upgrade (Keystone 2c): the tier it reaches, a cost summary
+   * (credits + siloed parts/ingots), the capacity it unlocks, and whether the
+   * player can afford it now (red when not — P9b). Absent at MAX_BASE_TIER (no
+   * further upgrade) or when tier info isn't supplied.
+   */
+  nextUpgrade?: { tier: number; cost: string; capacity: number; affordable: boolean };
+  /** Stored units used + total capacity (= SILO_CAPACITY × silos × tier). */
   used: number;
   capacity: number;
   /** Stored items: item id (resource OR part), quantity, and display name. */
@@ -1412,6 +1424,7 @@ export function renderStorage(view: StorageView): RenderFrame {
       text("Base ", "heading"),
       text(label, "accent"),
       text(`  ${view.location}`, "muted"),
+      text(`  tier ${view.tier ?? 1}`, "default"),
     ]),
     line([
       text("silos ", "muted"),
@@ -1445,6 +1458,24 @@ export function renderStorage(view: StorageView): RenderFrame {
         powered
           ? text(" ✓", "success")
           : text("  — underpowered; build a thermal_plant or solar_array", "danger"),
+      ]),
+    );
+  }
+
+  // Tier upgrade (Keystone 2c): a clickable `upgrade base` hint showing the next
+  // tier's cost (credits + siloed parts/ingots) and the capacity it unlocks. Red
+  // when unaffordable (P9b). Hidden at MAX_BASE_TIER (no `nextUpgrade`).
+  if (view.nextUpgrade) {
+    const nx = view.nextUpgrade;
+    lines.push(
+      line([
+        action("upgrade base", "upgrade base", {
+          style: "link",
+          title: nx.affordable ? `raise to tier ${nx.tier}` : "can't afford the upgrade",
+          disabled: !nx.affordable,
+        }),
+        text(`  → tier ${nx.tier}: ${nx.cost}`, "muted"),
+        text(`  (capacity ${nx.capacity})`, "muted"),
       ]),
     );
   }

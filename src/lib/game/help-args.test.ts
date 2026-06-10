@@ -70,7 +70,11 @@ describe("help command-arg resolves abbreviations (AC#6)", () => {
   it("expands a unique prefix to the canonical command", () => {
     expect(resolveToken("mi", VERBS)).toEqual({ ok: true, value: "mine" });
     expect(resolveToken("cr", VERBS)).toEqual({ ok: true, value: "craft" });
-    expect(resolveToken("up", VERBS)).toEqual({ ok: true, value: "upgrades" });
+    expect(resolveToken("pr", VERBS)).toEqual({ ok: true, value: "produce" });
+    // `upgrade` is an exact match even though it also prefixes `upgrades` (the
+    // base-tiers `upgrade` verb joined the vocabulary alongside the ship-upgrade
+    // info screen `upgrades`); a bare `up` is now ambiguous (see below).
+    expect(resolveToken("upgrade", VERBS)).toEqual({ ok: true, value: "upgrade" });
   });
 
   it("reports an ambiguous prefix without guessing", () => {

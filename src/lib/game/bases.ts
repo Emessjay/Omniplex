@@ -120,6 +120,47 @@ export function buildingCost(kind: StructureKind): Readonly<Record<string, numbe
   return BUILDING_BUILD_COST[kind];
 }
 
+// ---------------------------------------------------------------------------
+// Base tiers (Keystone 2c). A base has a tier (1..MAX_BASE_TIER); `upgrade base`
+// raises it by one, multiplying the base's storage capacity (see
+// `baseTierMultiplier`/`baseCapacity` in `rules.ts`). The upgrade is an ONGOING
+// production sink: it costs credits plus siloed PARTS/INGOTS (not raw cargo
+// minerals — these are advanced goods consumed from the silo), and the bill
+// scales UP with the current tier so leveling deepens the longer you climb.
+// ---------------------------------------------------------------------------
+
+/**
+ * What it costs to upgrade a base from `currentTier` → `currentTier + 1`, in
+ * credits plus siloed PART/INGOT ids — a deepening sink that scales UP with the
+ * current tier (both the credits and every part/ingot line grow with `tier`).
+ * Defined for tiers `1 .. MAX_BASE_TIER - 1` (the handler refuses upgrades at
+ * MAX_BASE_TIER before calling this). Like `BASE_BUILD_COST`, the `credits` key
+ * is charged against the wallet; the remaining keys (real `parts.ts`/`ingots.ts`
+ * ids) are consumed from `base_storage` (the silo). Tunable. Pure.
+ */
+export function baseUpgradeCost(currentTier: number): Record<string, number> {
+  const t = Math.max(1, Math.floor(currentTier));
+  return {
+    credits: 1000 * t,
+    iron_ingot: 5 * t,
+    titanium_ingot: 3 * t,
+    hull_plating: 2 * t,
+  };
+}
+
+/** The credits portion of a tier-upgrade cost (charged against the balance). */
+export function upgradeCredits(currentTier: number): number {
+  return creditsOf(baseUpgradeCost(currentTier));
+}
+
+/**
+ * The siloed PART/INGOT ingredients of a tier-upgrade cost (everything except
+ * `credits`), `{ itemId: qty }`. Consumed from `base_storage` when upgrading.
+ */
+export function upgradeMinerals(currentTier: number): Record<string, number> {
+  return mineralsOf(baseUpgradeCost(currentTier));
+}
+
 /** The credits portion of a cost map (the `credits` line, 0 if absent). */
 export function creditsOf(cost: Record<string, number>): number {
   return cost.credits ?? 0;

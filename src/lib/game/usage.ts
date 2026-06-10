@@ -48,6 +48,7 @@ export const VERBS: string[] = [
   "craft",
   "eat",
   "build",
+  "upgrade",
   "bases",
   "base",
   "storage",
@@ -208,6 +209,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
       { name: "structure" },
       { name: "name", optional: true, hint: "an optional base name (build base only)" },
     ],
+  },
+  upgrade: {
+    desc: "upgrade your base's tier here for more storage capacity (on foot)",
+    slots: [{ name: "structure" }],
   },
   bases: {
     desc: "list the bases you've established",

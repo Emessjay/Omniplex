@@ -1160,12 +1160,14 @@ export interface BaseBuilding {
 export interface OwnedBaseRow {
   id: string;
   name: string | null;
+  /** The base's tier (1..MAX_BASE_TIER); scales its storage capacity. */
+  tier: number;
 }
 
 /**
  * The base `ownerId` owns in `regionKey`, or null if they have none there. The
  * `(owner_id, region_key)` unique constraint guarantees at most one. Returns the
- * id (to address its buildings/storage) + name.
+ * id (to address its buildings/storage) + name + tier.
  */
 export async function getBaseInRegion(
   ownerId: string,
@@ -1174,14 +1176,21 @@ export async function getBaseInRegion(
   const db = getServerClient();
   const { data, error } = await db
     .from("bases")
-    .select("id, name")
+    .select("id, name, tier")
     .eq("owner_id", ownerId)
     .eq("region_key", regionKey)
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  const r = data as { id: string; name: string | null };
-  return { id: r.id, name: r.name };
+  const r = data as { id: string; name: string | null; tier: number | null };
+  return { id: r.id, name: r.name, tier: r.tier ?? 1 };
+}
+
+/** Set a base's tier (the `upgrade base` mutator). Service-role write. */
+export async function setBaseTier(baseId: string, tier: number): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db.from("bases").update({ tier }).eq("id", baseId);
+  if (error) throw error;
 }
 
 /** All buildings in a base, oldest first. */
