@@ -2012,3 +2012,26 @@ gotchas) accrete here as workers surface things worth persisting. See
   only this phase** (band + radius + rim). NO hazard/gameplay coupling yet
   (deliberately deferred to **0b**: radiation→hazard floor + a radiation-shield
   upgrade gate). Seeded: `galactic-structure.test.ts`.
+
+### Load-bearing decisions from `warp-galaxy-tune` + `hyperwarp-anywhere`
+
+- **Two-tier galactic travel.** Warp fuel = LOCAL roaming (expensive at galactic
+  scale by design); hyperwarp/condensate = the LONG-HAUL tier.
+- **`warp-galaxy-tune`** (constants only, no migration): `WARP_FUEL_PER_DISTANCE
+  ÷3` (→ a core→rim crossing ≈ 20 tanks; galaxies feel vast) and `ARM_COUNT_MIN
+  2→8` (`armCount ∈ [8,16]` — denser arms, so adjacent-arm-at-rim isn't as far
+  as crossing the whole galaxy). Validated by sampling (core→rim ~21 tanks,
+  within-cluster ~11% tank, radiation core 100→rim 2).
+- **`hyperwarp-anywhere`** (no migration): hyperwarp is now the 1-condensate
+  long-haul fast-travel. **`hyperwarp <arm> <cluster> <system>`** (3 args) jumps
+  ANYWHERE in the current galaxy; **`hyperwarp <galaxy>`** (1 arg) jumps to an
+  ADJACENT galaxy's rim (`cluster = MAX_CLUSTERS_PER_ARM-1`). Flat 1 condensate
+  each (no warp-fuel/distance cost), arrive ORBITING planet 0 region 0
+  (orbit-land invariant). Pure validators `isValidInGalaxyTarget(arm,cluster,
+  system,armCount)` + `isAdjacentGalaxy(from,to)`; `canHyperwarp` simplified to
+  the condensate-only gate (same-galaxy is now valid; back-compat args retained
+  for the old `galaxy-jump` test). Replaces the old fixed-core-entry jump.
+  `setGalaxyLocation` reused; `ORBITING_ONLY` applicability unchanged; `map`
+  shows both forms (P9b red when no condensate). Seeded:
+  `hyperwarp-anywhere.test.ts`. Progression: bootstrap locally on warp fuel →
+  mine voidstone → craft condensate → roam the galaxy freely.
