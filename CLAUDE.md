@@ -1534,3 +1534,69 @@ gotchas) accrete here as workers surface things worth persisting. See
   `addressing.test.ts`/`universe-gen.test.ts` `warpDistance` cases were updated to
   the seed-first signature and STRENGTHENED (symmetry via `toBeCloseTo`, geometric
   system term asserted positive), not weakened.
+
+### Load-bearing decisions from `cluster-span-retune`
+
+- **The warp-distance hierarchy is coherent: a cluster hop = a 10σ
+  intra-cluster traversal, and clusters never overlap.** `CLUSTER_SPAN =
+  ARM_SPAN = 10 · STAR_CLUSTER_SIGMA = 100` (was `CLUSTER_SPAN = 10`,
+  `ARM_SPAN = 100`); `SYSTEM_SPAN = 1` (the Euclidean-position multiplier).
+  Arm hop == cluster hop **for now** (a deliberate placeholder — to be
+  revisited). Since the star cloud's max diameter is `2·STAR_CLUSTER_MAX_RADIUS`
+  = 8σ (80) and a cluster step is 10σ (100), cluster spacing exceeds the
+  cluster diameter ⇒ no spatial overlap. Locked in `addressing.test.ts`:
+  `CLUSTER_SPAN === 10·STAR_CLUSTER_SIGMA` and `CLUSTER_SPAN > 2·STAR_CLUSTER_MAX_RADIUS`.
+- **The cross-cluster `|Δsystem|` term was DROPPED.** `warpDistance`'s system
+  term is the Euclidean position distance × `SYSTEM_SPAN` ONLY when a and b are
+  in the same galaxy+arm+cluster; **0 otherwise**. (System indices are just
+  labels for Gaussian positions — they have no cross-cluster spatial meaning,
+  and the old fallback let a cluster jump's cost depend on the destination's
+  arbitrary index, up to ~1000.) So a cluster hop costs a flat `CLUSTER_SPAN`
+  regardless of source/destination system index.
+- **Known follow-up**: cluster hops became ~10× more expensive in warp fuel
+  (cluster distance 10→100), so warp-fuel supply/pricing may want a tuning pass
+  — parked with the arm-cost conversation.
+
+### Load-bearing decisions from `blast-furnace`
+
+- **Industrial smelting tier + a deepened production chain: ore → ingot →
+  part → upgrade.** NO migration — `blast_furnace` is a new free-text
+  `base_buildings.kind`, and ingots are free-text `base_storage` items
+  (silo-only intermediates: NOT carried in cargo, NOT traded, NOT in
+  `deposit`/`withdraw` this phase). Built on P8a/P8b/P13; reuses the building/
+  storage/cost/power machinery wholesale.
+- **`INGOTS` catalog** (`src/lib/game/ingots.ts`, mirrors `parts.ts`):
+  `Ingot = { id, name, recipe: Record<resourceId, qty>, value }`; helpers
+  `INGOTS`/`INGOT_IDS`/`isIngotId`/`getIngot`/`ingotRecipeOf`/`ingotValue`/
+  `ingotRawInputValue`. **One ingot per METAL** (iron/copper/cobalt/titanium/
+  iridium — NOT silica/xenon/voidstone); recipe is raw metal → one ingot
+  (`{iron:2}` etc). `value = round(ingotRawInputValue × SMELT_VALUE_MARKUP)`
+  (`= 1.5`), so **ingotValue > raw input** (smelting adds value; unit-tested).
+- **`blast_furnace` is a power-gated `StructureKind`** (`bases.ts`,
+  `STRUCTURE_KINDS` extended — the `base-buildings-cost.test.ts` exact-match
+  assertion was updated, per the production-line/base-power precedent),
+  `BUILDING_BUILD_COST.blast_furnace` tunable. `BLAST_FURNACE_POWER_DEMAND = 6`
+  (`rules.ts`); **`basePower` gained a `blastFurnaces` arg** (counts them as
+  consumers); every call site passes the base's furnace count. Built like other
+  structures (DISEMBARKED + own a base in-region + atomic consume).
+- **`produce` is now THREE-branch** (`commands.ts`): `isIngotId` → smelt
+  (requires a **blast_furnace** + power, consumes siloed raw metal → banks
+  ingot into the silo, capacity-capped); `isPartId` → manufacture part
+  (requires a **production_line**); `isUpgradeId` → manufacture upgrade. Arg-0
+  domain is `[...INGOT_IDS, ...PART_IDS, ...UPGRADE_IDS]`. Validate-before-
+  mutate, atomic via `add_base_storage`, power-gated. `storageItemName`
+  resolves ingot ids; the `storage`/`base` view shows a furnace count + a
+  clickable **Smeltable:** list (P9b red when inputs/power short).
+- **Ship parts rewired onto ingots** (`parts.ts`): each part recipe now
+  consumes INGOTS for its metal inputs (raw `silica` stays raw — no ingot).
+  `partInputValue(id)` sums ingot items at `ingotValue` + raw items at
+  `baseValue`; `partValue = round(partInputValue × PART_VALUE_MARKUP)` so
+  **partValue > input** (every recipe references ≥1 ingot — the rewire is
+  unit-tested). Knock-on: `upgrades` `recipeCost = Σ partValue` rose, so
+  `upgradeValue = round(recipeCost × CRAFT_VALUE_MARKUP=1.2)` rose too
+  (`ship-upgrades.test.ts` band re-evaluated, not weakened). The full chain is
+  monotonic: ore < ingot < part < upgrade. Seeded contract:
+  `src/lib/game/blast-furnace.test.ts`.
+- **For the farming phases (crop-farming, animal-husbandry)**: same building/
+  `build`/power pattern; biome-affined catalogs; active plant/tend/harvest +
+  feed/breed/slaughter cycles (need `base_plots` / `base_livestock` tables).
