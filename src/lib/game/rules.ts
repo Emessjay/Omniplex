@@ -531,6 +531,21 @@ export function baseCapacity(siloCount: number, tier: number = 1): number {
   return SILO_CAPACITY * Math.max(0, Math.floor(siloCount)) * baseTierMultiplier(tier);
 }
 
+/**
+ * Flat power-supply bonus a base of `tier` grants ON TOP OF its plant output
+ * (base-power-tiers, 2c-cont). 0 at tier 1 (un-upgraded bases behave exactly as
+ * before this phase) and strictly increasing per tier: `(tier - 1) ×
+ * POWER_PER_TIER`. `POWER_PER_TIER` is tuned to ~`PRODUCTION_LINE_POWER_DEMAND`
+ * so each tier roughly powers one more production line — leveling a base lets it
+ * run more industry, not just store more. Tunable. Out-of-range tiers are clamped
+ * to [1, MAX_BASE_TIER] defensively, matching `baseTierMultiplier`.
+ */
+export const POWER_PER_TIER = 6;
+export function baseTierPowerBonus(tier: number): number {
+  const t = Math.max(1, Math.min(MAX_BASE_TIER, Math.floor(tier)));
+  return (t - 1) * POWER_PER_TIER;
+}
+
 // ---------------------------------------------------------------------------
 // Base power (P13) — power plants supply, consumers (excavators + production
 // lines) demand, and a base runs its consumers only when supply ≥ demand.
@@ -595,6 +610,10 @@ export function solarOutput(atmosphere: Atmosphere): number {
  * all-or-nothing gate (no brownouts). With no consumers, demand is 0 and the base
  * is trivially powered. Pure & deterministic. Designed to extend: a new plant
  * kind adds a term to `supply`, a new consumer adds one to `demand`.
+ *
+ * `tier` (base-power-tiers, 2c-cont) grants a flat `baseTierPowerBonus(tier)` on
+ * top of plant output — 0 at tier 1, rising per tier — so leveling a base powers
+ * more industry. Defaults to 1 so pre-tier call sites/tests read unchanged.
  */
 export function basePower(args: {
   thermalPlants: number;
@@ -604,8 +623,10 @@ export function basePower(args: {
   blastFurnaces: number;
   temperature: number;
   atmosphere: Atmosphere;
+  tier?: number;
 }): { supply: number; demand: number; powered: boolean } {
   const supply =
+    baseTierPowerBonus(args.tier ?? 1) +
     Math.max(0, args.thermalPlants) * thermalOutput(args.temperature) +
     Math.max(0, args.solarArrays) * solarOutput(args.atmosphere);
   const demand =

@@ -76,6 +76,7 @@ import {
   excavatorYield,
   baseCapacity,
   baseTierMultiplier,
+  baseTierPowerBonus,
   MAX_BASE_TIER,
   basePower,
   biofuelYield,
@@ -3687,6 +3688,7 @@ async function handleBuildStructure(
     blastFurnaces,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
+    tier: base.tier,
   });
   const powerNote = power.powered
     ? `Power ${Math.round(power.supply)}/${power.demand} ✓.`
@@ -3806,6 +3808,7 @@ async function handleUpgrade(
   const buildings = await world.getBaseBuildings(base.id);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const newCapacity = baseCapacity(silos, newTier);
+  const powerGain = baseTierPowerBonus(newTier) - baseTierPowerBonus(base.tier);
   const consumed = [
     ...Object.entries(inputs).map(([itemId, qty]) => `${qty} ${storageItemName(itemId)}`),
     `${credits} cr`,
@@ -3818,7 +3821,7 @@ async function handleUpgrade(
     ]),
     line(
       text(
-        `Storage capacity is now ${newCapacity} (${silos} silo${silos === 1 ? "" : "s"} × ${baseTierMultiplier(newTier)}).`,
+        `Storage capacity is now ${newCapacity} (${silos} silo${silos === 1 ? "" : "s"} × ${baseTierMultiplier(newTier)}); power supply +${powerGain} (now +${baseTierPowerBonus(newTier)} from tier).`,
         "accent",
       ),
     ),
@@ -4010,6 +4013,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     blastFurnaces,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
+    tier: base.tier,
   });
 
   // Siloed amounts for the producible-affordability check (`produce` consumes
@@ -4034,6 +4038,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
               `${upgradeCredits(base.tier)} cr`,
             ].join(" + "),
             capacity: baseCapacity(silos, base.tier + 1),
+            powerBonus: baseTierPowerBonus(base.tier + 1) - baseTierPowerBonus(base.tier),
             affordable: canAffordBase(upgradeHave, cost),
           };
         })()
@@ -4052,7 +4057,12 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     solarArrays,
     cropFarms,
     livestockPens,
-    power: { supply: power.supply, demand: power.demand, powered: power.powered },
+    power: {
+      supply: power.supply,
+      demand: power.demand,
+      powered: power.powered,
+      tierBonus: baseTierPowerBonus(base.tier),
+    },
     // Crop-farming: plot usage + per-crop maturity + clickable plant hints.
     plotsUsed: rawPlots.length,
     plotCapacity,
@@ -4333,6 +4343,7 @@ async function accrueExcavators(
     blastFurnaces: buildings.filter((b) => b.kind === "blast_furnace").length,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
+    tier,
   });
   if (!power.powered) return; // underpowered: accrue nothing, don't advance clocks
 
@@ -4476,6 +4487,7 @@ async function handleProduce(
     blastFurnaces,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
+    tier: base.tier,
   });
   if (!power.powered) {
     return errorFrame(
