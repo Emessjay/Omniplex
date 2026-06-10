@@ -1367,9 +1367,12 @@ export interface StorageView {
   /**
    * Power balance (P13): plant `supply` vs consumer `demand`. Rendered as
    * `Power supply/demand`, green ✓ when `powered`, red when short (per P9b).
-   * Absent on bases with no power-relevant buildings (back-compatible).
+   * `tierBonus` (base-power-tiers, 2c-cont) is the flat supply the base's TIER
+   * contributes (already folded into `supply`); shown as `(incl. +N tier)` when
+   * > 0 so the upgrade payoff is legible. Absent on bases with no power-relevant
+   * buildings (back-compatible).
    */
-  power?: { supply: number; demand: number; powered: boolean };
+  power?: { supply: number; demand: number; powered: boolean; tierBonus?: number };
   /**
    * The base's tier (1..MAX_BASE_TIER), which multiplies its storage capacity
    * (Keystone 2c). Absent = treat as tier 1 (back-compatible).
@@ -1381,7 +1384,7 @@ export interface StorageView {
    * player can afford it now (red when not — P9b). Absent at MAX_BASE_TIER (no
    * further upgrade) or when tier info isn't supplied.
    */
-  nextUpgrade?: { tier: number; cost: string; capacity: number; affordable: boolean };
+  nextUpgrade?: { tier: number; cost: string; capacity: number; powerBonus?: number; affordable: boolean };
   /** Stored units used + total capacity (= SILO_CAPACITY × silos × tier). */
   used: number;
   capacity: number;
@@ -1463,7 +1466,7 @@ export function renderStorage(view: StorageView): RenderFrame {
   // short (per P9b's unperformable→red convention) so the player sees at a glance
   // that excavators/production lines are stalled for lack of power.
   if (view.power) {
-    const { supply, demand, powered } = view.power;
+    const { supply, demand, powered, tierBonus } = view.power;
     lines.push(
       line([
         text("power ", "muted"),
@@ -1471,6 +1474,7 @@ export function renderStorage(view: StorageView): RenderFrame {
         powered
           ? text(" ✓", "success")
           : text("  — underpowered; build a thermal_plant or solar_array", "danger"),
+        ...(tierBonus && tierBonus > 0 ? [text(`  (incl. +${tierBonus} tier)`, "muted")] : []),
       ]),
     );
   }
@@ -1488,7 +1492,12 @@ export function renderStorage(view: StorageView): RenderFrame {
           disabled: !nx.affordable,
         }),
         text(`  → tier ${nx.tier}: ${nx.cost}`, "muted"),
-        text(`  (capacity ${nx.capacity})`, "muted"),
+        text(
+          nx.powerBonus && nx.powerBonus > 0
+            ? `  (capacity ${nx.capacity}, power +${nx.powerBonus})`
+            : `  (capacity ${nx.capacity})`,
+          "muted",
+        ),
       ]),
     );
   }
