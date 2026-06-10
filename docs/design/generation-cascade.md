@@ -22,10 +22,16 @@ because it does: a property three tiers down traces causally back to the seed.
 - **In:** `galaxy` (unbounded) · `arm` · `cluster` · `system`.
 - **Treats `arm`/`cluster` as polar `(r, θ)`:** `θ = arm·2π/armCount`,
   `r = (cluster+R₀)·CLUSTER_SPAN`; a cluster sits at `(r·cosθ, r·sinθ)`.
+- **Finite disk:** clusters per arm are capped at `MAX_CLUSTERS_PER_ARM` (the
+  galaxy's radius in rings), so a galaxy is large but FINITE (`armCount` ×
+  `MAX_CLUSTERS_PER_ARM` × 1024 stars); the rim is a hard edge. The
+  infinite-universe property lives at the **galaxy tier** (unbounded galaxy
+  count), not inside one galaxy.
 - **Determines:** warp distance (planar polar geometry + the intra-cluster star
   cloud ✅), and **galactic-center radiation `= f(r)`** (max at the core, decays
-  outward). Emergent: arms converge coreward → dense/irradiated/rich core,
-  sparse/safe rim. Radiation is the key *output that flows downward*.
+  outward to the rim at the cap). Emergent: arms converge coreward →
+  dense/irradiated/rich core, sparse/safe rim. Radiation is the key *output that
+  flows downward*.
 - ✅ today: galaxy/arm/cluster/system coords; bounded Gaussian star clouds with
   `(x,y,z)` positions. ◖ planned: the polar geometry + radiation.
 

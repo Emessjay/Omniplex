@@ -32,6 +32,15 @@ structure driving BOTH navigation distance AND galactic-center radiation:
   distance from the core (`R₀ > 0` so cluster 0 isn't a degenerate point where
   all arms collapse). A cluster's galactic-plane position is
   `P(arm,cluster) = (r·cosθ, r·sinθ)`.
+- **Bound the galaxy to a finite disk:** cap clusters per arm at
+  `MAX_CLUSTERS_PER_ARM` (a constant — the galaxy's radius in cluster-rings;
+  ~32–128, tunable). So a galaxy = `armCount` arms × `MAX_CLUSTERS_PER_ARM`
+  rings × `STARS_PER_CLUSTER` (1024) stars — large but FINITE (e.g. 16 × 64 ×
+  1024 ≈ 1M stars). `cluster ∈ [0, MAX_CLUSTERS_PER_ARM)`; `warp`/addressing
+  reject out-of-range clusters (the rim is a hard edge). **Galaxies remain
+  unbounded in COUNT** — the infinite-universe property lives at the galaxy
+  tier (far-future `hyperwarp` travel), not in an infinitely-wide single galaxy.
+  Radiation `f(r)` then spans a known range (core → the rim at the cap).
 - **Warp distance** = the planar distance between two systems' clusters,
   `|P(a) − P(b)| = √(rₐ² + r_b² − 2·rₐ·r_b·cos Δθ)` (law of cosines), PLUS the
   intra-cluster star-cloud Euclidean (from `star-coordinates`) as the fine term
