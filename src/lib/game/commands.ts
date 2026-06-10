@@ -148,6 +148,11 @@ import {
   repPriceDiscount,
 } from "./factions";
 import {
+  cartographyRank,
+  nextCartoThreshold,
+  MAX_CARTO_TIER,
+} from "./cartography";
+import {
   isMaterialId,
   getMaterial,
   materialValue,
@@ -193,6 +198,7 @@ import {
   renderWho,
   renderStanding,
   renderContracts,
+  renderCartography,
   renderGuide,
   errorFrame,
   type ContractEntry,
@@ -475,8 +481,15 @@ async function regionScanFrame(
   // means THIS player is the genuine first charter. Pay the flat bounty exactly
   // once (atomic credit RPC) and surface it in the frame. Re-scanning a planet
   // you already charted never re-pays.
+  let chartedCount: number | undefined;
+  let chartedRankTitle: string | undefined;
   if (justDiscovered) {
     await world.addPlayerCredits(player.id, DISCOVERY_BOUNTY);
+    // Cartography (Keystone 3b): bump the explorer's worlds-charted count inside
+    // the SAME once-only gate, so it tracks the bounty exactly (once per planet,
+    // never on re-scan). Surface the new count + rank in the discovery message.
+    chartedCount = await world.incrementCharted(player.id);
+    chartedRankTitle = cartographyRank(chartedCount).title;
   }
   // Exploration site present in this region (Keystone 3)? Sites are RARE,
   // deterministic, and surface-region-only — this is the surface frame (gas
@@ -502,6 +515,8 @@ async function regionScanFrame(
     depletionMap,
     justDiscovered,
     discoveryBounty: justDiscovered ? DISCOVERY_BOUNTY : undefined,
+    chartedCount,
+    chartedRankTitle,
     requiredUpgrade,
     hasRequiredUpgrade: requiredUpgrade === null || owned.has(requiredUpgrade),
     health: player.health,
@@ -963,6 +978,8 @@ async function dispatchResolved(
       return handleContracts(player, seed);
     case "fulfill":
       return handleFulfill(player, seed, args);
+    case "cartography":
+      return handleCartography(player);
     case "who":
       return handleWho();
     case "rename":
@@ -5394,13 +5411,42 @@ async function handleFulfill(
 // ---------------------------------------------------------------------------
 
 async function handleWho(): Promise<RenderFrame> {
-  const [topCredits, topDiscoveries] = await Promise.all([
+  const [topCredits, topExplorers] = await Promise.all([
     world.topByCredits(5),
-    world.topByDiscoveries(5),
+    world.topByCharted(5),
   ]);
   return renderWho({
     topCredits: topCredits.map((r) => ({ handle: r.handle, credits: r.credits })),
-    topDiscoveries,
+    // Top explorers ranked by worlds CHARTED, each with their cartography title
+    // (Keystone 3b) — derived purely from the public `charted` count.
+    topExplorers: topExplorers.map((r) => ({
+      handle: r.handle,
+      charted: r.charted,
+      rankTitle: cartographyRank(r.charted).title,
+    })),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// cartography  (your exploration progression: worlds charted + rank — Keystone 3b)
+// ---------------------------------------------------------------------------
+
+/**
+ * `cartography` — the explorer's progression readout (the analogue of `standing`
+ * for traders). Shows worlds charted, the current cartography rank/title, and how
+ * many more worlds to the next tier. Informational; usable anywhere.
+ */
+async function handleCartography(player: Player): Promise<RenderFrame> {
+  const charted = player.charted;
+  const rank = cartographyRank(charted);
+  const nextThreshold = nextCartoThreshold(charted);
+  return renderCartography({
+    charted,
+    rankTitle: rank.title,
+    tier: rank.tier,
+    maxTier: MAX_CARTO_TIER,
+    nextThreshold,
+    toNext: nextThreshold === null ? null : nextThreshold - charted,
   });
 }
 

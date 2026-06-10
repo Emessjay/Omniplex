@@ -26,6 +26,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     embarked: row.embarked,
     landed: row.landed,
     encounter: row.encounter ?? null,
+    charted: row.charted,
     createdAt: row.created_at,
   };
 }
