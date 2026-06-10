@@ -34,6 +34,7 @@ export const VERBS: string[] = [
   "mine",
   "explore",
   "harvest",
+  "plant",
   "attack",
   "flee",
   "inventory",
@@ -133,8 +134,12 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [],
   },
   harvest: {
-    desc: "harvest a plant from this region (on foot)",
-    slots: [],
+    desc: "harvest wild plants here, or `harvest <crop>` your ripe farm plots (on foot)",
+    slots: [{ name: "crop", optional: true }],
+  },
+  plant: {
+    desc: "sow a biome-appropriate crop into a free plot at your crop farm (on foot)",
+    slots: [{ name: "crop" }],
   },
   attack: {
     desc: "strike the creature you're facing (one combat round)",
@@ -158,7 +163,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "food" }],
   },
   build: {
-    desc: "build a base or an in-base structure (silo/excavator/production_line/blast_furnace/power plant) here (on foot)",
+    desc: "build a base or an in-base structure (silo/excavator/production_line/blast_furnace/crop_farm/power plant) here (on foot)",
     slots: [
       { name: "structure" },
       { name: "name", optional: true, hint: "an optional base name (build base only)" },

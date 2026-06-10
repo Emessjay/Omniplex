@@ -20,7 +20,7 @@
  * `craft` (see `FOOD_RECIPES`) and eaten to restore health. It reuses the same
  * `player_materials` storage as everything else.
  */
-export type MaterialCategory = "flora" | "animal" | "relic" | "mineral" | "food" | "consumable";
+export type MaterialCategory = "flora" | "animal" | "relic" | "mineral" | "food" | "consumable" | "crop";
 
 export interface Material {
   id: string;
@@ -64,6 +64,21 @@ export const MATERIALS: readonly Material[] = [
   // amount of voidstone (see `galaxy-jump.ts`). Sellable (a `value` above its raw
   // voidstone cost), but the point is the jump. Stored in `player_materials`.
   { id: "hyperwarp_condensate", name: "Hyperwarp Condensate", category: "consumable", value: 6000 },
+  // Crop — FARMED at a base's crop farm (`plant` → grow → `harvest`), never
+  // found/dropped. Each maps 1:1 to a crop in `crops.ts` (same id). Sellable
+  // like any material for a modest `value`; in the next phase (animal-husbandry)
+  // these become livestock feed. Deliberately have NO `heal` — edibility is
+  // reserved for `food` (the food suite asserts non-food materials are inedible).
+  { id: "verdant_fruit", name: "Verdant Fruit", category: "crop", value: 24 },
+  { id: "jungle_tuber", name: "Jungle Tuber", category: "crop", value: 20 },
+  { id: "kelp", name: "Kelp", category: "crop", value: 16 },
+  { id: "seabean", name: "Seabean", category: "crop", value: 26 },
+  { id: "cacti_grain", name: "Cacti Grain", category: "crop", value: 30 },
+  { id: "sunmelon", name: "Sunmelon", category: "crop", value: 34 },
+  { id: "frost_berry", name: "Frost Berry", category: "crop", value: 28 },
+  { id: "ice_lichen", name: "Ice Lichen", category: "crop", value: 38 },
+  { id: "ember_gourd", name: "Ember Gourd", category: "crop", value: 40 },
+  { id: "ash_root", name: "Ash Root", category: "crop", value: 32 },
 ] as const;
 
 const BY_ID: ReadonlyMap<string, Material> = new Map(MATERIALS.map((m) => [m.id, m]));
@@ -139,11 +154,15 @@ export function foodRecipeOf(id: string): Record<string, number> {
 /**
  * Materials that turn up when SCAVENGING: flora, unusual minerals, and rare
  * relics. Excludes animal parts (those only come from kills), food (which is
- * cooked, never found) AND consumables like Hyperwarp Condensate (crafted, never
- * found).
+ * cooked, never found), consumables like Hyperwarp Condensate (crafted, never
+ * found) AND crops (FARMED at a base, never found in the wild).
  */
 export const SCAVENGEABLE: readonly Material[] = MATERIALS.filter(
-  (m) => m.category !== "animal" && m.category !== "food" && m.category !== "consumable",
+  (m) =>
+    m.category !== "animal" &&
+    m.category !== "food" &&
+    m.category !== "consumable" &&
+    m.category !== "crop",
 );
 
 /** Probability a scavenge turns up a (high-value) relic rather than a common find. */

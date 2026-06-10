@@ -39,6 +39,7 @@ import {
   type StarPosition,
   type Region,
   type Planet,
+  type Biome,
 } from "@/lib/universe";
 import type { RenderFrame, RenderLine } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
@@ -69,6 +70,8 @@ import {
   baseCapacity,
   basePower,
   biofuelYield,
+  cropMature,
+  CROP_FARM_PLOTS,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
@@ -99,6 +102,11 @@ import {
   isIngotId,
   getIngot,
 } from "./ingots";
+import {
+  isCropId,
+  getCrop,
+  cropsForBiome,
+} from "./crops";
 import {
   isMaterialId,
   getMaterial,
@@ -149,6 +157,8 @@ import {
   type CommandHelpGroup,
   type EncounterView,
   type ScanBase,
+  type PlotSummary,
+  type PlantHint,
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import * as world from "./world";
@@ -335,12 +345,29 @@ async function regionScanFrame(
   // excavators funnel accrued ore into the silos before we read/display the
   // region — so depletion shown below reflects what the excavators just drained.
   await maybeAccrueExcavators(player, region, planet);
-  const [depletionMap, justDiscovered, owned, regionBases] = await Promise.all([
+  const [depletionMap, justDiscovered, owned, regionBases, ownBase] = await Promise.all([
     world.getEffectiveDepletionMap(rKey),
     world.recordDiscovery(planetKey(coord), player.id),
     world.getOwnedUpgradeIds(player.id),
     world.basesInRegion(rKey),
+    world.getBaseInRegion(player.id, rKey),
   ]);
+  // Crop plots at the player's OWN base here (if it has a crop farm): surface
+  // their maturity + clickable `plant` hints (red when no free plot — P9b).
+  let plots: PlotSummary[] | undefined;
+  let plantHintList: PlantHint[] | undefined;
+  if (ownBase) {
+    const [rawPlots, buildings] = await Promise.all([
+      world.getBasePlots(ownBase.id),
+      world.getBaseBuildings(ownBase.id),
+    ]);
+    const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
+    if (cropFarms > 0) {
+      const capacity = CROP_FARM_PLOTS * cropFarms;
+      plots = summarizePlots(rawPlots, Date.now());
+      plantHintList = plantHints(region.biome, rawPlots.length < capacity);
+    }
+  }
   const requiredUpgrade = landingRequirement(planet.temperature);
   // Regular-fuel cost to `land` on each sibling planet, takeoff from the planet
   // being scanned. Time-varying (planets orbit) — recomputed each scan with
@@ -383,6 +410,8 @@ async function regionScanFrame(
       name: b.name,
       mine: b.ownerId === player.id,
     })),
+    plots,
+    plantHints: plantHintList,
   });
 }
 
@@ -458,6 +487,10 @@ interface ArgDomainContext {
   depositCandidates: string[] | null;
   /** Item ids in this region's base storage — the `withdraw` arg domain. */
   withdrawCandidates: string[] | null;
+  /** Crop ids valid for the current region's biome — the `plant` arg domain. */
+  plantCandidates: string[] | null;
+  /** Crop ids the player has RIPE plots of here — the `harvest <crop>` arg domain. */
+  harvestCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -466,6 +499,8 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   eatCandidates: null,
   depositCandidates: null,
   withdrawCandidates: null,
+  plantCandidates: null,
+  harvestCandidates: null,
 };
 
 /**
@@ -515,6 +550,32 @@ async function loadArgDomainContext(
       withdrawCandidates: stored.map((s) => s.itemId),
     };
   }
+  if (verb === "plant") {
+    // You can only sow crops appropriate to the CURRENT region's biome — the
+    // same gate the handler enforces. No surface (so no crops) at the orbital
+    // outpost or on a gas giant.
+    if (atOutpost(player)) return { ...EMPTY_ARG_CONTEXT, plantCandidates: [] };
+    const coord = locOf(player);
+    if (planetAt(seed, coord).isGas) return { ...EMPTY_ARG_CONTEXT, plantCandidates: [] };
+    const region = regionAt(seed, coord, player.region);
+    return { ...EMPTY_ARG_CONTEXT, plantCandidates: cropsForBiome(region.biome).map((c) => c.id) };
+  }
+  if (verb === "harvest") {
+    // `harvest <crop>` targets the crops you have RIPE plots of at your base
+    // here (so `harvest verd` abbreviates); bare `harvest` (no arg) is the wild-
+    // flora path and needs no domain. No base / no surface ⇒ no crop candidates.
+    const base = await baseHere(player, seed);
+    if (!base) return { ...EMPTY_ARG_CONTEXT, harvestCandidates: [] };
+    const plots = await world.getBasePlots(base.id);
+    const now = Date.now();
+    const ripe = new Set<string>();
+    for (const p of plots) {
+      if (isCropId(p.cropId) && cropMature(Date.parse(p.plantedAt), now, getCrop(p.cropId).growMs)) {
+        ripe.add(p.cropId);
+      }
+    }
+    return { ...EMPTY_ARG_CONTEXT, harvestCandidates: [...ripe] };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -535,10 +596,16 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if (verb === "eat" && argIndex === 0) return ctx.eatCandidates;
       if (verb === "deposit" && argIndex === 0) return ctx.depositCandidates;
       if (verb === "withdraw" && argIndex === 0) return ctx.withdrawCandidates;
+      // `plant`'s domain: the crops valid for the current region's biome.
+      if (verb === "plant" && argIndex === 0) return ctx.plantCandidates;
+      // `harvest`'s domain: the crops you have ripe plots of here. Empty/absent
+      // (or no arg) falls through to the bare wild-flora harvest in the handler.
+      if (verb === "harvest" && argIndex === 0) return ctx.harvestCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
-      // (P8a silos/excavators, P8b production lines, P13 power plants).
+      // (P8a silos/excavators, P8b production lines, P13 power plants, the
+      // blast-furnace smelting tier, and the crop-farming crop farm).
       if (verb === "build" && argIndex === 0)
-        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace"];
+        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm"];
       // `produce`'s domain: the ingots a blast furnace smelts from siloed raw
       // metal, the ship parts a production line banks into storage, PLUS the
       // upgrades it manufactures (P9a — consuming siloed parts, granting the
@@ -665,7 +732,9 @@ async function dispatchResolved(
     case "explore":
       return handleExplore(player, seed);
     case "harvest":
-      return handleHarvest(player, seed);
+      return handleHarvest(player, seed, args);
+    case "plant":
+      return handlePlant(player, seed, args);
     case "attack":
       return handleAttack(player);
     case "flee":
@@ -721,6 +790,10 @@ function emptyDomainNote(verb: string): string {
       return "your hold is empty — `mine` something first";
     case "withdraw":
       return "this base is storing nothing — `deposit`, or wait for your excavators";
+    case "plant":
+      return "nothing grows in this biome — try a region with a different biome";
+    case "harvest":
+      return "no ripe crops here — `plant` some, or wait for them to grow";
     default:
       return "nothing available right now";
   }
@@ -1804,16 +1877,31 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
 }
 
 /**
- * `harvest` — collect a biome-appropriate plant from the current region and
- * award its `harvest` material. Re-rolls a region-valid flora (spec allows
- * harvesting the most-recent / a fresh biome plant); gentle — no hazard roll.
+ * `harvest` — two paths:
+ *   - `harvest` (no arg): collect a biome-appropriate WILD plant from the
+ *     current region and award its `harvest` material (unchanged). Gentle — no
+ *     hazard roll.
+ *   - `harvest <crop>` (crop-farming): gather your RIPE plots of that crop at
+ *     the current region's base — delete those plot rows and award the crop's
+ *     `yield` × the number matured. Validate-before-mutate; a clear error when
+ *     there's no base / nothing ripe.
+ * The arg, when present, is resolved against the ripe-crops-here domain, so it
+ * arrives as a canonical crop id.
  */
-async function handleHarvest(player: Player, seed: string): Promise<RenderFrame> {
+async function handleHarvest(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
   if (atOutpost(player)) return outpostSurfaceError();
   const coord = locOf(player);
   // A gas giant has no surface to harvest from (planet-taxonomy).
   const planet = planetAt(seed, coord);
   if (planet.isGas) return gasGiantError(planet);
+
+  const target = args[0]?.toLowerCase();
+  if (target) return handleHarvestCrop(player, seed, target);
+
   const region = regionAt(seed, coord, player.region);
   const flora = pickForBiome(FLORA, region.biome, Math.random());
   if (!flora) {
@@ -1827,6 +1915,139 @@ async function handleHarvest(player: Player, seed: string): Promise<RenderFrame>
       text(`You harvest ${flora.name} — `, "success"),
       text(`+${qty} ${mat.name}`, "accent"),
       text(`. \`embark\` then \`sell\` to cash it in.`, "muted"),
+    ]),
+  ]);
+}
+
+/**
+ * `harvest <crop>` — gather the player's RIPE plots of `cropId` at the base in
+ * the current region. Validates the crop, an owned base here, and that at least
+ * one plot of it is mature (`cropMature`) BEFORE mutating; then removes those
+ * plot rows and awards `yield.materialId × yield.qty × (#matured)` to
+ * `player_materials`. Unripe / unplanted crops yield nothing (a clear error).
+ */
+async function handleHarvestCrop(
+  player: Player,
+  seed: string,
+  cropId: string,
+): Promise<RenderFrame> {
+  if (!isCropId(cropId)) {
+    return errorFrame(`"${cropId}" isn't a crop. \`plant\` a crop at your farm first.`);
+  }
+  const crop = getCrop(cropId);
+
+  const base = await baseHere(player, seed);
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planetAt(seed, locOf(player)).name} — \`build base\` then \`build crop_farm\` to farm.`,
+    );
+  }
+
+  const plots = await world.getBasePlots(base.id);
+  const now = Date.now();
+  const ripe = plots.filter(
+    (p) => p.cropId === cropId && cropMature(Date.parse(p.plantedAt), now, crop.growMs),
+  );
+  if (ripe.length === 0) {
+    const planted = plots.filter((p) => p.cropId === cropId).length;
+    return errorFrame(
+      planted > 0
+        ? `Your ${crop.name} isn't ripe yet (${planted} still growing). Check \`storage\`.`
+        : `You have no ${crop.name} planted here. \`plant ${cropId}\` first.`,
+    );
+  }
+
+  // Free the harvested plots, then award the yield — consume-then-grant, the
+  // same ordering `produce`/`deposit` use (so a retry can't double-harvest the
+  // same plots). Validation above guarantees there's something to take.
+  const total = crop.yield.qty * ripe.length;
+  const mat = getMaterial(crop.yield.materialId);
+  await world.removePlots(ripe.map((p) => p.id));
+  await world.addPlayerMaterial(player.id, crop.yield.materialId, total);
+
+  return frame([
+    line([
+      text(`Harvested ${ripe.length} ripe ${crop.name} plot${ripe.length === 1 ? "" : "s"} — `, "success"),
+      text(`+${total} ${mat.name}`, "accent"),
+      text(`. \`embark\` then \`sell\` to cash it in.`, "muted"),
+    ]),
+    line(text(`  ${ripe.length} plot${ripe.length === 1 ? "" : "s"} freed for replanting.`, "muted")),
+  ]);
+}
+
+/**
+ * `plant <crop>` (crop-farming) — sow a biome-appropriate crop into a free plot
+ * at the current region's crop farm. Disembarked-only (a surface/base action,
+ * gated in `dispatchResolved`). Validates BEFORE mutating: not at the outpost /
+ * on a gas giant, owns a base here, the base has ≥1 crop farm (plot capacity),
+ * the crop grows in THIS region's biome, and a free plot exists. Then inserts a
+ * plot row (its `planted_at` starts the growth clock).
+ */
+async function handlePlant(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  if (planet.isGas) return gasGiantError(planet);
+
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: plant <crop>  (see `scan` for what grows here)");
+
+  const region = regionAt(seed, coord, player.region);
+  const biomeCrops = cropsForBiome(region.biome);
+
+  if (!isCropId(target)) {
+    const grows = biomeCrops.map((c) => c.id).join(", ") || "nothing";
+    return errorFrame(`"${target}" isn't a crop. This ${region.biome} grows: ${grows}.`);
+  }
+  const crop = getCrop(target);
+  if (!crop.biomes.includes(region.biome)) {
+    const grows = biomeCrops.map((c) => c.id).join(", ") || "nothing";
+    return errorFrame(
+      `${crop.name} won't grow in this ${region.biome}. Here you can plant: ${grows}.`,
+    );
+  }
+
+  const base = await baseHere(player, seed);
+  if (!base) {
+    return errorFrame(
+      `No base in region ${player.region} of ${planet.name} — \`build base\` then \`build crop_farm\` first.`,
+    );
+  }
+
+  const [buildings, plots] = await Promise.all([
+    world.getBaseBuildings(base.id),
+    world.getBasePlots(base.id),
+  ]);
+  const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
+  if (cropFarms === 0) {
+    return errorFrame("No crop farm here — `build crop_farm` first to get planting plots.");
+  }
+  const capacity = CROP_FARM_PLOTS * cropFarms;
+  if (plots.length >= capacity) {
+    return errorFrame(
+      `All ${capacity} plots are in use. \`harvest\` ripe crops, or \`build crop_farm\` for more.`,
+    );
+  }
+
+  await world.plantCrop(base.id, target);
+
+  const used = plots.length + 1;
+  const growMin = Math.round(crop.growMs / 60_000);
+  return frame([
+    line([
+      text(`Planted ${crop.name} `, "success"),
+      text(`in region ${player.region} of ${planet.name}. `, "default"),
+      text(`Ripe in ~${growMin} min. `, "muted"),
+      text(`Plots ${used}/${capacity}.`, "muted"),
+    ]),
+    line([
+      text("`harvest ", "muted"),
+      text(`${target}`, "default"),
+      text("` once it's ripe (check `storage`).", "muted"),
     ]),
   ]);
 }
@@ -2318,12 +2539,12 @@ async function handleBuild(
   if (here.isGas) return gasGiantError(here);
   const structure = args[0]?.toLowerCase();
   if (!structure) {
-    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace> [name]");
+    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace|crop_farm> [name]");
   }
   if (structure === "base") return handleBuildBase(player, seed, args);
   if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
   return errorFrame(
-    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\` or \`blast_furnace\`.`,
+    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\`, \`blast_furnace\` or \`crop_farm\`.`,
   );
 }
 
@@ -2528,6 +2749,7 @@ async function handleBuildStructure(
   const blastFurnaces = buildings.filter((b) => b.kind === "blast_furnace").length;
   const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
+  const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
   // Recompute the base's power so the player learns immediately whether the new
   // consumer is powered (or the new plant fixed an underpowered base).
   const power = basePower({
@@ -2562,6 +2784,12 @@ async function handleBuildStructure(
     case "blast_furnace":
       detail = `${blastFurnaces} blast furnace${blastFurnaces === 1 ? "" : "s"} ready — \`produce <ingot>\` to smelt siloed raw metal. ${powerNote}`;
       break;
+    case "crop_farm": {
+      // Not power-gated (agriculture is natural) — report plot capacity instead.
+      const plots = CROP_FARM_PLOTS * cropFarms;
+      detail = `${cropFarms} crop farm${cropFarms === 1 ? "" : "s"} — ${plots} planting plot${plots === 1 ? "" : "s"}. \`plant <crop>\` a biome-appropriate crop (no power needed).`;
+      break;
+    }
   }
   return frame([
     line([
@@ -2582,6 +2810,38 @@ function storageItemName(itemId: string): string {
   if (isPartId(itemId)) return getPart(itemId).name;
   if (isIngotId(itemId)) return getIngot(itemId).name;
   return getResource(itemId).name;
+}
+
+/**
+ * Summarize a base's plots for display: group by crop, count ripe vs growing.
+ * Pure (time passed in). Sorted by crop id for stable output. Unknown crop ids
+ * (a since-removed catalog entry) are skipped defensively.
+ */
+function summarizePlots(plots: world.Plot[], now: number): PlotSummary[] {
+  const byId = new Map<string, { ripe: number; growing: number }>();
+  for (const p of plots) {
+    if (!isCropId(p.cropId)) continue;
+    const e = byId.get(p.cropId) ?? { ripe: 0, growing: 0 };
+    if (cropMature(Date.parse(p.plantedAt), now, getCrop(p.cropId).growMs)) e.ripe++;
+    else e.growing++;
+    byId.set(p.cropId, e);
+  }
+  return [...byId.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([cropId, e]) => ({ cropId, name: getCrop(cropId).name, ripe: e.ripe, growing: e.growing }));
+}
+
+/**
+ * Clickable `plant <crop>` hints for the current region's biome. Each is marked
+ * red (disabled) when there's no free plot (or no crop farm) — the P9b
+ * unperformable→red convention. Empty when nothing grows in this biome.
+ */
+function plantHints(biome: Biome, hasFreePlot: boolean): PlantHint[] {
+  return cropsForBiome(biome).map((c) => ({
+    cropId: c.id,
+    name: c.name,
+    disabled: !hasFreePlot,
+  }));
 }
 
 /** Resolve the base the player owns in their current region (or null). */
@@ -2626,10 +2886,11 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const region = regionAt(seed, locOf(player), player.region);
   await accrueExcavators(player, base.id, base.rKey, region, planet);
 
-  const [buildings, stored, have] = await Promise.all([
+  const [buildings, stored, have, rawPlots] = await Promise.all([
     world.getBaseBuildings(base.id),
     world.getBaseStorage(base.id),
     affordContext(player),
+    world.getBasePlots(base.id),
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
@@ -2637,7 +2898,13 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const blastFurnaces = buildings.filter((b) => b.kind === "blast_furnace").length;
   const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
+  const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
   const capacity = baseCapacity(silos);
+  // Crop plots (crop-farming): summary + capacity + clickable plant hints (red
+  // when no free plot — P9b). Only surfaced once a crop farm exists.
+  const plotCapacity = CROP_FARM_PLOTS * cropFarms;
+  const plotSummary = cropFarms > 0 ? summarizePlots(rawPlots, Date.now()) : [];
+  const plantHintList = cropFarms > 0 ? plantHints(region.biome, rawPlots.length < plotCapacity) : [];
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
 
   // Power balance (P13): plant supply vs consumer demand, sited by this region's
@@ -2667,7 +2934,13 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     blastFurnaces,
     thermalPlants,
     solarArrays,
+    cropFarms,
     power: { supply: power.supply, demand: power.demand, powered: power.powered },
+    // Crop-farming: plot usage + per-crop maturity + clickable plant hints.
+    plotsUsed: rawPlots.length,
+    plotCapacity,
+    plots: plotSummary,
+    plantHints: plantHintList,
     used,
     capacity,
     items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: storageItemName(s.itemId) })),
@@ -2707,6 +2980,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       thermal_plant: canAffordBase(have, buildingCost("thermal_plant")),
       solar_array: canAffordBase(have, buildingCost("solar_array")),
       blast_furnace: canAffordBase(have, buildingCost("blast_furnace")),
+      crop_farm: canAffordBase(have, buildingCost("crop_farm")),
     },
   });
 }

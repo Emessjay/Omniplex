@@ -230,6 +230,10 @@ export interface ScanView {
   encounter?: EncounterView | null;
   /** Bases present in this region (shared-world presence); yours are marked. */
   bases?: ScanBase[];
+  /** Crop plots at the player's OWN base here (crop-farming), per-crop maturity. */
+  plots?: PlotSummary[];
+  /** Clickable `plant <crop>` hints for this biome (red when no free plot). */
+  plantHints?: PlantHint[];
 }
 
 /** A base present in the scanned region, for the shared-world presence readout. */
@@ -242,6 +246,27 @@ export interface ScanBase {
   mine: boolean;
 }
 
+/**
+ * Per-crop plot summary for a base (crop-farming): how many plots of a crop are
+ * ripe vs still growing. Surfaced in `scan` (at your base) and `storage`.
+ */
+export interface PlotSummary {
+  cropId: string;
+  name: string;
+  /** Mature plots ready to `harvest`. */
+  ripe: number;
+  /** Plots still growing (not yet mature). */
+  growing: number;
+}
+
+/** A clickable `plant <crop>` hint (red when not currently performable). */
+export interface PlantHint {
+  cropId: string;
+  name: string;
+  /** True when planting can't be done right now (no free plot) — rendered red. */
+  disabled: boolean;
+}
+
 /** The creature the player is currently facing, for the scan readout. */
 export interface EncounterView {
   name: string;
@@ -250,6 +275,63 @@ export interface EncounterView {
   /** The creature's maximum hit points. */
   maxHp: number;
   hostile: boolean;
+}
+
+/**
+ * Render a base's crop-farm plots (crop-farming): a per-crop ripe/growing
+ * summary (with a clickable `harvest <crop>` on ripe rows) plus clickable
+ * `plant <crop>` hints for this biome (red when no free plot — P9b). Returns no
+ * lines when there's nothing to show. Shared by `scan` (at your base) and
+ * `storage`.
+ */
+function cropPlotLines(
+  plots: PlotSummary[] | undefined,
+  hints: PlantHint[] | undefined,
+): RenderLine[] {
+  const summary = plots ?? [];
+  const plantable = hints ?? [];
+  if (summary.length === 0 && plantable.length === 0) return [];
+
+  const out: RenderLine[] = [line(text("Crop farm:", "heading"))];
+  if (summary.length === 0) {
+    out.push(line(text("  no crops planted — `plant <crop>` to sow.", "muted")));
+  } else {
+    for (const p of summary) {
+      const bits: string[] = [];
+      if (p.ripe > 0) bits.push(`${p.ripe} ripe`);
+      if (p.growing > 0) bits.push(`${p.growing} growing`);
+      const spans: RenderSpan[] = [
+        text("  • ", "muted"),
+        text(`${p.name} `, "default"),
+        text(`(${bits.join(", ")})`, p.ripe > 0 ? "success" : "muted"),
+      ];
+      if (p.ripe > 0) {
+        spans.push(text("  ", "muted"));
+        spans.push(
+          action(`harvest ${p.cropId}`, `harvest ${p.cropId}`, {
+            style: "link",
+            title: `harvest ripe ${p.name}`,
+          }),
+        );
+      }
+      out.push(line(spans));
+    }
+  }
+  if (plantable.length > 0) {
+    const row: RenderSpan[] = [text("  plant: ", "muted")];
+    plantable.forEach((h, i) => {
+      if (i > 0) row.push(text("  ", "muted"));
+      row.push(
+        action(`plant ${h.cropId}`, `plant ${h.cropId}`, {
+          style: "link",
+          title: h.disabled ? "no free plot — `harvest` or `build crop_farm`" : `plant ${h.name}`,
+          disabled: h.disabled,
+        }),
+      );
+    });
+    out.push(line(row));
+  }
+  return out;
 }
 
 /**
@@ -468,6 +550,10 @@ export function renderScan(view: ScanView): RenderFrame {
       );
     }
   }
+
+  // Crop-farm plots at the player's own base here (crop-farming): per-crop
+  // maturity + clickable harvest/plant. Only present when you own a farm here.
+  lines.push(...cropPlotLines(view.plots, view.plantHints));
 
   // Explore other regions of this planet.
   lines.push(
@@ -1039,6 +1125,15 @@ export interface StorageView {
   /** Number of power plants by kind (P13) — they power the excavators + lines + furnaces. */
   thermalPlants?: number;
   solarArrays?: number;
+  /** Number of crop farms (crop-farming) — each provides CROP_FARM_PLOTS plots. */
+  cropFarms?: number;
+  /** Plots in use + total plot capacity (= CROP_FARM_PLOTS × crop farms). */
+  plotsUsed?: number;
+  plotCapacity?: number;
+  /** Per-crop plot maturity summary (crop-farming). Empty/absent ⇒ no crop farm. */
+  plots?: PlotSummary[];
+  /** Clickable `plant <crop>` hints for this biome (red when no free plot). */
+  plantHints?: PlantHint[];
   /**
    * Power balance (P13): plant `supply` vs consumer `demand`. Rendered as
    * `Power supply/demand`, green ✓ when `powered`, red when short (per P9b).
@@ -1075,6 +1170,7 @@ export interface StorageView {
     thermal_plant?: boolean;
     solar_array?: boolean;
     blast_furnace?: boolean;
+    crop_farm?: boolean;
   };
 }
 
@@ -1100,6 +1196,8 @@ export function renderStorage(view: StorageView): RenderFrame {
       text(`${view.productionLines}`, "default"),
       text("   furnaces ", "muted"),
       text(`${view.blastFurnaces ?? 0}`, "default"),
+      text("   farms ", "muted"),
+      text(`${view.cropFarms ?? 0}`, "default"),
       text("   plants ", "muted"),
       text(`${(view.thermalPlants ?? 0) + (view.solarArrays ?? 0)}`, "default"),
       text("   storage ", "muted"),
@@ -1179,6 +1277,21 @@ export function renderStorage(view: StorageView): RenderFrame {
     }
   }
 
+  // Crop-farm plots (crop-farming) — only once a crop farm exists: a plot-usage
+  // line plus per-crop maturity and clickable harvest/plant (red when full).
+  if ((view.cropFarms ?? 0) > 0) {
+    const used = view.plotsUsed ?? 0;
+    const cap = view.plotCapacity ?? 0;
+    lines.push(
+      line([
+        text("plots ", "muted"),
+        text(`${used}/${cap}`, used >= cap ? "warning" : "default"),
+        text("   (crop farm — agriculture, no power needed)", "muted"),
+      ]),
+    );
+    lines.push(...cropPlotLines(view.plots, view.plantHints));
+  }
+
   // Expansion hints (clickable). A structure you can't afford is shown red,
   // matching the affordability check `build` enforces.
   const b = view.buildable;
@@ -1217,6 +1330,12 @@ export function renderStorage(view: StorageView): RenderFrame {
       style: "link",
       title: b && b.blast_furnace === false ? "can't afford a blast furnace" : "smelt raw metal into ingots",
       disabled: b ? b.blast_furnace === false : false,
+    }),
+    text("   ", "muted"),
+    action("build crop_farm", "build crop_farm", {
+      style: "link",
+      title: b && b.crop_farm === false ? "can't afford a crop farm" : "add planting plots for crops",
+      disabled: b ? b.crop_farm === false : false,
     }),
   ];
   lines.push(line(hints));

@@ -75,6 +75,10 @@ export const STRUCTURE_KINDS = [
   // <ingot>`. A power consumer like the production line (heavy industry); see
   // `BLAST_FURNACE_POWER_DEMAND` / `basePower` in `rules.ts`.
   "blast_furnace",
+  // crop-farming phase: provides planting PLOTS for `plant`/`harvest`.
+  // Deliberately NOT power-gated (agriculture is natural, not industrial), so it
+  // contributes no term to `basePower`. See `CROP_FARM_PLOTS` in `rules.ts`.
+  "crop_farm",
 ] as const;
 export type StructureKind = (typeof STRUCTURE_KINDS)[number];
 
@@ -99,6 +103,9 @@ export const BUILDING_BUILD_COST: Readonly<Record<StructureKind, Readonly<Record
   solar_array: { credits: 500, silica: 5, copper: 5 },
   // Heavy industry — the priciest structure (it opens the smelting tier).
   blast_furnace: { credits: 700, iron: 8, copper: 4 },
+  // Agriculture — a modest, early-reachable cost (no power plant needed to run
+  // it). Provides `CROP_FARM_PLOTS` planting plots.
+  crop_farm: { credits: 350, iron: 4 },
 };
 
 /** The cost map for one structure kind. */

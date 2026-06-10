@@ -1054,6 +1054,55 @@ export async function addBaseStorage(
 }
 
 // ---------------------------------------------------------------------------
+// Crop-farm plots (crop-farming) — one row per crop sown into a base's crop
+// farm. Public read (bases are public), so these reads are public-safe; writes
+// go through the service role. The crop CATALOG + the `cropMature` growth rule
+// live in code (`crops.ts` / `rules.ts`); the DB stores what's planted + when.
+// No atomic-clamp RPC is needed (these are rows, not a counter) — plant inserts
+// a row, harvest deletes the matured rows.
+// ---------------------------------------------------------------------------
+
+/** A crop sown into a base plot: its row id, the crop id, and when it was planted. */
+export interface Plot {
+  id: string;
+  cropId: string;
+  /** ISO timestamp the crop was planted (the growth clock `cropMature` reads). */
+  plantedAt: string;
+}
+
+/** All crops planted in a base, oldest first. */
+export async function getBasePlots(baseId: string): Promise<Plot[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("base_plots")
+    .select("id, crop_id, planted_at")
+    .eq("base_id", baseId)
+    .order("planted_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as { id: string; crop_id: string; planted_at: string };
+    return { id: r.id, cropId: r.crop_id, plantedAt: r.planted_at };
+  });
+}
+
+/** Sow one crop into a base plot (the row's `planted_at` defaults to now()). */
+export async function plantCrop(baseId: string, cropId: string): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("base_plots")
+    .insert({ base_id: baseId, crop_id: cropId });
+  if (error) throw error;
+}
+
+/** Delete the given (harvested) plot rows by id. No-op on an empty list. */
+export async function removePlots(plotIds: string[]): Promise<void> {
+  if (plotIds.length === 0) return;
+  const db = getServerClient();
+  const { error } = await db.from("base_plots").delete().in("id", plotIds);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Leaderboards (`who`). Reads public-safe data only.
 // ---------------------------------------------------------------------------
 

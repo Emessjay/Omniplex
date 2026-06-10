@@ -536,6 +536,35 @@ export function basePower(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Agriculture — crop farms + plots (crop-farming phase).
+//
+// A crop farm is a (non-power-gated) base structure that provides planting
+// PLOTS. A player sows a biome-appropriate crop into a free plot (`plant`), it
+// grows over real time, and they gather it for a crop material (`harvest`). As
+// with regen / excavators / supply reversion, growth is TIME-BASED and the math
+// stays PURE: the handler supplies `nowMs` (Date.now()) and the crop's `growMs`
+// (from `crops.ts`), so `cropMature` never reads the clock. Deliberately NOT
+// power-gated — farming is natural, not industrial (a contrast with excavators /
+// production lines / blast furnaces).
+// ---------------------------------------------------------------------------
+
+/**
+ * Planting plots one crop farm provides. A base's total plot capacity is
+ * `CROP_FARM_PLOTS * (number of crop farms)`. Tunable.
+ */
+export const CROP_FARM_PLOTS = 4;
+
+/**
+ * Whether a crop planted at `plantedAtMs` is ripe at `nowMs`, given its `growMs`
+ * growth time: `nowMs - plantedAtMs >= growMs`. False before the grow time has
+ * elapsed, true exactly at and after it; monotonically non-decreasing in elapsed
+ * time. Pure — the handler supplies `Date.now()`; this never reads the clock.
+ */
+export function cropMature(plantedAtMs: number, nowMs: number, growMs: number): boolean {
+  return nowMs - plantedAtMs >= growMs;
+}
+
+// ---------------------------------------------------------------------------
 // Navigation (P2: two fuels + orbital mechanics).
 //
 // Travel splits into two pools with two cost models:

@@ -87,6 +87,7 @@ const DISEMBARKED_ACTIONS = new Set([
   "mine",
   "explore",
   "harvest",
+  "plant",
   "build",
   "produce",
   "deposit",
