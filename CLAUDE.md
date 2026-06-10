@@ -1890,3 +1890,29 @@ gotchas) accrete here as workers surface things worth persisting. See
   `produce` arg domain + the `storage` buildable list include buildable ships
   (P9b red when not producible). Seeded: `construct-ships.test.ts`. (2c —
   stations / base-tier upgrades — builds on this.)
+
+### Load-bearing decisions from `exploration-sites` (Keystone 3)
+
+- **Exploration now pays in things you can't mine**: rare findable sites +
+  `salvage` + a first-discovery bounty. (Cartography ranks + orbital derelicts =
+  later 3b.)
+- **Sites** (`gen.ts`, pure, exported via `index.ts`): `siteAt(seed, region) →
+  Site | null` on a DISTINCT `"site"` RNG stream (so reading it NEVER perturbs
+  `regionAt` — unit-asserted), ~5% of surface regions. `Site = { type:
+  "derelict"|"ruin"|"anomaly"; lootTier }` (`SiteType` in `types.ts`). Gas
+  giants have no regions ⇒ no sites. `siteLoot(seed, region, site) → {materials:
+  {id,qty}[], credits}` on its own `"site-loot"` stream — uses EXISTING items
+  (relics/rare materials) + a credit cache; higher tier ⇒ better.
+- **`salvage`** (NEW verb, DISEMBARKED, gas/outpost guarded): if the region has
+  an un-salvaged site, award `siteLoot` (`addPlayerMaterial` + `addPlayerCredits`)
+  ONCE per player, then take the standard hazard roll (`rollHazardDamage` →
+  `runDeath`). Tracked in `public.salvaged_sites` (migration
+  `20260610010000_exploration-sites.sql`: `(player_id→players cascade, region_key
+  text, salvaged_at, pk(player,region_key))`, **read-own RLS**, service-role
+  writes; forward-only/idempotent). `world.ts`: `hasSalvaged`/`markSalvaged`.
+  Registered in `VERBS`/`USAGE`/`applicability`.
+- **First-discovery bounty**: `DISCOVERY_BOUNTY` (`rules.ts`) credits paid
+  EXACTLY ONCE per planet, off the existing `recordDiscovery` first-discovery
+  gate, reported in `scan`. `scan` (surface frame) surfaces a present site +
+  P9b-red salvage state + the bounty line. Seeded: `exploration-sites.test.ts`
+  (gen + game). 3b (cartography ranks) + orbital derelicts build on this.
