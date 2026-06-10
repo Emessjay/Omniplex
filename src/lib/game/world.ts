@@ -1103,6 +1103,75 @@ export async function removePlots(plotIds: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Livestock (animal-husbandry) — one row per (base, animal) herd. Public read
+// (bases are public), so these reads are public-safe; writes go through the
+// service role. The animal CATALOG + the breed/feed rules live in code
+// (`livestock.ts` / `rules.ts`); the DB stores head counts + the breed clock.
+// `add_livestock` is the atomic clamped counter RPC (mirrors `add_base_storage`
+// / `add_player_material`); `setLivestockBred` stamps the breed clock.
+// ---------------------------------------------------------------------------
+
+/** A herd of one animal type at a base: the animal id, head count, breed clock. */
+export interface Herd {
+  animalId: string;
+  count: number;
+  /** ISO timestamp the herd last bred (the clock the `livestockCanBreed` rule reads). */
+  lastBredAt: string;
+}
+
+/** All herds at a base with count > 0, ascending by animal id for stable display. */
+export async function getBaseLivestock(baseId: string): Promise<Herd[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("base_livestock")
+    .select("animal_id, count, last_bred_at")
+    .eq("base_id", baseId)
+    .gt("count", 0)
+    .order("animal_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as { animal_id: string; count: number; last_bred_at: string };
+    return { animalId: r.animal_id, count: r.count, lastBredAt: r.last_bred_at };
+  });
+}
+
+/**
+ * Atomically adjust a herd's head count by `delta` (negative to slaughter);
+ * returns the new count. Clamped at 0 in SQL, but handlers validate
+ * ownership/capacity first. On first ranch the row's `last_bred_at` defaults to
+ * now().
+ */
+export async function addLivestock(
+  baseId: string,
+  animalId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_livestock", {
+    p_base: baseId,
+    p_animal: animalId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+/** Stamp a herd's breed clock (`last_bred_at`) — called when feeding breeds it. */
+export async function setLivestockBred(
+  baseId: string,
+  animalId: string,
+  atIso: string,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("base_livestock")
+    .update({ last_bred_at: atIso })
+    .eq("base_id", baseId)
+    .eq("animal_id", animalId);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Leaderboards (`who`). Reads public-safe data only.
 // ---------------------------------------------------------------------------
 

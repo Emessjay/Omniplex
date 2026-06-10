@@ -79,6 +79,10 @@ export const STRUCTURE_KINDS = [
   // Deliberately NOT power-gated (agriculture is natural, not industrial), so it
   // contributes no term to `basePower`. See `CROP_FARM_PLOTS` in `rules.ts`.
   "crop_farm",
+  // animal-husbandry phase: holds livestock for `ranch`/`feed`/`slaughter`. Like
+  // the crop farm, agriculture — NOT power-gated. Each pen provides
+  // `LIVESTOCK_PEN_CAPACITY` head (see `rules.ts`).
+  "livestock_pen",
 ] as const;
 export type StructureKind = (typeof STRUCTURE_KINDS)[number];
 
@@ -106,6 +110,9 @@ export const BUILDING_BUILD_COST: Readonly<Record<StructureKind, Readonly<Record
   // Agriculture — a modest, early-reachable cost (no power plant needed to run
   // it). Provides `CROP_FARM_PLOTS` planting plots.
   crop_farm: { credits: 350, iron: 4 },
+  // Agriculture — a livestock pen (also not power-gated). Holds
+  // `LIVESTOCK_PEN_CAPACITY` head; slightly pricier than a crop farm.
+  livestock_pen: { credits: 400, iron: 5 },
 };
 
 /** The cost map for one structure kind. */

@@ -45,9 +45,23 @@ export const MATERIALS: readonly Material[] = [
   // Flora — harvested from plants.
   { id: "luminous_spores", name: "Luminous Spores", category: "flora", value: 32 },
   { id: "ironbark_resin", name: "Ironbark Resin", category: "flora", value: 48 },
-  // Animal — dropped by slain fauna.
+  // Animal — dropped by slain fauna (the wild drops).
   { id: "scaled_hide", name: "Scaled Hide", category: "animal", value: 55 },
   { id: "venom_gland", name: "Venom Gland", category: "animal", value: 90 },
+  // Animal (farmed products) — yielded by `slaughter`ing ranched livestock
+  // (animal-husbandry). Same `category: "animal"` as the wild drops above, so
+  // they're sellable like any material and (correctly) never scavenged. No
+  // `heal` — edibility is reserved for `food` (the food suite asserts non-food
+  // materials are inedible). Each maps to a `FARM_ANIMALS` product in
+  // `livestock.ts`; values rise with how hard the animal is to raise.
+  { id: "poultry_meat", name: "Poultry Meat", category: "animal", value: 45 },
+  { id: "tender_loin", name: "Tender Loin", category: "animal", value: 75 },
+  { id: "shellfish_meat", name: "Shellfish Meat", category: "animal", value: 50 },
+  { id: "marine_blubber", name: "Marine Blubber", category: "animal", value: 60 },
+  { id: "coarse_sinew", name: "Coarse Sinew", category: "animal", value: 55 },
+  { id: "thick_hide", name: "Thick Hide", category: "animal", value: 65 },
+  { id: "woolly_fleece", name: "Woolly Fleece", category: "animal", value: 70 },
+  { id: "ember_tallow", name: "Ember Tallow", category: "animal", value: 95 },
   // Mineral — unusual minerals turned up while scavenging.
   { id: "geode_cluster", name: "Geode Cluster", category: "mineral", value: 70 },
   { id: "meteoric_dust", name: "Meteoric Dust", category: "mineral", value: 120 },

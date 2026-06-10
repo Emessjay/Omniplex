@@ -72,6 +72,10 @@ import {
   biofuelYield,
   cropMature,
   CROP_FARM_PLOTS,
+  livestockCanBreed,
+  feedAmount,
+  breedOffspring,
+  LIVESTOCK_PEN_CAPACITY,
   PLAYER_BASE_ATTACK,
   MAX_HEALTH,
   DEPLETION_PER_UNIT,
@@ -107,6 +111,11 @@ import {
   getCrop,
   cropsForBiome,
 } from "./crops";
+import {
+  isFarmAnimalId,
+  getFarmAnimal,
+  farmAnimalsForBiome,
+} from "./livestock";
 import {
   isMaterialId,
   getMaterial,
@@ -159,6 +168,8 @@ import {
   type ScanBase,
   type PlotSummary,
   type PlantHint,
+  type HerdSummary,
+  type RanchHint,
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import * as world from "./world";
@@ -356,16 +367,26 @@ async function regionScanFrame(
   // their maturity + clickable `plant` hints (red when no free plot — P9b).
   let plots: PlotSummary[] | undefined;
   let plantHintList: PlantHint[] | undefined;
+  let herds: HerdSummary[] | undefined;
+  let ranchHintList: RanchHint[] | undefined;
   if (ownBase) {
-    const [rawPlots, buildings] = await Promise.all([
+    const [rawPlots, buildings, rawHerds] = await Promise.all([
       world.getBasePlots(ownBase.id),
       world.getBaseBuildings(ownBase.id),
+      world.getBaseLivestock(ownBase.id),
     ]);
     const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
     if (cropFarms > 0) {
       const capacity = CROP_FARM_PLOTS * cropFarms;
       plots = summarizePlots(rawPlots, Date.now());
       plantHintList = plantHints(region.biome, rawPlots.length < capacity);
+    }
+    const livestockPens = buildings.filter((b) => b.kind === "livestock_pen").length;
+    if (livestockPens > 0) {
+      const headCapacity = LIVESTOCK_PEN_CAPACITY * livestockPens;
+      const totalHead = rawHerds.reduce((sum, h) => sum + h.count, 0);
+      herds = summarizeHerds(rawHerds, Date.now(), totalHead, headCapacity);
+      ranchHintList = ranchHints(region.biome, totalHead >= headCapacity);
     }
   }
   const requiredUpgrade = landingRequirement(planet.temperature);
@@ -412,6 +433,8 @@ async function regionScanFrame(
     })),
     plots,
     plantHints: plantHintList,
+    herds,
+    ranchHints: ranchHintList,
   });
 }
 
@@ -491,6 +514,10 @@ interface ArgDomainContext {
   plantCandidates: string[] | null;
   /** Crop ids the player has RIPE plots of here — the `harvest <crop>` arg domain. */
   harvestCandidates: string[] | null;
+  /** Animal ids valid for the current region's biome — the `ranch` arg domain. */
+  ranchCandidates: string[] | null;
+  /** Animal ids the player currently herds here — the `feed`/`slaughter` arg domain. */
+  herdCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -501,6 +528,8 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   withdrawCandidates: null,
   plantCandidates: null,
   harvestCandidates: null,
+  ranchCandidates: null,
+  herdCandidates: null,
 };
 
 /**
@@ -576,6 +605,24 @@ async function loadArgDomainContext(
     }
     return { ...EMPTY_ARG_CONTEXT, harvestCandidates: [...ripe] };
   }
+  if (verb === "ranch") {
+    // You can only ranch animals appropriate to the CURRENT region's biome — the
+    // same gate the handler enforces. No surface (so no livestock) at the orbital
+    // outpost or on a gas giant.
+    if (atOutpost(player)) return { ...EMPTY_ARG_CONTEXT, ranchCandidates: [] };
+    const coord = locOf(player);
+    if (planetAt(seed, coord).isGas) return { ...EMPTY_ARG_CONTEXT, ranchCandidates: [] };
+    const region = regionAt(seed, coord, player.region);
+    return { ...EMPTY_ARG_CONTEXT, ranchCandidates: farmAnimalsForBiome(region.biome).map((a) => a.id) };
+  }
+  if (verb === "feed" || verb === "slaughter") {
+    // `feed`/`slaughter <animal>` target the animals you currently herd at your
+    // base here (so `feed jung` abbreviates). No base / no surface ⇒ none.
+    const base = await baseHere(player, seed);
+    if (!base) return { ...EMPTY_ARG_CONTEXT, herdCandidates: [] };
+    const herds = await world.getBaseLivestock(base.id);
+    return { ...EMPTY_ARG_CONTEXT, herdCandidates: herds.map((h) => h.animalId) };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -601,11 +648,16 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // `harvest`'s domain: the crops you have ripe plots of here. Empty/absent
       // (or no arg) falls through to the bare wild-flora harvest in the handler.
       if (verb === "harvest" && argIndex === 0) return ctx.harvestCandidates;
+      // `ranch`'s domain: animals valid for the current region's biome.
+      if (verb === "ranch" && argIndex === 0) return ctx.ranchCandidates;
+      // `feed`/`slaughter`'s domain: the animals you currently herd here.
+      if ((verb === "feed" || verb === "slaughter") && argIndex === 0) return ctx.herdCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants, the
-      // blast-furnace smelting tier, and the crop-farming crop farm).
+      // blast-furnace smelting tier, the crop-farming crop farm, and the
+      // animal-husbandry livestock pen).
       if (verb === "build" && argIndex === 0)
-        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm"];
+        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm", "livestock_pen"];
       // `produce`'s domain: the ingots a blast furnace smelts from siloed raw
       // metal, the ship parts a production line banks into storage, PLUS the
       // upgrades it manufactures (P9a — consuming siloed parts, granting the
@@ -735,6 +787,12 @@ async function dispatchResolved(
       return handleHarvest(player, seed, args);
     case "plant":
       return handlePlant(player, seed, args);
+    case "ranch":
+      return handleRanch(player, seed, args);
+    case "feed":
+      return handleFeed(player, seed, args);
+    case "slaughter":
+      return handleSlaughter(player, seed, args);
     case "attack":
       return handleAttack(player);
     case "flee":
@@ -794,6 +852,11 @@ function emptyDomainNote(verb: string): string {
       return "nothing grows in this biome — try a region with a different biome";
     case "harvest":
       return "no ripe crops here — `plant` some, or wait for them to grow";
+    case "ranch":
+      return "no livestock can be ranched in this biome — try a region with a different biome";
+    case "feed":
+    case "slaughter":
+      return "you herd no animals here — `ranch` one first";
     default:
       return "nothing available right now";
   }
@@ -2052,6 +2115,255 @@ async function handlePlant(
   ]);
 }
 
+// ---------------------------------------------------------------------------
+// ranch / feed / slaughter (animal-husbandry) — the livestock loop at a base's
+// pen. All three are DISEMBARKED-only (surface/base actions, gated in
+// `dispatchResolved`) and additionally require owning a base with ≥1 livestock
+// pen in the current region. Biome-affined like crops: `ranch` only accepts
+// animals appropriate to this region's biome. Validate-before-mutate; head
+// counts move through the atomic clamped `add_livestock` RPC, products through
+// `add_player_material`. Not power-gated (agriculture, like the crop farm).
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the player's base here plus its livestock context: the pen count,
+ * total head capacity, and current herds. Returns null when there's no surface,
+ * no base, or no pen (with a caller-formatted error). Shared by all three
+ * livestock handlers so the base/pen gates stay identical.
+ */
+async function livestockContext(
+  player: Player,
+  seed: string,
+): Promise<
+  | { ok: true; base: { id: string; name: string | null; rKey: string }; pens: number; capacity: number; herds: world.Herd[]; totalHead: number }
+  | { ok: false; frame: RenderFrame }
+> {
+  if (atOutpost(player)) return { ok: false, frame: outpostSurfaceError() };
+  const planet = planetAt(seed, locOf(player));
+  if (planet.isGas) return { ok: false, frame: gasGiantError(planet) };
+  const base = await baseHere(player, seed);
+  if (!base) {
+    return {
+      ok: false,
+      frame: errorFrame(
+        `No base in region ${player.region} of ${planet.name} — \`build base\` then \`build livestock_pen\` first.`,
+      ),
+    };
+  }
+  const [buildings, herds] = await Promise.all([
+    world.getBaseBuildings(base.id),
+    world.getBaseLivestock(base.id),
+  ]);
+  const pens = buildings.filter((b) => b.kind === "livestock_pen").length;
+  if (pens === 0) {
+    return {
+      ok: false,
+      frame: errorFrame("No livestock pen here — `build livestock_pen` first to ranch animals."),
+    };
+  }
+  const capacity = LIVESTOCK_PEN_CAPACITY * pens;
+  const totalHead = herds.reduce((sum, h) => sum + h.count, 0);
+  return { ok: true, base, pens, capacity, herds, totalHead };
+}
+
+/**
+ * `ranch <animal>` — acquire a starter head of a biome-appropriate animal into
+ * the current region's livestock pen for the animal's `acquireCost` credits.
+ * Validates the animal id, that it can live in THIS region's biome, a base with
+ * a pen here, free pen capacity, and affordability BEFORE mutating; then charges
+ * credits and adds one head (its `last_bred_at` defaults to now).
+ */
+async function handleRanch(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  if (atOutpost(player)) return outpostSurfaceError();
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  if (planet.isGas) return gasGiantError(planet);
+
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: ranch <animal>  (see `scan` for what you can ranch here)");
+
+  const region = regionAt(seed, coord, player.region);
+  const biomeAnimals = farmAnimalsForBiome(region.biome);
+  if (!isFarmAnimalId(target)) {
+    const list = biomeAnimals.map((a) => a.id).join(", ") || "nothing";
+    return errorFrame(`"${target}" isn't a farm animal. This ${region.biome} supports: ${list}.`);
+  }
+  const animal = getFarmAnimal(target);
+  if (!animal.biomes.includes(region.biome)) {
+    const list = biomeAnimals.map((a) => a.id).join(", ") || "nothing";
+    return errorFrame(
+      `${animal.name} can't be ranched in this ${region.biome}. Here you can ranch: ${list}.`,
+    );
+  }
+
+  const ctx = await livestockContext(player, seed);
+  if (!ctx.ok) return ctx.frame;
+  if (ctx.totalHead >= ctx.capacity) {
+    return errorFrame(
+      `Pen full (${ctx.totalHead}/${ctx.capacity} head). \`slaughter\` some, or \`build livestock_pen\` for more.`,
+    );
+  }
+
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  if (fresh.credits < animal.acquireCost) {
+    return errorFrame(
+      `Can't afford ${animal.name} — costs ${animal.acquireCost} cr (have ${fresh.credits}).`,
+    );
+  }
+
+  await world.addPlayerCredits(player.id, -animal.acquireCost);
+  const newCount = await world.addLivestock(ctx.base.id, animal.id, 1);
+  // Start (or restart, if re-stocking a slaughtered-out herd whose count-0 row
+  // kept a stale timestamp) the breed cycle from now — a starter head shouldn't
+  // be able to breed instantly off an old clock.
+  if (newCount === 1) await world.setLivestockBred(ctx.base.id, animal.id, new Date().toISOString());
+
+  return frame([
+    line([
+      text(`Ranched a ${animal.name} `, "success"),
+      text(`in region ${player.region} of ${planet.name}. `, "default"),
+      text(`Cost: ${animal.acquireCost} cr. `, "muted"),
+      text(`Herd: ${newCount}. Pen ${ctx.totalHead + 1}/${ctx.capacity}.`, "muted"),
+    ]),
+    line([
+      text("`feed ", "muted"),
+      text(`${animal.id}`, "default"),
+      text(`` + "` it ", "muted"),
+      text(`${getCrop(animal.feed.cropId).name}`, "default"),
+      text(" to breed it over time.", "muted"),
+    ]),
+  ]);
+}
+
+/**
+ * `feed <animal>` — feed your herd of `animal` here its crop to breed it. Feeding
+ * is only worthwhile once the breed cycle has elapsed, so this REJECTS early
+ * (consuming nothing) when the herd isn't ready to breed or the pen is full —
+ * feed is never wasted. When ready + room: consumes `feedAmount(count,
+ * qtyPerHead)` of the animal's `feed.cropId` from `player_materials` (rejects, no
+ * consumption, if short), adds `breedOffspring(count)` head (capped to remaining
+ * capacity), and stamps the breed clock. Requires a herd of ≥1 head.
+ */
+async function handleFeed(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: feed <animal>  (see `scan` for your herds)");
+  if (!isFarmAnimalId(target)) {
+    return errorFrame(`"${target}" isn't a farm animal. \`ranch\` one first.`);
+  }
+  const animal = getFarmAnimal(target);
+
+  const ctx = await livestockContext(player, seed);
+  if (!ctx.ok) return ctx.frame;
+  const herd = ctx.herds.find((h) => h.animalId === animal.id);
+  if (!herd || herd.count < 1) {
+    return errorFrame(`You herd no ${animal.name} here. \`ranch ${animal.id}\` first.`);
+  }
+
+  // Breeding is the only effect of feeding (no upkeep/decay this phase), so don't
+  // burn feed before the cycle has elapsed — reject early, consuming nothing.
+  const now = Date.now();
+  if (!livestockCanBreed(Date.parse(herd.lastBredAt), now, animal.breedMs)) {
+    const remainMin = Math.max(1, Math.ceil((animal.breedMs - (now - Date.parse(herd.lastBredAt))) / 60_000));
+    return errorFrame(
+      `Your ${animal.name} aren't ready to breed yet (~${remainMin} min to go). Feeding now would be wasted.`,
+    );
+  }
+  const room = ctx.capacity - ctx.totalHead;
+  if (room <= 0) {
+    return errorFrame(
+      `Pen full (${ctx.totalHead}/${ctx.capacity} head) — no room to breed. \`slaughter\` some, or \`build livestock_pen\`.`,
+    );
+  }
+
+  // Validate feed-on-hand BEFORE consuming.
+  const feedNeed = feedAmount(herd.count, animal.feed.qtyPerHead);
+  const crop = getMaterial(animal.feed.cropId);
+  const materials = await world.getPlayerMaterials(player.id);
+  const haveFeed = materials.find((m) => m.materialId === animal.feed.cropId)?.qty ?? 0;
+  if (haveFeed < feedNeed) {
+    return errorFrame(
+      `Need ${feedNeed} ${crop.name} to feed ${herd.count} head (have ${haveFeed}). \`harvest\`/\`buy\` more.`,
+    );
+  }
+
+  const offspring = Math.min(breedOffspring(herd.count), room);
+  await world.addPlayerMaterial(player.id, animal.feed.cropId, -feedNeed);
+  const newCount = await world.addLivestock(ctx.base.id, animal.id, offspring);
+  await world.setLivestockBred(ctx.base.id, animal.id, new Date(now).toISOString());
+
+  return frame([
+    line([
+      text(`Fed ${herd.count} ${animal.name} `, "success"),
+      text(`${feedNeed} ${crop.name}. `, "muted"),
+      text(`The herd bred +${offspring} — now ${newCount}. `, "accent"),
+      text(`Pen ${ctx.totalHead + offspring}/${ctx.capacity}.`, "muted"),
+    ]),
+  ]);
+}
+
+/**
+ * `slaughter <animal> [n]` — slaughter `n` head (default: the whole herd) of
+ * `animal` from your pen here, yielding `product.qty × n` of its product
+ * material into `player_materials`. Rejects if you herd fewer than `n`.
+ * Validate-before-mutate; head removed via `add_livestock(-n)`, product granted
+ * via `add_player_material(+)`.
+ */
+async function handleSlaughter(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: slaughter <animal> [n]  (see `scan` for your herds)");
+  if (!isFarmAnimalId(target)) {
+    return errorFrame(`"${target}" isn't a farm animal. \`ranch\` one first.`);
+  }
+  const animal = getFarmAnimal(target);
+
+  const ctx = await livestockContext(player, seed);
+  if (!ctx.ok) return ctx.frame;
+  const herd = ctx.herds.find((h) => h.animalId === animal.id);
+  if (!herd || herd.count < 1) {
+    return errorFrame(`You herd no ${animal.name} here. Nothing to slaughter.`);
+  }
+
+  const requested = toInt(args[1]);
+  if (args[1] !== undefined && (requested === null || requested <= 0)) {
+    return errorFrame("How many? `slaughter <animal> <n>` with a positive whole number.");
+  }
+  const n = requested ?? herd.count; // default: the whole herd
+  if (n > herd.count) {
+    return errorFrame(`You only herd ${herd.count} ${animal.name} — can't slaughter ${n}.`);
+  }
+
+  const award = animal.product.qty * n;
+  const product = getMaterial(animal.product.materialId);
+  await world.addLivestock(ctx.base.id, animal.id, -n);
+  await world.addPlayerMaterial(player.id, animal.product.materialId, award);
+
+  const remaining = herd.count - n;
+  return frame([
+    line([
+      text(`Slaughtered ${n} ${animal.name} `, "success"),
+      text(`→ ${award} ${product.name}. `, "accent"),
+      text(`${remaining} head left in the pen.`, "muted"),
+    ]),
+    line([
+      text("`sell ", "muted"),
+      text(`${product.id}`, "default"),
+      text("` at a settlement/outpost market.", "muted"),
+    ]),
+  ]);
+}
+
 /**
  * `attack` — one simultaneous `combatRound` against the creature in the active
  * `encounter`, using `PLAYER_BASE_ATTACK` vs the creature's `attack`. Both take
@@ -2539,12 +2851,12 @@ async function handleBuild(
   if (here.isGas) return gasGiantError(here);
   const structure = args[0]?.toLowerCase();
   if (!structure) {
-    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace|crop_farm> [name]");
+    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace|crop_farm|livestock_pen> [name]");
   }
   if (structure === "base") return handleBuildBase(player, seed, args);
   if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
   return errorFrame(
-    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\`, \`blast_furnace\` or \`crop_farm\`.`,
+    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\`, \`blast_furnace\`, \`crop_farm\` or \`livestock_pen\`.`,
   );
 }
 
@@ -2750,6 +3062,7 @@ async function handleBuildStructure(
   const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
+  const livestockPens = buildings.filter((b) => b.kind === "livestock_pen").length;
   // Recompute the base's power so the player learns immediately whether the new
   // consumer is powered (or the new plant fixed an underpowered base).
   const power = basePower({
@@ -2788,6 +3101,12 @@ async function handleBuildStructure(
       // Not power-gated (agriculture is natural) — report plot capacity instead.
       const plots = CROP_FARM_PLOTS * cropFarms;
       detail = `${cropFarms} crop farm${cropFarms === 1 ? "" : "s"} — ${plots} planting plot${plots === 1 ? "" : "s"}. \`plant <crop>\` a biome-appropriate crop (no power needed).`;
+      break;
+    }
+    case "livestock_pen": {
+      // Not power-gated (agriculture is natural) — report head capacity instead.
+      const heads = LIVESTOCK_PEN_CAPACITY * livestockPens;
+      detail = `${livestockPens} livestock pen${livestockPens === 1 ? "" : "s"} — room for ${heads} head. \`ranch <animal>\` a biome-appropriate animal (no power needed).`;
       break;
     }
   }
@@ -2844,6 +3163,65 @@ function plantHints(biome: Biome, hasFreePlot: boolean): PlantHint[] {
   }));
 }
 
+/**
+ * Summarize a base's livestock herds for display (animal-husbandry): per-herd
+ * count, breed-readiness, and feed needed. Pure (time + capacity passed in).
+ * Sorted by animal id for stable output. Unknown animal ids (a since-removed
+ * catalog entry) are skipped defensively. A herd is `ready` only when its breed
+ * cycle has elapsed AND the pen has room (`feed` would otherwise be wasted).
+ */
+function summarizeHerds(
+  herds: world.Herd[],
+  now: number,
+  totalHead: number,
+  capacity: number,
+): HerdSummary[] {
+  const room = capacity - totalHead;
+  return herds
+    .filter((h) => isFarmAnimalId(h.animalId) && h.count > 0)
+    .sort((a, b) => a.animalId.localeCompare(b.animalId))
+    .map((h) => {
+      const animal = getFarmAnimal(h.animalId);
+      const elapsed = now - Date.parse(h.lastBredAt);
+      const cycleReady = livestockCanBreed(Date.parse(h.lastBredAt), now, animal.breedMs);
+      const ready = cycleReady && room > 0;
+      const feedNeed = feedAmount(h.count, animal.feed.qtyPerHead);
+      const feedSummary = `feed ${feedNeed} ${getMaterial(animal.feed.cropId).name}`;
+      let note: string;
+      if (!cycleReady) {
+        const remainMin = Math.max(1, Math.ceil((animal.breedMs - elapsed) / 60_000));
+        note = `breeding — ~${remainMin} min`;
+      } else if (room <= 0) {
+        note = "ready, but pen full";
+      } else {
+        note = "ready to breed";
+      }
+      return {
+        animalId: h.animalId,
+        name: animal.name,
+        count: h.count,
+        ready,
+        note,
+        feedSummary,
+        feedDisabled: !ready,
+      };
+    });
+}
+
+/**
+ * Clickable `ranch <animal>` hints for the current region's biome (each with its
+ * acquire cost). Marked red (disabled) when the pen is full — the P9b
+ * unperformable→red convention. Empty when nothing can be ranched in this biome.
+ */
+function ranchHints(biome: Biome, penFull: boolean): RanchHint[] {
+  return farmAnimalsForBiome(biome).map((a) => ({
+    animalId: a.id,
+    name: a.name,
+    cost: a.acquireCost,
+    disabled: penFull,
+  }));
+}
+
 /** Resolve the base the player owns in their current region (or null). */
 async function baseHere(
   player: Player,
@@ -2886,11 +3264,12 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const region = regionAt(seed, locOf(player), player.region);
   await accrueExcavators(player, base.id, base.rKey, region, planet);
 
-  const [buildings, stored, have, rawPlots] = await Promise.all([
+  const [buildings, stored, have, rawPlots, rawHerds] = await Promise.all([
     world.getBaseBuildings(base.id),
     world.getBaseStorage(base.id),
     affordContext(player),
     world.getBasePlots(base.id),
+    world.getBaseLivestock(base.id),
   ]);
   const silos = buildings.filter((b) => b.kind === "silo").length;
   const excavators = buildings.filter((b) => b.kind === "excavator").length;
@@ -2899,12 +3278,19 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const thermalPlants = buildings.filter((b) => b.kind === "thermal_plant").length;
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
+  const livestockPens = buildings.filter((b) => b.kind === "livestock_pen").length;
   const capacity = baseCapacity(silos);
   // Crop plots (crop-farming): summary + capacity + clickable plant hints (red
   // when no free plot — P9b). Only surfaced once a crop farm exists.
   const plotCapacity = CROP_FARM_PLOTS * cropFarms;
   const plotSummary = cropFarms > 0 ? summarizePlots(rawPlots, Date.now()) : [];
   const plantHintList = cropFarms > 0 ? plantHints(region.biome, rawPlots.length < plotCapacity) : [];
+  // Livestock pen (animal-husbandry): head capacity + per-herd breed-readiness +
+  // clickable feed/slaughter/ranch hints. Only surfaced once a pen exists.
+  const headCapacity = LIVESTOCK_PEN_CAPACITY * livestockPens;
+  const totalHead = rawHerds.reduce((sum, h) => sum + h.count, 0);
+  const herdSummary = livestockPens > 0 ? summarizeHerds(rawHerds, Date.now(), totalHead, headCapacity) : [];
+  const ranchHintList = livestockPens > 0 ? ranchHints(region.biome, totalHead >= headCapacity) : [];
   const used = stored.reduce((sum, s) => sum + s.qty, 0);
 
   // Power balance (P13): plant supply vs consumer demand, sited by this region's
@@ -2935,12 +3321,18 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     thermalPlants,
     solarArrays,
     cropFarms,
+    livestockPens,
     power: { supply: power.supply, demand: power.demand, powered: power.powered },
     // Crop-farming: plot usage + per-crop maturity + clickable plant hints.
     plotsUsed: rawPlots.length,
     plotCapacity,
     plots: plotSummary,
     plantHints: plantHintList,
+    // Animal-husbandry: head usage + per-herd breed-readiness + ranch hints.
+    headUsed: totalHead,
+    headCapacity,
+    herds: herdSummary,
+    ranchHints: ranchHintList,
     used,
     capacity,
     items: stored.map((s) => ({ itemId: s.itemId, qty: s.qty, name: storageItemName(s.itemId) })),
@@ -2981,6 +3373,7 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       solar_array: canAffordBase(have, buildingCost("solar_array")),
       blast_furnace: canAffordBase(have, buildingCost("blast_furnace")),
       crop_farm: canAffordBase(have, buildingCost("crop_farm")),
+      livestock_pen: canAffordBase(have, buildingCost("livestock_pen")),
     },
   });
 }

@@ -17,6 +17,7 @@ describe("structure-kind catalog", () => {
     expect(isStructureKind("solar_array")).toBe(true); // P13
     expect(isStructureKind("blast_furnace")).toBe(true); // blast-furnace phase
     expect(isStructureKind("crop_farm")).toBe(true); // crop-farming phase
+    expect(isStructureKind("livestock_pen")).toBe(true); // animal-husbandry phase
     expect(isStructureKind("base")).toBe(false); // the base itself is not an in-base structure
     expect(isStructureKind("nonsense")).toBe(false);
     expect([...STRUCTURE_KINDS]).toEqual([
@@ -27,6 +28,7 @@ describe("structure-kind catalog", () => {
       "solar_array",
       "blast_furnace",
       "crop_farm",
+      "livestock_pen",
     ]);
   });
 });

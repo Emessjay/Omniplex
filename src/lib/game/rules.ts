@@ -565,6 +565,63 @@ export function cropMature(plantedAtMs: number, nowMs: number, growMs: number): 
 }
 
 // ---------------------------------------------------------------------------
+// Livestock — ranching + feeding/breeding (animal-husbandry phase).
+//
+// A livestock pen is a (non-power-gated, like the crop farm) base structure
+// that holds animals. A player acquires a head (`ranch`), feeds it crop
+// materials (`feed`) to breed the herd over real time, and slaughters head for
+// product materials (`slaughter`). As with crop growth, breeding is TIME-BASED
+// and the math stays PURE: the handler supplies `nowMs` (Date.now()) and the
+// animal's `breedMs` (from `livestock.ts`), so `livestockCanBreed` never reads
+// the clock. There is no disease/starvation this phase — not feeding simply
+// stalls breeding (no decay).
+// ---------------------------------------------------------------------------
+
+/**
+ * Head a single livestock pen holds. A base's total livestock capacity is
+ * `LIVESTOCK_PEN_CAPACITY * (number of livestock pens)`, counting all animals
+ * across types. Tunable.
+ */
+export const LIVESTOCK_PEN_CAPACITY = 20;
+
+/**
+ * Fraction of the current herd that breeds per cycle (rounded down, floored at
+ * one new head for any non-empty herd). Tunable; see `breedOffspring`.
+ */
+export const LIVESTOCK_BREED_RATE = 0.5;
+
+/**
+ * Whether a herd last bred at `lastBredAtMs` may breed again at `nowMs`, given
+ * the animal's `breedMs` cycle: `nowMs - lastBredAtMs >= breedMs`. False before
+ * the cycle has elapsed, true exactly at and after it; monotonically
+ * non-decreasing in elapsed time. Pure — the handler supplies `Date.now()`.
+ */
+export function livestockCanBreed(lastBredAtMs: number, nowMs: number, breedMs: number): boolean {
+  return nowMs - lastBredAtMs >= breedMs;
+}
+
+/**
+ * Feed required to feed a whole herd: `count * qtyPerHead`. Zero for an empty
+ * (or non-positive) herd; at least `qtyPerHead` for a single head; strictly
+ * increasing in head count. Pure.
+ */
+export function feedAmount(count: number, qtyPerHead: number): number {
+  if (count <= 0) return 0;
+  return count * qtyPerHead;
+}
+
+/**
+ * Offspring a herd of `count` head produces in one breed cycle:
+ * `max(1, floor(count * LIVESTOCK_BREED_RATE))` for a non-empty herd, 0 for an
+ * empty one. Non-decreasing in `count`. The CALL SITE caps this to the pen's
+ * remaining capacity so a breed can't overflow the pen. Pure.
+ */
+export function breedOffspring(count: number): number {
+  if (count <= 0) return 0;
+  return Math.max(1, Math.floor(count * LIVESTOCK_BREED_RATE));
+}
+
+// ---------------------------------------------------------------------------
 // Navigation (P2: two fuels + orbital mechanics).
 //
 // Travel splits into two pools with two cost models:

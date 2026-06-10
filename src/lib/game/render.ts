@@ -234,6 +234,10 @@ export interface ScanView {
   plots?: PlotSummary[];
   /** Clickable `plant <crop>` hints for this biome (red when no free plot). */
   plantHints?: PlantHint[];
+  /** Livestock herds at the player's OWN base here (animal-husbandry). */
+  herds?: HerdSummary[];
+  /** Clickable `ranch <animal>` hints for this biome (red when pen full). */
+  ranchHints?: RanchHint[];
 }
 
 /** A base present in the scanned region, for the shared-world presence readout. */
@@ -264,6 +268,36 @@ export interface PlantHint {
   cropId: string;
   name: string;
   /** True when planting can't be done right now (no free plot) — rendered red. */
+  disabled: boolean;
+}
+
+/**
+ * Per-animal herd summary for a base's livestock pen (animal-husbandry):
+ * head count, breed-readiness, and feed needed. Surfaced in `scan` (at your
+ * base) and `storage`, each with clickable `feed`/`slaughter` actions.
+ */
+export interface HerdSummary {
+  animalId: string;
+  name: string;
+  /** Head currently penned. */
+  count: number;
+  /** True when the herd may breed now (`livestockCanBreed` + pen has room). */
+  ready: boolean;
+  /** Short status note, e.g. "ready to breed" / "breeding — ~12 min" / "pen full". */
+  note: string;
+  /** Feed-needed summary, e.g. "feed 8 Verdant Fruit". */
+  feedSummary: string;
+  /** True when `feed` can't be performed now (not ready / pen full) — feed action red. */
+  feedDisabled: boolean;
+}
+
+/** A clickable `ranch <animal>` hint (red when the pen is full). */
+export interface RanchHint {
+  animalId: string;
+  name: string;
+  /** Acquisition cost in credits (shown muted after the token). */
+  cost: number;
+  /** True when ranching can't be done right now (pen full) — rendered red. */
   disabled: boolean;
 }
 
@@ -328,6 +362,63 @@ function cropPlotLines(
           disabled: h.disabled,
         }),
       );
+    });
+    out.push(line(row));
+  }
+  return out;
+}
+
+/**
+ * Render a base's livestock pen (animal-husbandry): a per-herd line (count,
+ * breed-readiness, feed needed) with clickable `feed` (red when not ready / pen
+ * full — P9b) and `slaughter` actions, plus clickable `ranch <animal>` hints for
+ * this biome (each with its cost; red when the pen is full). Returns no lines
+ * when there's nothing to show. Shared by `scan` (at your base) and `storage`.
+ */
+function livestockLines(
+  herds: HerdSummary[] | undefined,
+  ranchable: RanchHint[] | undefined,
+): RenderLine[] {
+  const summary = herds ?? [];
+  const ranch = ranchable ?? [];
+  if (summary.length === 0 && ranch.length === 0) return [];
+
+  const out: RenderLine[] = [line(text("Livestock pen:", "heading"))];
+  if (summary.length === 0) {
+    out.push(line(text("  no animals — `ranch <animal>` to acquire one.", "muted")));
+  } else {
+    for (const h of summary) {
+      const spans: RenderSpan[] = [
+        text("  • ", "muted"),
+        text(`${h.count}× ${h.name} `, "default"),
+        text(`(${h.note})`, h.ready ? "success" : "muted"),
+        text(`  ${h.feedSummary}  `, "muted"),
+        action(`feed ${h.animalId}`, `feed ${h.animalId}`, {
+          style: "link",
+          title: h.feedDisabled ? "not ready to breed (or pen full)" : `feed ${h.name} to breed`,
+          disabled: h.feedDisabled,
+        }),
+        text("  ", "muted"),
+        action(`slaughter ${h.animalId}`, `slaughter ${h.animalId}`, {
+          style: "link",
+          title: `slaughter ${h.name} for products`,
+        }),
+      ];
+      out.push(line(spans));
+    }
+  }
+  if (ranch.length > 0) {
+    const row: RenderSpan[] = [text("  ranch: ", "muted")];
+    ranch.forEach((h, i) => {
+      if (i > 0) row.push(text("  ", "muted"));
+      row.push(
+        action(`ranch ${h.animalId}`, `ranch ${h.animalId}`, {
+          style: "link",
+          title: h.disabled ? "pen full — `slaughter` or `build livestock_pen`" : `ranch ${h.name}`,
+          disabled: h.disabled,
+        }),
+      );
+      row.push(text(` (${h.cost}cr)`, "muted"));
     });
     out.push(line(row));
   }
@@ -554,6 +645,11 @@ export function renderScan(view: ScanView): RenderFrame {
   // Crop-farm plots at the player's own base here (crop-farming): per-crop
   // maturity + clickable harvest/plant. Only present when you own a farm here.
   lines.push(...cropPlotLines(view.plots, view.plantHints));
+
+  // Livestock pen at the player's own base here (animal-husbandry): per-herd
+  // count + breed-readiness + clickable feed/slaughter, plus ranch hints. Only
+  // present when you own a pen here.
+  lines.push(...livestockLines(view.herds, view.ranchHints));
 
   // Explore other regions of this planet.
   lines.push(
@@ -1134,6 +1230,15 @@ export interface StorageView {
   plots?: PlotSummary[];
   /** Clickable `plant <crop>` hints for this biome (red when no free plot). */
   plantHints?: PlantHint[];
+  /** Number of livestock pens (animal-husbandry) — each holds LIVESTOCK_PEN_CAPACITY head. */
+  livestockPens?: number;
+  /** Head penned + total head capacity (= LIVESTOCK_PEN_CAPACITY × livestock pens). */
+  headUsed?: number;
+  headCapacity?: number;
+  /** Per-herd summary (animal-husbandry). Empty/absent ⇒ no livestock pen. */
+  herds?: HerdSummary[];
+  /** Clickable `ranch <animal>` hints for this biome (red when pen full). */
+  ranchHints?: RanchHint[];
   /**
    * Power balance (P13): plant `supply` vs consumer `demand`. Rendered as
    * `Power supply/demand`, green ✓ when `powered`, red when short (per P9b).
@@ -1171,6 +1276,7 @@ export interface StorageView {
     solar_array?: boolean;
     blast_furnace?: boolean;
     crop_farm?: boolean;
+    livestock_pen?: boolean;
   };
 }
 
@@ -1198,6 +1304,8 @@ export function renderStorage(view: StorageView): RenderFrame {
       text(`${view.blastFurnaces ?? 0}`, "default"),
       text("   farms ", "muted"),
       text(`${view.cropFarms ?? 0}`, "default"),
+      text("   pens ", "muted"),
+      text(`${view.livestockPens ?? 0}`, "default"),
       text("   plants ", "muted"),
       text(`${(view.thermalPlants ?? 0) + (view.solarArrays ?? 0)}`, "default"),
       text("   storage ", "muted"),
@@ -1292,6 +1400,22 @@ export function renderStorage(view: StorageView): RenderFrame {
     lines.push(...cropPlotLines(view.plots, view.plantHints));
   }
 
+  // Livestock pen (animal-husbandry) — only once a pen exists: a head-usage line
+  // plus per-herd breed-readiness and clickable feed/slaughter/ranch (red when
+  // not ready / pen full).
+  if ((view.livestockPens ?? 0) > 0) {
+    const used = view.headUsed ?? 0;
+    const cap = view.headCapacity ?? 0;
+    lines.push(
+      line([
+        text("head ", "muted"),
+        text(`${used}/${cap}`, used >= cap ? "warning" : "default"),
+        text("   (livestock pen — agriculture, no power needed)", "muted"),
+      ]),
+    );
+    lines.push(...livestockLines(view.herds, view.ranchHints));
+  }
+
   // Expansion hints (clickable). A structure you can't afford is shown red,
   // matching the affordability check `build` enforces.
   const b = view.buildable;
@@ -1336,6 +1460,12 @@ export function renderStorage(view: StorageView): RenderFrame {
       style: "link",
       title: b && b.crop_farm === false ? "can't afford a crop farm" : "add planting plots for crops",
       disabled: b ? b.crop_farm === false : false,
+    }),
+    text("   ", "muted"),
+    action("build livestock_pen", "build livestock_pen", {
+      style: "link",
+      title: b && b.livestock_pen === false ? "can't afford a livestock pen" : "add a pen for ranching animals",
+      disabled: b ? b.livestock_pen === false : false,
     }),
   ];
   lines.push(line(hints));

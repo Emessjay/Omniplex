@@ -35,6 +35,9 @@ export const VERBS: string[] = [
   "explore",
   "harvest",
   "plant",
+  "ranch",
+  "feed",
+  "slaughter",
   "attack",
   "flee",
   "inventory",
@@ -140,6 +143,21 @@ export const USAGE: Record<string, UsageDescriptor> = {
   plant: {
     desc: "sow a biome-appropriate crop into a free plot at your crop farm (on foot)",
     slots: [{ name: "crop" }],
+  },
+  ranch: {
+    desc: "acquire a biome-appropriate animal into your livestock pen (on foot)",
+    slots: [{ name: "animal" }],
+  },
+  feed: {
+    desc: "feed your herd its crop to breed it over time (on foot)",
+    slots: [{ name: "animal" }],
+  },
+  slaughter: {
+    desc: "slaughter animals from your herd for product materials (on foot)",
+    slots: [
+      { name: "animal" },
+      { name: "n", optional: true, hint: "how many to slaughter (default: the whole herd)" },
+    ],
   },
   attack: {
     desc: "strike the creature you're facing (one combat round)",
