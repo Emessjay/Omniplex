@@ -53,6 +53,9 @@ export const VERBS: string[] = [
   "produce",
   "sell",
   "buy",
+  "standing",
+  "contracts",
+  "fulfill",
   "who",
   "rename",
   "help",
@@ -231,6 +234,18 @@ export const USAGE: Record<string, UsageDescriptor> = {
       { name: "item" },
       { name: "qty", optional: true, hint: "a number (default 1)" },
     ],
+  },
+  standing: {
+    desc: "show your reputation with each NPC faction",
+    slots: [],
+  },
+  contracts: {
+    desc: "list the goods contracts on offer at this trade hub's faction",
+    slots: [],
+  },
+  fulfill: {
+    desc: "deliver the goods for a hub contract for credits + faction reputation",
+    slots: [{ name: "n", hint: "a contract # from `contracts`" }],
   },
   who: { desc: "see the shared-world leaderboards", slots: [] },
   rename: {

@@ -117,6 +117,13 @@ import {
   farmAnimalsForBiome,
 } from "./livestock";
 import {
+  FACTIONS,
+  getFaction,
+  factionAt,
+  contractsAt,
+  CONTRACT_ROTATION_MS,
+} from "./factions";
+import {
   isMaterialId,
   getMaterial,
   materialValue,
@@ -159,7 +166,10 @@ import {
   renderBases,
   renderStorage,
   renderWho,
+  renderStanding,
+  renderContracts,
   errorFrame,
+  type ContractEntry,
   type MapNeighbor,
   type RegionListEntry,
   type CommandHelpSlotView,
@@ -822,6 +832,12 @@ async function dispatchResolved(
       return handleSell(player, args);
     case "buy":
       return handleBuy(player, args);
+    case "standing":
+      return handleStanding(player);
+    case "contracts":
+      return handleContracts(player, seed);
+    case "fulfill":
+      return handleFulfill(player, seed, args);
     case "who":
       return handleWho();
     case "rename":
@@ -1102,6 +1118,12 @@ function outpostScanFrame(player: Player, seed: string): RenderFrame {
       text(" / ", "muted"),
       action("sell", "sell", { style: "link", title: "sell at the outpost market" }),
       text(" here.", "muted"),
+    ]),
+    // Keystone 1a: the outpost is a faction trade hub — surface its contracts.
+    line([
+      text("Its faction posts ", "muted"),
+      action("contracts", "contracts", { style: "link", title: "see the faction's goods contracts" }),
+      text(" — deliver goods for credits + reputation.", "muted"),
     ]),
     line([
       action("regions", "regions", { style: "link", title: "list the planet's surface regions" }),
@@ -4388,6 +4410,193 @@ async function handleBuyPart(
       text("`deposit ", "muted"),
       text(`${partId}`, "default"),
       text("` at a base to use it in production.", "muted"),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Factions — standing / contracts / fulfill (Keystone 1a). NPC factions are
+// anchored at trade hubs (settlement regions + orbital outposts); they post
+// procedurally-generated, rotating goods contracts that pay a credit PREMIUM
+// over the market plus faction reputation. `standing`/`contracts` are
+// informational; `fulfill` is economy-gated (at the hub, out of combat).
+// ---------------------------------------------------------------------------
+
+/**
+ * The location key of the trade hub the player is at — the 6-segment region key
+ * including the current region. For a settlement that's `region ≥ 0`; for the
+ * orbital outpost it's the `-1` sentinel, so each hub (settlement OR outpost)
+ * has a distinct, stable key. `factionAt`/`contractsAt` key off this.
+ */
+function hubKeyOf(player: Player): string {
+  return regionKey({ ...locOf(player), region: player.region });
+}
+
+/** The current contract rotation bucket (the only place `Date.now()` enters). */
+function currentContractBucket(): number {
+  return Math.floor(Date.now() / CONTRACT_ROTATION_MS);
+}
+
+/** Display name for a demandable good (resource / part / material). */
+function goodName(itemId: string): string {
+  if (RESOURCES.some((r) => r.id === itemId)) return getResource(itemId).name;
+  if (isPartId(itemId)) return getPart(itemId).name;
+  if (isMaterialId(itemId)) return getMaterial(itemId).name;
+  return itemId;
+}
+
+/** How many of `itemId` the player holds in the appropriate store (0 if none). */
+async function heldQuantity(player: Player, itemId: string): Promise<number> {
+  if (RESOURCES.some((r) => r.id === itemId)) {
+    const stacks = await world.getInventory(player.id);
+    return stacks.find((s) => s.resourceId === itemId)?.qty ?? 0;
+  }
+  if (isPartId(itemId)) {
+    const parts = await world.getPlayerParts(player.id);
+    return parts.find((p) => p.partId === itemId)?.qty ?? 0;
+  }
+  if (isMaterialId(itemId)) {
+    const mats = await world.getPlayerMaterials(player.id);
+    return mats.find((m) => m.materialId === itemId)?.qty ?? 0;
+  }
+  return 0;
+}
+
+/** Consume `qty` of `itemId` from the player's appropriate store (atomic RPC). */
+async function consumeGood(player: Player, itemId: string, qty: number): Promise<void> {
+  if (RESOURCES.some((r) => r.id === itemId)) {
+    await world.removeInventory(player.id, itemId, qty);
+    return;
+  }
+  if (isPartId(itemId)) {
+    await world.addPlayerPart(player.id, itemId, -qty);
+    return;
+  }
+  if (isMaterialId(itemId)) {
+    await world.addPlayerMaterial(player.id, itemId, -qty);
+    return;
+  }
+}
+
+/** `standing` — the player's reputation with each faction (flat list; ranks = 1b). */
+async function handleStanding(player: Player): Promise<RenderFrame> {
+  const reps = await world.getReputation(player.id);
+  const byId = new Map(reps.map((r) => [r.factionId, r.rep]));
+  return renderStanding({
+    factions: FACTIONS.map((f) => ({
+      name: f.name,
+      blurb: f.blurb,
+      rep: byId.get(f.id) ?? 0,
+    })),
+  });
+}
+
+/**
+ * `contracts` — the hub faction's current goods contracts. Informational: at a
+ * trade hub it lists the faction + each contract's wanted item/qty, reward, and
+ * state (fulfillable / completed / short — short reads red); off-hub it returns
+ * a clear "find a settlement or outpost" note.
+ */
+async function handleContracts(player: Player, seed: string): Promise<RenderFrame> {
+  if (!atTradeLocation(player, seed)) {
+    return renderContracts({ atHub: false });
+  }
+  const hubKey = hubKeyOf(player);
+  const factionId = factionAt(seed, hubKey);
+  const faction = getFaction(factionId);
+  const contracts = contractsAt(seed, hubKey, factionId, currentContractBucket());
+  const [inv, mats, parts, completed] = await Promise.all([
+    world.getInventory(player.id),
+    world.getPlayerMaterials(player.id),
+    world.getPlayerParts(player.id),
+    world.getCompletedContractKeys(player.id, contracts.map((c) => c.key)),
+  ]);
+  // One lookup over all three stores (resource/material/part ids never collide).
+  const held = new Map<string, number>();
+  for (const s of inv) held.set(s.resourceId, s.qty);
+  for (const m of mats) held.set(m.materialId, m.qty);
+  for (const p of parts) held.set(p.partId, p.qty);
+
+  const entries: ContractEntry[] = contracts.map((c, i) => {
+    const have = held.get(c.want.itemId) ?? 0;
+    const state: ContractEntry["state"] = completed.has(c.key)
+      ? "completed"
+      : have >= c.want.qty
+        ? "fulfillable"
+        : "short";
+    return {
+      index: i + 1,
+      itemName: goodName(c.want.itemId),
+      qty: c.want.qty,
+      haveQty: have,
+      rewardCredits: c.rewardCredits,
+      rewardRep: c.rewardRep,
+      state,
+    };
+  });
+  return renderContracts({
+    atHub: true,
+    factionName: faction.name,
+    factionBlurb: faction.blurb,
+    contracts: entries,
+  });
+}
+
+/**
+ * `fulfill <n>` — deliver the goods for the n-th contract at this hub. Economy-
+ * gated (at the hub, out of combat — enforced by the dispatch applicability
+ * gate). Validates server-authoritatively BEFORE mutating: a real current-bucket
+ * contract, not already completed, and the player HOLDS `want.qty` in the right
+ * store. Then atomically consumes the goods + awards credits + reputation + marks
+ * the contract complete (the `completed_contracts` PK makes a double-fulfill of
+ * the same key a no-op).
+ */
+async function handleFulfill(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  const n = toInt(args[0]);
+  if (n === null || n < 1) {
+    return errorFrame("Usage: fulfill <n>  — n is a contract # from `contracts`.");
+  }
+  const hubKey = hubKeyOf(player);
+  const factionId = factionAt(seed, hubKey);
+  const faction = getFaction(factionId);
+  const contracts = contractsAt(seed, hubKey, factionId, currentContractBucket());
+  const contract = contracts[n - 1];
+  if (!contract) {
+    return errorFrame(`No contract #${n} here — see \`contracts\`.`);
+  }
+
+  // Already fulfilled? (idempotent against double-fulfill within a bucket.)
+  const done = await world.getCompletedContractKeys(player.id, [contract.key]);
+  if (done.has(contract.key)) {
+    return errorFrame("That contract is already fulfilled — check back after it rotates.");
+  }
+
+  const { itemId, qty } = contract.want;
+  const name = goodName(itemId);
+  const have = await heldQuantity(player, itemId);
+  if (have < qty) {
+    return errorFrame(`You need ${qty} ${name} (have ${have}).`);
+  }
+
+  // Validated — consume the goods, then reward + mark complete.
+  await consumeGood(player, itemId, qty);
+  const newBalance = await world.addPlayerCredits(player.id, contract.rewardCredits);
+  const newRep = await world.addReputation(player.id, factionId, contract.rewardRep);
+  await world.markContractComplete(player.id, contract.key);
+
+  return frame([
+    line([
+      text(`Delivered ${qty} ${name} to the ${faction.name}.`, "success"),
+    ]),
+    line([
+      text(`+${contract.rewardCredits} cr `, "accent"),
+      text(`(balance ${newBalance} cr)   `, "muted"),
+      text(`+${contract.rewardRep} rep `, "success"),
+      text(`(${faction.name}: ${newRep})`, "muted"),
     ]),
   ]);
 }

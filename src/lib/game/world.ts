@@ -505,6 +505,93 @@ export async function addPlayerMaterial(
 }
 
 // ---------------------------------------------------------------------------
+// Factions — reputation + completed contracts (Keystone 1a). Faction ids and
+// contract keys are CODE-derived (`factions.ts`; contracts are procedurally
+// generated per (hub, time-bucket) and never stored — only completion is). Both
+// tables are per-player (read-own RLS); service-role writes. Mirrors the
+// player_parts / player_materials adapters.
+// ---------------------------------------------------------------------------
+
+export interface ReputationStack {
+  factionId: string;
+  rep: number;
+}
+
+/** A player's reputation with every faction they have standing with (rep > 0). */
+export async function getReputation(playerId: string): Promise<ReputationStack[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("player_reputation")
+    .select("faction_id, rep")
+    .eq("player_id", playerId)
+    .gt("rep", 0)
+    .order("faction_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    factionId: (r as { faction_id: string }).faction_id,
+    rep: (r as { rep: number }).rep,
+  }));
+}
+
+/**
+ * Atomically add `delta` reputation with a faction (positive on a fulfill);
+ * returns the new standing. Clamped at 0 in SQL; mirror of `add_player_part`.
+ */
+export async function addReputation(
+  playerId: string,
+  factionId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_reputation", {
+    p_player: playerId,
+    p_faction: factionId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+/**
+ * Of the given contract `keys`, which has this player ALREADY fulfilled. Returns
+ * a Set for O(1) membership when annotating the contract board. An empty input
+ * short-circuits (no DB round-trip).
+ */
+export async function getCompletedContractKeys(
+  playerId: string,
+  keys: string[],
+): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("completed_contracts")
+    .select("contract_key")
+    .eq("player_id", playerId)
+    .in("contract_key", keys);
+  if (error) throw error;
+  return new Set((data ?? []).map((r) => (r as { contract_key: string }).contract_key));
+}
+
+/**
+ * Record that the player has fulfilled the contract `contractKey`. Idempotent:
+ * the `(player_id, contract_key)` PK makes a double-fulfill a no-op (the insert
+ * is ignored on conflict). Service-role write.
+ */
+export async function markContractComplete(
+  playerId: string,
+  contractKey: string,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("completed_contracts")
+    .upsert(
+      { player_id: playerId, contract_key: contractKey },
+      { onConflict: "player_id,contract_key", ignoreDuplicates: true },
+    );
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Markets — per-SYSTEM resource prices (P12a). Each system has its own market
 // row per resource, keyed by `location_key = systemKey(...)` (the 4-segment
 // `"galaxy:arm:cluster:system"`). Trades read + write only the current system's

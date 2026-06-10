@@ -50,6 +50,11 @@ const INFORMATIONAL = new Set([
   "regions",
   "storage",
   "base",
+  // Keystone 1a — faction info. `standing` (your reputation with each faction)
+  // is usable anywhere; `contracts` is usable anywhere too and shows the off-hub
+  // note itself when you're not at a trade hub (so it stays informational).
+  "standing",
+  "contracts",
 ]);
 
 /** Combat actions — applicable ONLY while in an encounter. */
@@ -60,9 +65,10 @@ const COMBAT_ONLY = new Set(["attack", "flee"]);
  * the orbital outpost) and out of combat, REGARDLESS of embark state (P12a). You
  * can only `buy`/`sell` where there's actually a market to trade with; this
  * superseded the old "economy = embarked anywhere" rule. (`buy fuel`/`buy
- * warpfuel` are covered by `buy`.)
+ * warpfuel` are covered by `buy`.) `fulfill` (Keystone 1a — deliver goods to the
+ * hub's faction for a contract) joins them: you fulfill at the hub.
  */
-const ECONOMY = new Set(["buy", "sell"]);
+const ECONOMY = new Set(["buy", "sell", "fulfill"]);
 
 /**
  * Ship travel — requires being ABOARD the ship (and out of combat). `disembark`

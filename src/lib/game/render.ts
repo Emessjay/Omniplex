@@ -525,6 +525,14 @@ export function renderScan(view: ScanView): RenderFrame {
         text(" here.", "muted"),
       ]),
     );
+    // Keystone 1a: a settlement is a faction trade hub — surface its contracts.
+    lines.push(
+      line([
+        text("   Its faction posts ", "muted"),
+        action("contracts", "contracts", { style: "link", title: "see the faction's goods contracts" }),
+        text(" — deliver goods for credits + reputation.", "muted"),
+      ]),
+    );
   }
   // Per-region climate: this region's own temperature + hazard (the biome nudges
   // them off the planet mean shown below, never crossing the 0/100 band). This is
@@ -1506,6 +1514,123 @@ export function renderWho(view: WhoView): RenderFrame {
         ]),
       );
     });
+  }
+  return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Factions — standing + contracts (Keystone 1a).
+// ---------------------------------------------------------------------------
+
+export interface StandingView {
+  /** Every faction with the player's reputation (flat list; ranks come in 1b). */
+  factions: { name: string; blurb: string; rep: number }[];
+}
+
+/**
+ * `standing` — the player's reputation with each NPC faction, a flat list for
+ * now (rep ranks/titles arrive in Keystone 1b). Always renders every faction so
+ * the player can see who's out there even at rep 0.
+ */
+export function renderStanding(view: StandingView): RenderFrame {
+  const lines: RenderLine[] = [line(text("Faction standing", "heading"))];
+  for (const f of view.factions) {
+    lines.push(
+      line([
+        text("  • ", "muted"),
+        text(`${f.name}  `, "accent"),
+        text(`rep ${f.rep}`, f.rep > 0 ? "success" : "muted"),
+      ]),
+    );
+    lines.push(line(text(`      ${f.blurb}`, "muted")));
+  }
+  lines.push(
+    line([
+      text("Fulfil ", "muted"),
+      action("contracts", "contracts", { style: "link", title: "see contracts at this hub" }),
+      text(" at a settlement/outpost to raise your standing.", "muted"),
+    ]),
+  );
+  return frame(lines);
+}
+
+/** One contract row on a hub's faction board. */
+export interface ContractEntry {
+  /** 1-based index, the `fulfill <index>` argument. */
+  index: number;
+  itemName: string;
+  qty: number;
+  /** How many of the wanted good the player currently holds. */
+  haveQty: number;
+  rewardCredits: number;
+  rewardRep: number;
+  /** fulfillable = hold the goods & not done; completed = already done; short = lack the goods. */
+  state: "fulfillable" | "completed" | "short";
+}
+
+export interface ContractsView {
+  /** Whether the player is at a trade hub (settlement/outpost) with a faction board. */
+  atHub: boolean;
+  /** The hub faction (when `atHub`). */
+  factionName?: string;
+  factionBlurb?: string;
+  /** The current bucket's contracts (when `atHub`). */
+  contracts?: ContractEntry[];
+}
+
+/**
+ * `contracts` — the hub faction's current goods contracts, each with its wanted
+ * item + qty, reward (credits + rep), and state. A `fulfill <n>` action is
+ * clickable when fulfillable, RED (P9b `disabled`) when short of the goods, and
+ * shown as a muted "done" when already completed. Off-hub: a clear note to find
+ * a settlement or outpost.
+ */
+export function renderContracts(view: ContractsView): RenderFrame {
+  if (!view.atHub) {
+    return frame([
+      line(text("Contracts", "heading")),
+      line(text("No faction hub here — find a settlement or orbital outpost to take contracts.", "muted")),
+    ]);
+  }
+  const lines: RenderLine[] = [
+    line([
+      text("Contracts — ", "heading"),
+      text(view.factionName ?? "", "accent"),
+    ]),
+  ];
+  if (view.factionBlurb) lines.push(line(text(`  ${view.factionBlurb}`, "muted")));
+  const contracts = view.contracts ?? [];
+  if (contracts.length === 0) {
+    lines.push(line(text("  No contracts on offer right now — check back later.", "muted")));
+    return frame(lines);
+  }
+  for (const c of contracts) {
+    const reward = `${c.rewardCredits} cr +${c.rewardRep} rep`;
+    if (c.state === "completed") {
+      lines.push(
+        line([
+          text(`  ${c.index}. `, "muted"),
+          text(`${c.qty} ${c.itemName}  `, "muted"),
+          text(`→ ${reward}  `, "muted"),
+          text("✓ fulfilled", "muted"),
+        ]),
+      );
+      continue;
+    }
+    const short = c.state === "short";
+    lines.push(
+      line([
+        text(`  ${c.index}. `, "muted"),
+        text(`${c.qty} ${c.itemName}  `, "default"),
+        text(`→ ${reward}  `, "accent"),
+        action(`fulfill ${c.index}`, `fulfill ${c.index}`, {
+          style: "link",
+          disabled: short,
+          title: short ? "you don't hold enough of the goods" : "deliver the goods",
+        }),
+        text(short ? `  (have ${c.haveQty}/${c.qty})` : "", "muted"),
+      ]),
+    );
   }
   return frame(lines);
 }
