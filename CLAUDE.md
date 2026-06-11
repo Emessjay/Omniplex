@@ -2085,3 +2085,33 @@ gotchas) accrete here as workers surface things worth persisting. See
   clears log lines) and is seeded from the `player` prop on first paint. Low HP
   red (P9b), color-only styling (theme parity). `submitCommand` signature
   unchanged. Custom "pin what you want" deferred to v2. Seeded: `status-bar.test.ts`.
+
+### Load-bearing decisions from `surface-grid` (cascade Phase A)
+
+- **A planet's surface is now a lat/lon grid with climatic biome BANDS** (was a
+  flat bag of independent palette draws). NO migration / NO reset — the region
+  INDEX is preserved, just reinterpreted as a grid cell.
+- **Bijection** (`gen.ts`, exported): `regionGrid(planet) → {rows, cols}`
+  (`rows = round(sqrt(regionCount/2))`, `cols = 2·rows`, ~1:2 lat:lon; the
+  planet's effective `regionCount` becomes `rows×cols`); `regionCoords(index,
+  rows, cols) → {lat, lon}` (divmod) + `regionIndex(lat, lon, cols)` (inverse).
+  Index canonical → `world_deltas`/`salvaged_sites`/`bases`/`players.region` keys
+  unchanged. `lat` row 0 / `rows-1` = poles, middle = equator; `lon` wraps.
+- **4 planetary params on `Planet`** (`types.ts`): `axialTilt`, `dayLength`,
+  `eccentricity`, `rotationSpeed` — drawn **APPENDED LAST** in the planet RNG
+  stream so every pre-existing planet field (radius/sizeClass/temperature/hazard/
+  biomePalette/orbital*) stays byte-identical.
+- **`regionAt` derives climatic temperature** from the planet mean (radius-
+  derived, unchanged) + an **axial-tilt-scaled latitude gradient** (warm equator
+  → cold poles) + **rotation-banded longitude** variation + day-length jitter +
+  eccentricity shift, then **weights the palette-bound biome by it** → latitude
+  bands (cold biomes poleward, warmer/varied at the equator). Biomes still ⊆ the
+  planet palette (placement changed, not membership).
+- **The `biome-consistency` per-region band-clamp (`clampRegionTemp`/BAND_MARGIN)
+  was REMOVED** — latitude variation may push polar regions below freezing /
+  equatorial above boiling even on a temperate planet (real climate range); the
+  **landing gate stays PLANET-level** (`canLand` by planet mean temp), so no
+  softlocks. `biome-consistency`'s rule-6 test migrated to the latitude-band
+  invariant (gradient + cross-the-line, coverage preserved). Verified sampling:
+  a cold planet shows poles ~-145°C (all tundra) → equator ~+5°C (varied).
+  Seeded: `surface-grid.test.ts`. Phase B adds directional/polar nav + surface map.
