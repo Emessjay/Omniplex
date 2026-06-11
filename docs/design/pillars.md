@@ -76,6 +76,22 @@ all rest on *who* inhabits the galaxy.
   near-term foundation (alongside finishing the creature-genome cascade tier) —
   the public pillars only reach full scale once the galaxy is *populated*.
 
+## Foundation: shared presence (co-location) — concurrent with species
+
+The second multiplayer foundation, to be built **concurrently with sapient
+species**: players in the **same place** — orbiting the same planet, on the same
+surface region, docked at the same station — can **see each other** and interact
+**live** (chat, trade, and combat). Co-location is the join point: the shared
+world stops being parallel-singleplayer and becomes social. This underpins the
+**Combat** (live duels/piracy when co-located), **Politics** (meeting), and
+collaborative **Building** pillars. (Today the world is shared in *state* —
+bases/depletion/markets are visible — but players don't see or meet each other in
+real time.) **It also revises the Combat design (below):** co-located players can
+engage in *real-time*, with the asynchronous/snapshot model reserved for
+*non-co-located* cases (raiding an offline player's base, intercepting their
+haulers). Open: presence scope (region vs system vs station), how "live" the
+interaction is (live tick vs near-real-time), and online/offline handling.
+
 ---
 
 ## i. Discovery
@@ -196,29 +212,30 @@ twitch-friendly).
 **letters of marque** (sanctioned piracy targets), and military commissions
 (fight in faction wars).
 
-**Proposed engagement model (the key design).** Make combat a **structured,
-asynchronous, loadout-driven encounter**, not a live HP slugfest:
+**Proposed engagement model (the key design).** Make combat **loadout- and
+tactics-driven**, not an HP slugfest — with a **two-mode** structure keyed off
+the new shared-presence layer (§Foundation):
 - **Loadout & tactics over reflexes.** Ships have module slots (weapons,
-  shields, evasion, ECM, targeting). An encounter resolves in **phases**
+  shields, evasion, ECM, targeting). An engagement resolves in **phases**
   (approach/positioning → exchange with **subsystem targeting** → outcome), where
   module **counters** (e.g. ECM vs targeting, evasion vs accuracy, shields vs
-  burst) create a rock-paper-scissors of preparation and read — engaging because
-  it's a tactical puzzle, not attrition.
-- **Async PvP via snapshots, not duels.** You don't fight a live opponent; you
-  resolve against their **committed loadout/defense snapshot**:
-  - *Piracy* = intercept a cargo hauler on a route → resolve vs the target's
-    ship/escort snapshot; success skims cargo, failure damages you. Risk scales
-    with route (deep/coreward = richer + more dangerous).
-  - *Bounty-hunting* = track a wanted target (NPC or a notorious player) and
-    resolve on interception.
-  - *Base raids* = attack a base's **defenses** (turret/shield buildings) async;
-    the owner sees the aftermath and can rebuild/retaliate — no need for both
-    online.
-  - *Military* = faction-war operations (take/hold contested systems) resolved as
-    structured battles.
+  burst) make it a rock-paper-scissors of preparation + read, not attrition.
+  (Even "real-time" combat is then about *commitments and counters*, not twitch —
+  fitting the text interface.)
+- **Live, when co-located** (the revision per the presence layer): two players
+  in the same place (same orbit/region/station, both online) can engage
+  **directly** — a structured, phase-paced exchange both participate in.
+- **Asynchronous, when NOT co-located** — resolve against a **committed
+  loadout/defense snapshot** so nobody needs the other online:
+  - *Piracy* = intercept a hauler's route → vs the target's ship/escort snapshot
+    (richer + riskier coreward).
+  - *Base raids* = attack a base's **defenses** (turret/shield buildings) while
+    the owner's offline; they see the aftermath and rebuild/retaliate.
+  - *Bounty-hunting* = track a wanted target, resolve on interception.
+  - *Military* = faction-war ops (take/hold contested systems) as structured battles.
 - **Consent & stakes.** A notoriety/wanted axis (shared with Trade's heat);
-  opt-in danger zones (lawless/coreward space) vs protected hubs; insurance/
-  escape mechanics so loss stings without being rage-quit-inducing.
+  opt-in danger zones (lawless/coreward) vs protected hubs; insurance/escape so
+  loss stings without being rage-quit-inducing.
 
 **Status.** ○ almost entirely to build (today: only on-foot wildlife combat
 `attack`/`flee`). This pillar needs the most new systems: ship modules/loadouts,
