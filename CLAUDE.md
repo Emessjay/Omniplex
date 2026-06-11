@@ -2239,3 +2239,23 @@ gotchas) accrete here as workers surface things worth persisting. See
   sort, alliances, the Conclave), player-species/character creation, species
   goods/diplomacy, and the Nimbus blurb writer build on this. Shared presence
   (co-location) is the next foundation.
+
+### Load-bearing decisions from `shared-presence` (foundation 3a — co-located visibility)
+
+- **The shared world is now socially visible**: players in the SAME place see
+  each other. Polled (per-command), NO realtime/chat/combat yet (3b), NO migration.
+- **`sameLocation(a, b)`** (pure, `src/lib/game/presence.ts`): true iff the full
+  six-tier location tuple matches `(galaxy, arm, cluster, system, planet, region)`
+  — groups same-region surface players, same-planet orbiters (region 0), and
+  same-outpost dockers (region −1). **`presentPlayerView(p)`** is the PUBLIC
+  boundary: handle + ship + embark/landed state ONLY — **never** id/user_id/email
+  (same rule as the public `leaderboard` view; identity columns never reach the
+  view). `world.playersHere(player)` (service-role) returns co-located OTHERS
+  mapped through it (self-excluded).
+- **Display**: a "Players here:" line in the surface/orbital/outpost `scan`
+  frames (omitted when alone) + a NEW informational **`here`** verb
+  (`VERBS`/`USAGE`/`applicability`, help-parity held) with an alone-message.
+  `renderPresence` in `render.ts`. Seeded: `shared-presence.test.ts` (+ the
+  worker's presence-display tests).
+- **3b** adds Supabase Realtime (live arrive/leave + `say` local chat); co-located
+  COMBAT (the pillars two-mode model) + trade build on this presence layer.
