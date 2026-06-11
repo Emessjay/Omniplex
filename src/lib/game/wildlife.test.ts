@@ -1,13 +1,47 @@
+/**
+ * Wild flora/fauna are now PROCEDURAL (cascade tier 5b): the fixed
+ * `wildlife.ts` `FLORA`/`FAUNA` catalogs + `pickForBiome` are gone, replaced by
+ * the genome (`universe/genome.ts`: `regionFlora`/`regionFauna`/`speciesDrop`)
+ * and `speciesCombatStats`. This suite (migrated from the P5 catalog tests)
+ * keeps the catalog-independent contracts — `combatRound`, `exploreOutcome`, the
+ * `materials` catalog — and re-points the biome-appropriate-selection coverage
+ * at the genome (env-fit generation + drops feeding real materials).
+ */
 import { describe, it, expect } from "vitest";
-import { combatRound, exploreOutcome, PLAYER_BASE_ATTACK } from "@/lib/game/rules";
+import {
+  combatRound,
+  exploreOutcome,
+  speciesCombatStats,
+  PLAYER_BASE_ATTACK,
+} from "@/lib/game/rules";
 import {
   MATERIALS,
   isMaterialId,
   getMaterial,
   materialValue,
 } from "@/lib/game/materials";
-import { FAUNA, FLORA, pickForBiome } from "@/lib/game/wildlife";
-import { BIOMES } from "@/lib/universe";
+import {
+  regionFlora,
+  regionFauna,
+  speciesDrop,
+  systemAt,
+  regionGrid,
+  regionIndex,
+} from "@/lib/universe";
+
+const SEED = "omniplex-prod-1";
+
+/** A landable rocky region with a decent grid, for genome generation tests. */
+function rockyRegion() {
+  for (let c = 40; c < 64; c++)
+    for (let s = 0; s < 80; s++)
+      for (const p of systemAt(SEED, { galaxy: 0, arm: 0, cluster: c, system: s }).planets)
+        if (!p.isGas && p.regionCount >= 400) {
+          const { rows, cols } = regionGrid(p);
+          return { pc: p.coord, region: regionIndex(Math.floor(rows / 2), Math.floor(cols / 2), cols) };
+        }
+  throw new Error("no rocky region");
+}
 
 describe("combatRound — simultaneous damage", () => {
   it("both sides take damage in a single round", () => {
@@ -59,23 +93,26 @@ describe("materials catalog", () => {
   });
 });
 
-describe("biome-appropriate selection", () => {
-  it("every fauna/flora declares at least one valid biome", () => {
-    const biomeSet = new Set(BIOMES);
-    for (const f of [...FAUNA, ...FLORA]) {
-      expect(f.biomes.length).toBeGreaterThan(0);
-      for (const b of f.biomes) expect(biomeSet.has(b)).toBe(true);
+describe("genome-driven wild life (replaces fixed FLORA/FAUNA)", () => {
+  const { pc, region } = rockyRegion();
+  const coord = { ...pc, region };
+
+  it("a region always has flora to find, and every generated species drops a real material", () => {
+    const flora = regionFlora(SEED, coord);
+    expect(flora.length).toBeGreaterThan(0); // base of the web is never empty
+    for (const sp of [...flora, ...regionFauna(SEED, coord)]) {
+      const d = speciesDrop(sp);
+      expect(isMaterialId(d.materialId)).toBe(true);
+      expect(d.qty).toBeGreaterThan(0);
     }
   });
 
-  it("pickForBiome only returns entries valid for that biome", () => {
-    // Pick a biome that at least one fauna supports, then sample picks.
-    const biome = FAUNA[0]!.biomes[0]!;
-    const candidates = FAUNA.filter((f) => f.biomes.includes(biome));
-    for (let i = 0; i < 20; i++) {
-      const pick = pickForBiome(candidates, biome, i / 20);
-      expect(pick).not.toBeNull();
-      expect(pick!.biomes).toContain(biome);
+  it("generated fauna have sane combat stats derived from traits", () => {
+    for (const sp of regionFauna(SEED, coord)) {
+      const stats = speciesCombatStats(sp);
+      expect(stats.maxHp).toBeGreaterThan(0);
+      expect(stats.attack).toBeGreaterThanOrEqual(0);
+      expect(typeof stats.hostile).toBe("boolean");
     }
   });
 });

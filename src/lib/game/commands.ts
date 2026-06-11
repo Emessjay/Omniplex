@@ -48,6 +48,11 @@ import {
   orbitalSiteLoot,
   RESOURCES,
   SIZE_CLASS_LABELS,
+  regionFlora,
+  regionFauna,
+  speciesDrop,
+  speciesLabel,
+  speciesArticle,
   type SystemCoord,
   type PlanetCoord,
   type StarPosition,
@@ -55,6 +60,7 @@ import {
   type Planet,
   type Biome,
   type Site,
+  type Species,
 } from "@/lib/universe";
 import type { RenderFrame, RenderLine, StatusBar } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
@@ -82,6 +88,7 @@ import {
   rollHazardDamage,
   creditsAfterDeath,
   combatRound,
+  speciesCombatStats,
   exploreOutcome,
   healValue,
   excavatorYield,
@@ -179,12 +186,6 @@ import {
   foodRecipeOf,
   healOf,
 } from "./materials";
-import {
-  FLORA,
-  FAUNA,
-  getFauna,
-  pickForBiome,
-} from "./wildlife";
 import {
   CONDENSATE_RECIPE,
   HYPERWARP_CONDENSATE_ID,
@@ -659,17 +660,19 @@ async function regionScanFrame(
 
 /**
  * Build the scan-side view of the player's active combat encounter (or null when
- * not fighting). Resolves the creature's catalog name + max HP for display.
+ * not fighting). Derives the creature's descriptive label + combat stats from
+ * its generated species (cascade tier 5b).
  */
 function encounterView(player: Player): EncounterView | null {
   if (!player.encounter) return null;
-  const fauna = getFauna(player.encounter.faunaId);
-  if (!fauna) return null;
+  const species = player.encounter.species;
+  if (!species) return null; // defensive: stale pre-5b row shape
+  const stats = speciesCombatStats(species);
   return {
-    name: fauna.name,
+    name: speciesLabel(species),
     hp: player.encounter.hp,
-    maxHp: fauna.maxHp,
-    hostile: fauna.hostile,
+    maxHp: stats.maxHp,
+    hostile: stats.hostile,
   };
 }
 
@@ -2527,9 +2530,29 @@ async function runDeath(player: Player, causeText: string): Promise<RenderLine[]
 // All disembarked-only (gated in `dispatchResolved`). `explore` rolls a scavenge
 // / flora / fauna outcome then takes a hazard hit (it can kill you → death
 // sequence); `harvest` collects a biome plant; `attack`/`flee` act on the
-// current `encounter`. The math is pure (`rules.ts` / `wildlife.ts` / catalogs);
-// these handlers supply the real `Math.random()` rolls and persist via `world`.
+// current `encounter`. The flora/fauna are GENERATED per region by the genome
+// (`universe/genome.ts`: `regionFlora`/`regionFauna`/`speciesDrop`), and combat
+// stats come from `speciesCombatStats` (`rules.ts`); these handlers supply the
+// real `Math.random()` rolls and persist via `world`.
 // ---------------------------------------------------------------------------
+
+/**
+ * Pick one element of a generated species list from a roll in `[0, 1)`, or
+ * `null` when the list is empty. The handler supplies a real `Math.random()`;
+ * this keeps the wild draw as a thin, pure index (the genome already filtered the
+ * list to the region's environment).
+ */
+function pickSpecies(list: readonly Species[], roll: number): Species | null {
+  if (list.length === 0) return null;
+  const r = roll < 0 ? 0 : roll >= 1 ? 0.999999 : roll;
+  return list[Math.floor(r * list.length)]!;
+}
+
+/** A descriptive creature label with its indefinite article — "a venomous stalker". */
+function labelWithArticle(species: Species): string {
+  const label = speciesLabel(species);
+  return `${speciesArticle(label)} ${label}`;
+}
 
 /**
  * `explore` — search the current region on foot. Rolls `exploreOutcome`:
@@ -2580,14 +2603,16 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
       ]),
     );
   } else if (outcome === "flora") {
-    const flora = pickForBiome(FLORA, biome, Math.random());
+    // Generated flora for THIS region (env-fit; the base of its food web).
+    const flora = pickSpecies(regionFlora(seed, region.coord), Math.random());
     if (flora) {
+      const label = speciesLabel(flora);
       lines.push(
         line([
           text("You find ", "default"),
-          text(`${flora.name}`, "accent"),
+          text(label, "accent"),
           text(` growing across the ${biome}. `, "muted"),
-          action("harvest", "harvest", { style: "link", title: `harvest ${flora.name}` }),
+          action("harvest", "harvest", { style: "link", title: `harvest the ${label}` }),
           text(" it.", "muted"),
         ]),
       );
@@ -2595,31 +2620,32 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
       lines.push(line(text(`Nothing worth harvesting in this ${biome}.`, "muted")));
     }
   } else {
-    const fauna = pickForBiome(FAUNA, biome, Math.random());
+    // Generated fauna for THIS region (the food web from 5a).
+    const fauna = pickSpecies(regionFauna(seed, region.coord), Math.random());
     if (fauna) {
-      // Setting the encounter for BOTH hostile and placid fauna gives `attack` a
+      const stats = speciesCombatStats(fauna);
+      const label = speciesLabel(fauna);
+      // Storing the encounter for BOTH hostile and placid fauna gives `attack` a
       // target either way; only hostile creatures are framed as a forced fight.
-      await world.setEncounter(player.id, { faunaId: fauna.id, hp: fauna.maxHp });
-      if (fauna.hostile) {
+      await world.setEncounter(player.id, { species: fauna, hp: stats.maxHp });
+      if (stats.hostile) {
         lines.push(
           line([
-            text("A hostile ", "danger"),
-            text(`${fauna.name}`, "accent"),
-            text(` lunges at you! (HP ${fauna.maxHp}, attack ${fauna.attack})`, "muted"),
+            text(`A hostile ${label}`, "danger"),
+            text(` lunges at you! (HP ${stats.maxHp}, attack ${stats.attack})`, "muted"),
           ]),
         );
       } else {
         lines.push(
           line([
-            text("You come across a ", "default"),
-            text(`${fauna.name}`, "accent"),
-            text(`. It eyes you warily but doesn't attack. (HP ${fauna.maxHp})`, "muted"),
+            text(`You come across ${labelWithArticle(fauna)}`, "default"),
+            text(`. It eyes you warily but doesn't attack. (HP ${stats.maxHp})`, "muted"),
           ]),
         );
       }
       lines.push(
         line([
-          action("attack", "attack", { style: "link", title: `attack the ${fauna.name}` }),
+          action("attack", "attack", { style: "link", title: `attack the ${label}` }),
           text(" it for its materials, or ", "muted"),
           action("flee", "flee", { style: "link", title: "break off" }),
           text(".", "muted"),
@@ -2864,17 +2890,18 @@ async function handleHarvest(
   if (target) return handleHarvestCrop(player, seed, target);
 
   const region = regionAt(seed, coord, player.region);
-  const flora = pickForBiome(FLORA, region.biome, Math.random());
+  // Generated flora for this region — its drop is a bounded `MATERIALS` id.
+  const flora = pickSpecies(regionFlora(seed, region.coord), Math.random());
   if (!flora) {
     return errorFrame(`No harvestable plants in this ${region.biome}. Try \`explore\`.`);
   }
-  const mat = getMaterial(flora.harvest.materialId);
-  const qty = flora.harvest.qty;
-  await world.addPlayerMaterial(player.id, flora.harvest.materialId, qty);
+  const drop = speciesDrop(flora);
+  const mat = getMaterial(drop.materialId);
+  await world.addPlayerMaterial(player.id, drop.materialId, drop.qty);
   return frame([
     line([
-      text(`You harvest ${flora.name} — `, "success"),
-      text(`+${qty} ${mat.name}`, "accent"),
+      text(`You harvest the ${speciesLabel(flora)} — `, "success"),
+      text(`+${drop.qty} ${mat.name}`, "accent"),
       text(`. \`embark\` then \`sell\` to cash it in.`, "muted"),
     ]),
   ]);
@@ -3274,45 +3301,48 @@ async function handleAttack(player: Player): Promise<RenderFrame> {
   if (!enc) {
     return errorFrame("Nothing to attack — `explore` to find creatures.");
   }
-  const fauna = getFauna(enc.faunaId);
-  if (!fauna) {
-    // Defensive: stale/unknown encounter id — clear it rather than throw.
+  const species = enc.species;
+  if (!species) {
+    // Defensive: a stale pre-5b encounter shape — clear it rather than throw.
     await world.setEncounter(player.id, null);
     return errorFrame("The creature is gone. `explore` to find another.");
   }
+  const stats = speciesCombatStats(species);
+  const label = speciesLabel(species);
+  const drop = speciesDrop(species);
 
   const round = combatRound({
     playerHp: player.health,
     playerAtk: PLAYER_BASE_ATTACK,
     creatureHp: enc.hp,
-    creatureAtk: fauna.attack,
+    creatureAtk: stats.attack,
   });
 
   const youHit = line([
-    text(`You strike the ${fauna.name} for ${PLAYER_BASE_ATTACK}. `, "default"),
+    text(`You strike the ${label} for ${PLAYER_BASE_ATTACK}. `, "default"),
     text(
-      fauna.attack > 0 ? `It hits back for ${fauna.attack}.` : "It doesn't fight back.",
-      fauna.attack > 0 ? "danger" : "muted",
+      stats.attack > 0 ? `It hits back for ${stats.attack}.` : "It doesn't fight back.",
+      stats.attack > 0 ? "danger" : "muted",
     ),
   ]);
 
   if (round.creatureDead) {
     // Victory: grant the drop and end the encounter. (If you ALSO died this
     // round, the death sequence below still runs — you slew it as you fell.)
-    const mat = getMaterial(fauna.drop.materialId);
-    await world.addPlayerMaterial(player.id, fauna.drop.materialId, fauna.drop.qty);
+    const mat = getMaterial(drop.materialId);
+    await world.addPlayerMaterial(player.id, drop.materialId, drop.qty);
     await world.setEncounter(player.id, null);
 
     if (round.playerDead) {
       const deathLines = await runDeath(
         player,
-        `You killed the ${fauna.name} but fell with it. You wake aboard your ship, 10% of your gold lost.`,
+        `You killed the ${label} but fell with it. You wake aboard your ship, 10% of your gold lost.`,
       );
       return frame([
         youHit,
         line([
-          text(`The ${fauna.name} dies. `, "success"),
-          text(`You loot +${fauna.drop.qty} ${mat.name}.`, "accent"),
+          text(`The ${label} dies. `, "success"),
+          text(`You loot +${drop.qty} ${mat.name}.`, "accent"),
         ]),
         ...deathLines,
       ]);
@@ -3324,8 +3354,8 @@ async function handleAttack(player: Player): Promise<RenderFrame> {
     return frame([
       youHit,
       line([
-        text(`You slay the ${fauna.name}! `, "success"),
-        text(`Loot: +${fauna.drop.qty} ${mat.name}. `, "accent"),
+        text(`You slay the ${label}! `, "success"),
+        text(`Loot: +${drop.qty} ${mat.name}. `, "accent"),
         text(`HP ${round.playerHp}/${MAX_HEALTH}.`, "muted"),
       ]),
     ]);
@@ -3334,18 +3364,18 @@ async function handleAttack(player: Player): Promise<RenderFrame> {
   if (round.playerDead) {
     const deathLines = await runDeath(
       player,
-      `The ${fauna.name} kills you. You wake aboard your ship, 10% of your gold lost.`,
+      `The ${label} kills you. You wake aboard your ship, 10% of your gold lost.`,
     );
     return frame([youHit, ...deathLines]);
   }
 
   // Both survive: update the creature's HP and your health, fight continues.
-  await world.setEncounter(player.id, { faunaId: enc.faunaId, hp: round.creatureHp });
+  await world.setEncounter(player.id, { species, hp: round.creatureHp });
   await world.setHealth(player.id, round.playerHp);
   return frame([
     youHit,
     line([
-      text(`${fauna.name} HP ${round.creatureHp}/${fauna.maxHp}. `, "default"),
+      text(`${label} HP ${round.creatureHp}/${stats.maxHp}. `, "default"),
       text(`Your HP ${round.playerHp}/${MAX_HEALTH}. `, "muted"),
       action("attack", "attack", { style: "link", title: "strike again" }),
       text(" or ", "muted"),
@@ -3364,12 +3394,12 @@ async function handleFlee(player: Player): Promise<RenderFrame> {
   if (!enc) {
     return errorFrame("You're not in combat. `explore` to find creatures.");
   }
-  const fauna = getFauna(enc.faunaId);
+  const label = enc.species ? speciesLabel(enc.species) : null;
   await world.setEncounter(player.id, null);
   return frame([
     line([
       text("You break off and slip away", "success"),
-      text(fauna ? ` from the ${fauna.name}.` : ".", "muted"),
+      text(label ? ` from the ${label}.` : ".", "muted"),
     ]),
   ]);
 }

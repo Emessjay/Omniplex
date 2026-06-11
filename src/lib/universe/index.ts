@@ -116,5 +116,7 @@ export {
   regionFlora,
   regionFauna,
   speciesDrop,
+  speciesLabel,
+  speciesArticle,
 } from "./genome";
 export type { Archetype, TrophicRole, TraitDimension, Species } from "./genome";

@@ -565,3 +565,50 @@ export function speciesDrop(species: Species): { materialId: string; qty: number
   else materialId = "scaled_hide";
   return { materialId, qty };
 }
+
+// ---------------------------------------------------------------------------
+// Descriptive labels — a placeholder for the future Nimbus blurb writer.
+// ---------------------------------------------------------------------------
+
+/** Size words that read naturally as a leading adjective (others are dropped). */
+const SIZE_ADJECTIVE: Readonly<Record<string, string>> = {
+  minute: "minute",
+  tiny: "tiny",
+  small: "small",
+  large: "large",
+  big: "huge",
+  huge: "huge",
+  colossal: "colossal",
+};
+
+/** Defense → a descriptive adjective (the most "visible" trait of a creature). */
+const DEFENSE_ADJECTIVE: Readonly<Record<string, string>> = {
+  armor: "armored",
+  venom: "venomous",
+  spines: "spiny",
+  camouflage: "camouflaged",
+  speed: "swift",
+};
+
+/**
+ * A short, descriptive label for a species built from its archetype + key
+ * traits — e.g. "large armored grazer", "venomous ambush predator". A
+ * deterministic PLACEHOLDER until the Nimbus blurb writer prose-ifies a species
+ * from the same trait facts. No article (callers add "a"/"an"). Pure.
+ */
+export function speciesLabel(species: Species): string {
+  const archetype = ARCHETYPE_BY_ID.get(species.archetype);
+  const noun = (archetype?.name ?? species.archetype).toLowerCase();
+  const parts: string[] = [];
+  const sizeAdj = SIZE_ADJECTIVE[species.traits.size ?? ""];
+  if (sizeAdj) parts.push(sizeAdj);
+  const defenseAdj = DEFENSE_ADJECTIVE[species.traits.defense ?? ""];
+  if (defenseAdj) parts.push(defenseAdj);
+  parts.push(noun);
+  return parts.join(" ");
+}
+
+/** The indefinite article ("a"/"an") for a phrase, by its first letter. */
+export function speciesArticle(label: string): string {
+  return /^[aeiou]/i.test(label.trim()) ? "an" : "a";
+}

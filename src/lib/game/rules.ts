@@ -11,6 +11,7 @@
 
 import type { Atmosphere } from "@/lib/universe/types";
 import { atmosphereDensity, radiationHazardFloor, RAD_HAZARD_FLOOR_MAX } from "@/lib/universe";
+import type { Species } from "@/lib/universe";
 
 // `atmosphereDensity` is a physical property of an atmosphere type, so it lives
 // in the (pure) universe layer now. Re-exported here because the fuel/orbital
@@ -482,6 +483,110 @@ export function combatRound(args: {
     playerDead: playerHp <= 0,
     creatureDead: creatureHp <= 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Genome combat stats (cascade tier 5b).
+//
+// Wild flora/fauna are no longer a fixed `wildlife.ts` catalog with hand-tuned
+// HP/attack — they're procedurally generated `Species` (`universe/genome.ts`).
+// `speciesCombatStats` derives a creature's combat profile PURELY from its
+// traits, so the same `combatRound` + `PLAYER_BASE_ATTACK` machinery drives the
+// fight; this just supplies the creature side. Pure & deterministic (no rng):
+// the species is the only input. The mapping is intentionally robust to trait
+// values outside the genome's own option lists (e.g. "huge"/"tiny") — unknown
+// sizes fall back to the middle of the scale — so a hand-built test species or a
+// future genome expansion still produces sane stats.
+// ---------------------------------------------------------------------------
+
+/** Baseline creature hit points before the size/defense bonuses. */
+export const CREATURE_BASE_HP = 12;
+/** Hit points added per step up the size scale. */
+export const CREATURE_HP_PER_SIZE = 10;
+/** Flat player-side strike is `PLAYER_BASE_ATTACK`; this is the creature floor. */
+export const CREATURE_BASE_ATTACK = 2;
+/** Creature attack added per step up the size scale. */
+export const CREATURE_ATTACK_PER_SIZE = 2;
+
+/**
+ * A body's size on a 0..4 scale. The genome's own `size` options are
+ * minute/small/medium/large/colossal, but tests (and any future expansion) may
+ * use other words (e.g. "huge"/"tiny"); unknown sizes resolve to the middle
+ * (medium) so stats stay sane. Bigger ⇒ more HP and a heavier hit.
+ */
+const SIZE_RANK: Readonly<Record<string, number>> = {
+  minute: 0,
+  tiny: 0,
+  small: 1,
+  medium: 2,
+  large: 3,
+  big: 3,
+  huge: 4,
+  colossal: 4,
+};
+
+function sizeRank(size: string | undefined): number {
+  if (size === undefined) return 2;
+  const r = SIZE_RANK[size];
+  return r === undefined ? 2 : r;
+}
+
+/** Extra attack a fauna's offensive trophic role contributes. */
+function roleAttackBonus(role: Species["trophicRole"]): number {
+  switch (role) {
+    case "carnivore":
+      return 10;
+    case "omnivore":
+      return 5;
+    case "scavenger":
+      return 4;
+    case "herbivore":
+      return 1;
+    case "producer":
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Derive a generated species' combat profile from its traits (pure,
+ * deterministic — same species ⇒ identical stats):
+ *  - **maxHp** rises with `size` (and an `armor`/`spines` defense bonus) — a
+ *    `colossal` `armored` beast is far tougher than a `tiny` one.
+ *  - **attack** rises with size, with the carnivore/predator trophic role, and
+ *    with offensive defenses (`venom`/`spines`) — a predator outhits a grazer.
+ *    Floored at `CREATURE_BASE_ATTACK ≥ 0`.
+ *  - **hostile** comes from `temperament` (`hostile`/`territorial`), with
+ *    carnivores aggressive unless explicitly placid/skittish. Placid species are
+ *    still attackable; this flag only decides whether they lunge first.
+ */
+export function speciesCombatStats(species: Species): {
+  maxHp: number;
+  attack: number;
+  hostile: boolean;
+} {
+  const traits = species.traits ?? {};
+  const rank = sizeRank(traits.size);
+  const defense = traits.defense;
+
+  let maxHp = CREATURE_BASE_HP + rank * CREATURE_HP_PER_SIZE;
+  if (defense === "armor") maxHp += 10;
+  else if (defense === "spines") maxHp += 5;
+
+  let attack =
+    CREATURE_BASE_ATTACK + rank * CREATURE_ATTACK_PER_SIZE + roleAttackBonus(species.trophicRole);
+  if (defense === "venom") attack += 6;
+  else if (defense === "spines") attack += 3;
+
+  const temperament = traits.temperament;
+  const hostile =
+    temperament === "hostile" ||
+    temperament === "territorial" ||
+    (species.trophicRole === "carnivore" &&
+      temperament !== "placid" &&
+      temperament !== "skittish");
+
+  return { maxHp: Math.max(1, maxHp), attack: Math.max(0, attack), hostile };
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,8 @@
  * columns in `supabase/migrations/*_init.sql`. Extend additively.
  */
 
+import type { Species } from "@/lib/universe";
+
 /** A player row, mapped to camelCase. Mirrors `public.players`. */
 export interface Player {
   /** Primary key (uuid). */
@@ -66,9 +68,9 @@ export interface Player {
    */
   landed: boolean;
   /**
-   * Active-combat state: `null` when not fighting, otherwise the creature you're
-   * facing (`faunaId` indexes the `wildlife.ts` catalog) and its remaining HP.
-   * Set on a fauna encounter while exploring; cleared on kill / flee / death.
+   * Active-combat state: `null` when not fighting, otherwise the generated
+   * creature you're facing (its `Species` genome blob) and its remaining HP. Set
+   * on a fauna encounter while exploring; cleared on kill / flee / death.
    */
   encounter: PlayerEncounter | null;
   /**
@@ -82,10 +84,16 @@ export interface Player {
   createdAt: string;
 }
 
-/** The combat state stored in `players.encounter` (jsonb). */
+/**
+ * The combat state stored in `players.encounter` (jsonb). Holds the full
+ * generated `Species` blob (cascade tier 5b) so the fight survives without
+ * re-deriving it from the region, plus the creature's current HP. Reshaped from
+ * the old `{ faunaId, hp }` — combat is transient, so no migration is needed
+ * (any stale in-flight row simply reads as "the creature is gone").
+ */
 export interface PlayerEncounter {
-  /** Id of the creature being faced (key into the `wildlife.ts` FAUNA catalog). */
-  faunaId: string;
+  /** The generated creature being faced (its genome species). */
+  species: Species;
   /** The creature's current hit points. */
   hp: number;
 }

@@ -5,8 +5,8 @@
  * A farm animal is acquired (`ranch <animal>`) for credits into a base's
  * livestock pen, fed (`feed <animal>`) with a CROP material grown in Phase 2 to
  * breed the herd over real time, and slaughtered (`slaughter <animal> [n]`) for
- * a product material (meat / hide / fibre). Like flora/fauna (`wildlife.ts`) and
- * crops (`crops.ts`), every animal declares the `biomes` it can be ranched in,
+ * a product material (meat / hide / fibre). Like crops (`crops.ts`), every
+ * animal declares the `biomes` it can be ranched in,
  * so a region only ever supports biome-appropriate livestock
  * (`farmAnimalsForBiome` enforces this) — WHERE you base your ranch matters.
  *
