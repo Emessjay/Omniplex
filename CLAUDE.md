@@ -2115,3 +2115,28 @@ gotchas) accrete here as workers surface things worth persisting. See
   invariant (gradient + cross-the-line, coverage preserved). Verified sampling:
   a cold planet shows poles ~-145°C (all tundra) → equator ~+5°C (varied).
   Seeded: `surface-grid.test.ts`. Phase B adds directional/polar nav + surface map.
+
+### Load-bearing decisions from `surface-nav` (cascade Phase B — completes the planetary-surface plan)
+
+- **Planet surfaces are now walkable** via directional movement over the Phase-A
+  lat/lon grid. NO migration. `moveRegion(index, direction, rows, cols) → number
+  | null` (`gen.ts`, pure): `north`=lat−1 / `south`=lat+1 **clamp at the poles**
+  (return `null` off the top/bottom row); `east`/`west` **wrap longitude** mod
+  cols (never null). Round-trips; deterministic.
+- **`move <direction>` verb** (NEW): one verb + a resolvable direction arg
+  (`["north","south","east","west"]`, so `move n` → north) — NOT bare `n/s/e/w`
+  (those collide with `scan`/`sell`/`eat`/`warp`… in the abbrev system). FREE
+  (like `jump`), re-renders the new region; gas-giant/outpost/orbit guards +
+  ANYTIME_OUT_OF_COMBAT (rejected in combat / when not on a surface — "land
+  first"). Pole moves error clearly; `jump <n>` (fast-travel by index) unchanged.
+- **`map` is now context-aware**: on a surface (landed/on-foot rocky) it shows a
+  **local surface map** — your `(lat,lon)`, a 3×3 biome neighborhood, clickable
+  `move <dir>` (P9b red on pole-blocked dirs), `regions`/`jump`/`launch` hints;
+  orbiting / at the outpost it shows the unchanged galactic/system nav map
+  (reuses orbit-land's surface-vs-orbit state). `scan` shows the `(lat,lon)`.
+  Seeded: `surface-nav.test.ts` (+ worker's `surface-map-render.test.ts`).
+- **This COMPLETES the planetary-surface plan** (Phase 0 galactic → A surface
+  grid + climatic biomes → B directional nav). Remaining cascade tiers: geology
+  (caves/seams/resource signatures) + the creature genome / ecological web (the
+  biology tier — which also activates the Science pillar's breeding) — and, per
+  the pillars doc, the sapient-species + species-empire foundation.
