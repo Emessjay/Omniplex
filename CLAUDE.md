@@ -2164,3 +2164,28 @@ gotchas) accrete here as workers surface things worth persisting. See
   (~0.14), craters rare-rich. `scan` shows the formation + resource tendency.
   Seeded: `geology.test.ts`. **Tier 5 (creature genome + ecological web) is the
   last cascade tier**; sapient-species + shared-presence foundations are parallel.
+
+### Load-bearing decisions from `creature-genome` (cascade tier 5a — generation only)
+
+- **Procedural species genome + ecological web** — the "alive" layer, GENERATION
+  ONLY (additive; no gameplay rewired, no migration). `src/lib/universe/genome.ts`:
+  **38 role-tagged archetypes** (producer/herbivore/carnivore/…) × **7 trait
+  dimensions** (≥4 options each: size/locomotion/defense/diet/temperament/
+  environment-adaptation/…) → tens of thousands of distinct `Species`
+  (`{archetype, traits, trophicRole}` — the archetype+traits are the "facts" the
+  future Nimbus blurb writer consumes).
+- **`regionFlora(seed, region)` / `regionFauna(seed, region)`** (exported, pure,
+  deterministic) on **distinct `genome-flora`/`genome-fauna` RNG streams** that
+  leave `regionAt` byte-identical. **Environment-filtered** (cold/hot/irradiated/
+  desert adaptation + biome/formation weighting) and generated in **trophic
+  order** — flora (producers fitting biome/temp/hazard/radiation/geology) → prey
+  (herbivores keyed to flora present) → predators (carnivores keyed to prey) — so
+  every region's fauna is a **closed food web** (no orphan levels, by
+  construction). Verified: pole vs equator yield distinct adapted ecologies;
+  ~100% distinct species across a sample.
+- **`speciesDrop(species) → {materialId, qty}`** maps each species to a real
+  bounded `MATERIALS` id by trait — encounter VARIETY explodes, the economy
+  stays bounded. Seeded: `creature-genome.test.ts`.
+- **5a is additive**: `explore`/`harvest`/`attack`/`ranch` still use the fixed
+  `wildlife.ts` catalogs. **5b** swaps gameplay onto the genome (encounter state,
+  drops, codex); Science breeding + the blurb writer build on these pure functions.
