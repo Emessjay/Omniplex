@@ -44,6 +44,7 @@ export type {
   StarSystem,
   Galaxy,
 } from "./types";
+export type { Direction } from "./gen";
 
 export {
   galaxyAt,
@@ -53,6 +54,7 @@ export {
   regionGrid,
   regionCoords,
   regionIndex,
+  moveRegion,
   siteAt,
   siteLoot,
   SITE_SPAWN_CHANCE,

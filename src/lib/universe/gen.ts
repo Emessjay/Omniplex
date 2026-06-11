@@ -982,6 +982,41 @@ export function regionIndex(lat: number, lon: number, cols: number): number {
   return lat * cols + lon;
 }
 
+/** A compass direction for surface movement (surface-nav). */
+export type Direction = "north" | "south" | "east" | "west";
+
+/**
+ * The region INDEX you reach by stepping one cell `direction` from `index` on a
+ * `rows × cols` lat/lon grid — or `null` if the step runs off a POLE
+ * (surface-nav). PURE arithmetic over the Phase-A bijection
+ * (`regionCoords`/`regionIndex`); deterministic.
+ *
+ *  - `north` decreases latitude (toward row 0), `south` increases it (toward
+ *    `rows-1`). Both CLAMP at the poles: stepping north off the top row or south
+ *    off the bottom row returns `null` (the handler reports "you're at the pole").
+ *    Pole-WRAP is a noted future option; we clamp now for clarity.
+ *  - `east`/`west` change longitude and WRAP cyclically (`(lon ± 1) mod cols`) —
+ *    the globe is a cycle in longitude, so E/W never returns `null`.
+ */
+export function moveRegion(
+  index: number,
+  direction: Direction,
+  rows: number,
+  cols: number,
+): number | null {
+  const { lat, lon } = regionCoords(index, rows, cols);
+  switch (direction) {
+    case "north":
+      return lat <= 0 ? null : regionIndex(lat - 1, lon, cols);
+    case "south":
+      return lat >= rows - 1 ? null : regionIndex(lat + 1, lon, cols);
+    case "east":
+      return regionIndex(lat, (lon + 1) % cols, cols);
+    case "west":
+      return regionIndex(lat, (lon - 1 + cols) % cols, cols);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Surface climate (surface-grid). A region's temperature is the planet's mean
 // (radius-derived, kept as the baseline) shaped by its GRID POSITION:

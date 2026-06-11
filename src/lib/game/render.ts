@@ -206,6 +206,13 @@ export interface ScanView {
   position?: StarPosition;
   /** The region the player is currently standing in (its biome + deposits). */
   region: Region;
+  /**
+   * The region's grid cell on the planet's lat×lon surface (surface-nav): its
+   * `(lat, lon)` and the grid's `rows`/`cols`, so `scan` can show where on the
+   * globe the player stands. Absent for orbit/outpost frames (those don't use
+   * `renderScan`).
+   */
+  gridCoord?: { lat: number; lon: number; rows: number; cols: number };
   /** True when this region bears a settlement (P11) — surfaced as a note. */
   settlement?: boolean;
   /** An exploration site in this region (Keystone 3), if present — type + salvage state. */
@@ -560,6 +567,24 @@ export function renderScan(view: ScanView): RenderFrame {
       text(region.biome, "accent"),
     ]),
   );
+  // The region's place on the planet's lat×lon surface grid (surface-nav), so
+  // the player can orient and `move` deliberately toward the poles/equator.
+  if (view.gridCoord) {
+    const { lat, lon, rows, cols } = view.gridCoord;
+    lines.push(
+      line([
+        text("surface ", "muted"),
+        text(`lat ${lat}`, "accent"),
+        text(` / ${rows - 1}`, "muted"),
+        text("   ", "muted"),
+        text(`lon ${lon}`, "accent"),
+        text(` / ${cols - 1}`, "muted"),
+        text("   (", "muted"),
+        action("map", "map", { style: "link", title: "show the local surface map" }),
+        text(" to look around)", "muted"),
+      ]),
+    );
+  }
   // Settlement presence (P11): an inhabited region. P12a: its market is open —
   // you can `buy`/`sell` here (the economy is gated to settlements/outposts).
   if (view.settlement) {
@@ -1076,6 +1101,114 @@ export function renderMap(
 /** Format a star position as `(x, y, z)` for display. */
 function starPositionLabel(p: StarPosition): string {
   return `(${p.x}, ${p.y}, ${p.z})`;
+}
+
+/** One cell of the local surface-map neighborhood (surface-nav). */
+export interface SurfaceMapCell {
+  /** The biome at this grid cell. */
+  biome: Biome;
+  /** True for the cell the player is standing in (bracketed in the display). */
+  current: boolean;
+}
+
+/** The local surface map: position + a small biome neighborhood + move actions. */
+export interface SurfaceMapView {
+  planetName: string;
+  /** Current latitude row (0 = north pole, `rows-1` = south pole). */
+  lat: number;
+  /** Current longitude column (wraps cyclically). */
+  lon: number;
+  rows: number;
+  cols: number;
+  /**
+   * The 3×3 neighborhood, north (top row) → south (bottom row), west→east within
+   * a row. A `null` cell is off the pole (no region there); longitude always
+   * wraps so columns are never null.
+   */
+  cells: (SurfaceMapCell | null)[][];
+  /** Whether a north step exists (false = at the north pole — the action reads red). */
+  canNorth: boolean;
+  /** Whether a south step exists (false = at the south pole — the action reads red). */
+  canSouth: boolean;
+}
+
+/**
+ * The LOCAL SURFACE MAP (surface-nav) shown by `map` while standing on a planet's
+ * surface (the galactic/system map is shown when orbiting/at the outpost). Lays
+ * out the player's `(lat, lon)`, a 3×3 biome neighborhood (current cell
+ * bracketed, off-pole cells dotted), the four clickable `move <dir>` actions
+ * (pole-blocked north/south read RED — the P9b `disabled` convention; E/W always
+ * wrap), and `regions`/`jump` fast-travel + a `launch`-to-leave hint.
+ */
+export function renderSurfaceMap(view: SurfaceMapView): RenderFrame {
+  // Widest biome label is "crystalline" (11); pad cells so the grid aligns and
+  // brackets on the current cell don't shift the columns.
+  const CELL_W = 13;
+  const padCell = (s: string): string => {
+    if (s.length >= CELL_W) return s;
+    const total = CELL_W - s.length;
+    const left = Math.floor(total / 2);
+    return " ".repeat(left) + s + " ".repeat(total - left);
+  };
+
+  const lines: RenderLine[] = [
+    line([text(`${view.planetName} — surface map`, "heading")]),
+    line([
+      text("you are at  ", "muted"),
+      text(`lat ${view.lat}`, "accent"),
+      text(` / ${view.rows - 1}`, "muted"),
+      text("   ", "muted"),
+      text(`lon ${view.lon}`, "accent"),
+      text(` / ${view.cols - 1}`, "muted"),
+    ]),
+    line([text("local terrain (north ↑, longitude wraps east/west):", "muted")]),
+  ];
+
+  for (const row of view.cells) {
+    const spans: RenderSpan[] = [text("  ", "muted")];
+    for (const c of row) {
+      if (c === null) {
+        spans.push(text(padCell("·"), "muted"));
+      } else if (c.current) {
+        spans.push(text(padCell(`[${c.biome}]`), "accent"));
+      } else {
+        spans.push(text(padCell(c.biome), "default"));
+      }
+    }
+    lines.push(line(spans));
+  }
+
+  // The four clickable move directions. North/south read red when blocked at a
+  // pole (the command then returns the helpful "at the pole" error); east/west
+  // always wrap.
+  const moveAction = (dir: string, blocked: boolean): RenderSpan =>
+    action(dir, `move ${dir}`, {
+      style: "link",
+      title: blocked ? `can't go ${dir} — you're at the pole` : `walk one cell ${dir}`,
+      disabled: blocked,
+    });
+  lines.push(
+    line([
+      text("move  ", "muted"),
+      moveAction("north", !view.canNorth),
+      text("  ", "muted"),
+      moveAction("south", !view.canSouth),
+      text("  ", "muted"),
+      moveAction("east", false),
+      text("  ", "muted"),
+      moveAction("west", false),
+    ]),
+  );
+  lines.push(
+    line([
+      text("or  `jump <n>` to fast-travel by index (", "muted"),
+      action("regions", "regions", { style: "link", title: "list regions to `jump <n>` by index" }),
+      text("),  ", "muted"),
+      action("launch", "launch", { style: "link", title: "lift off the surface into orbit" }),
+      text(" to leave the surface.", "muted"),
+    ]),
+  );
+  return frame(lines);
 }
 
 export interface InventoryView {

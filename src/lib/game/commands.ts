@@ -23,6 +23,11 @@ import {
   systemKey,
   planetKey,
   regionKey,
+  regionGrid,
+  regionCoords,
+  regionIndex,
+  moveRegion,
+  type Direction,
   parseLocationKey,
   warpDistance,
   clusterStars,
@@ -207,6 +212,7 @@ import {
   renderScan,
   renderRegions,
   renderMap,
+  renderSurfaceMap,
   renderInventory,
   renderUpgrades,
   renderShipyard,
@@ -221,6 +227,7 @@ import {
   type ContractEntry,
   type MapNeighbor,
   type RegionListEntry,
+  type SurfaceMapCell,
   type CommandHelpSlotView,
   type CommandHelpGroup,
   type EncounterView,
@@ -530,11 +537,11 @@ async function regionScanFrame(
   player: Player,
   seed: string,
   coord: PlanetCoord,
-  regionIndex: number,
+  regionIdx: number,
 ): Promise<RenderFrame> {
   const planet = planetAt(seed, coord);
   const system = systemAt(seed, coord);
-  const region = regionAt(seed, coord, regionIndex);
+  const region = regionAt(seed, coord, regionIdx);
   const rKey = regionKey(region.coord);
   // Lazy auto-accrual (P13): if the player owns a base here, its powered
   // excavators funnel accrued ore into the silos before we read/display the
@@ -608,11 +615,17 @@ async function regionScanFrame(
   // (you must `launch` to orbit before flying anywhere — siblings live in the
   // ORBITAL frame as `orbit <n>` now). It carries `landed` so the renderer can
   // offer `launch`/`disembark` appropriately.
+  // The region's grid cell (surface-nav): the region INDEX reinterpreted as a
+  // (lat, lon) coordinate on the planet's lat×lon surface grid, so position is
+  // legible in `scan` (and the surface `map`).
+  const grid = regionGrid(planet);
+  const cell = regionCoords(regionIdx, grid.rows, grid.cols);
   return renderScan({
     planet,
     system,
     position: system.position,
     region,
+    gridCoord: { ...cell, rows: grid.rows, cols: grid.cols },
     settlement: hasSettlement(seed, region.coord),
     site: siteView,
     depletionMap,
@@ -877,6 +890,9 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // `upgrade`'s domain (Keystone 2c): just the base today — `upgrade base`
       // raises the base's tier (more storage capacity). Extensible later.
       if (verb === "upgrade" && argIndex === 0) return ["base"];
+      // `move`'s direction domain (surface-nav): the four compass directions, so
+      // `move n` abbreviates to `move north`. Static (no world state needed).
+      if (verb === "move" && argIndex === 0) return ["north", "south", "east", "west"];
       // `produce`'s domain: the ingots a blast furnace smelts from siloed raw
       // metal, the ship parts a production line banks into storage, the upgrades
       // it manufactures (P9a — consuming siloed parts, granting the upgrade), PLUS
@@ -1036,6 +1052,8 @@ async function dispatchResolved(
       return handleLaunch(player, seed);
     case "jump":
       return handleJump(player, seed, args);
+    case "move":
+      return handleMove(player, seed, args);
     case "regions":
       return handleRegions(player, seed, args);
     case "disembark":
@@ -1476,6 +1494,65 @@ async function handleJump(
   return frame([line(text(`Jumped to region ${n}.`, "success")), ...scan.lines]);
 }
 
+/** The four compass directions, for validating/normalizing the `move` arg. */
+const DIRECTIONS: readonly Direction[] = ["north", "south", "east", "west"];
+
+/** True iff `s` is one of the four compass directions (after the resolver expands it). */
+function isDirection(s: string): s is Direction {
+  return (DIRECTIONS as readonly string[]).includes(s);
+}
+
+/**
+ * `move <direction>` — walk one cell across the planet's lat×lon surface
+ * (surface-nav). FREE, like region `jump` (no fuel). North/south step toward the
+ * poles and CLAMP there; east/west wrap the globe. Server-authoritative: rejects
+ * when you're not standing on a surface — in orbit (`land` first), at the orbital
+ * outpost, or on a gas giant (no surface at all) — BEFORE mutating, then sets the
+ * new region and re-renders it (its now climate-banded biome + deposits).
+ */
+async function handleMove(
+  player: Player,
+  seed: string,
+  args: string[],
+): Promise<RenderFrame> {
+  // Gas/outpost/orbit guards up front (mirrors `handleJump`'s own guards). You
+  // can only walk a surface you're standing on.
+  if (atOutpost(player)) {
+    return errorFrame(
+      "You're docked at the orbital outpost — `jump <n>` down to a surface region first.",
+    );
+  }
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  if (planet.isGas) return gasGiantError(planet);
+  if (!player.landed) {
+    return errorFrame(
+      `You're in orbit above ${planet.name} — \`land\` on the surface before you can walk it.`,
+    );
+  }
+
+  // The resolver expands `move n` → `move north` (its arg domain is the four
+  // directions), so a valid line arrives canonicalized; guard defensively anyway.
+  const dir = args[0]?.toLowerCase() ?? "";
+  if (!isDirection(dir)) {
+    return errorFrame("Usage: move <north|south|east|west>");
+  }
+
+  const grid = regionGrid(planet);
+  const dest = moveRegion(player.region, dir, grid.rows, grid.cols);
+  if (dest === null) {
+    // N/S off the top/bottom row — you're at a pole (E/W never clamp).
+    const pole = dir === "north" ? "north" : "south";
+    return errorFrame(
+      `You're at ${planet.name}'s ${pole} pole — can't go further ${pole}. \`move\` east/west to round the globe, or back the other way.`,
+    );
+  }
+
+  if (dest !== player.region) await world.setRegion(player.id, dest);
+  const scan = await regionScanFrame(player, seed, coord, dest);
+  return frame([line(text(`Moved ${dir}.`, "success")), ...scan.lines]);
+}
+
 /**
  * `regions [page]` — a paged, clickable window of this planet's regions (a
  * planet can have up to 100,000, so we never list them all). Each row is a
@@ -1580,7 +1657,57 @@ function neighborCandidates(current: SystemCoord, armCount: number): SystemCoord
 /** Number of nearest in-cluster stars `map` lists. */
 const MAP_NEAR_STARS = 10;
 
+/**
+ * The LOCAL SURFACE MAP (surface-nav): the player's `(lat, lon)` on the planet's
+ * lat×lon grid, a 3×3 neighborhood of nearby cells (each labeled by its biome,
+ * the current cell bracketed), clickable `move <dir>` actions (pole-blocked N/S
+ * read red — P9b), plus `regions`/`jump` fast-travel and a `launch` hint. Built
+ * for a ROCKY surface region only (callers branch on orbit/outpost/gas first).
+ */
+function surfaceMapFrame(player: Player, seed: string, planet: Planet): RenderFrame {
+  const coord = locOf(player);
+  const grid = regionGrid(planet);
+  const { lat, lon } = regionCoords(player.region, grid.rows, grid.cols);
+  // 3×3 neighborhood, north (top row) → south (bottom row). Latitude clamps at
+  // the poles (off-grid rows are `null`); longitude wraps (cyclic globe).
+  const cells: (SurfaceMapCell | null)[][] = [];
+  for (let dr = -1; dr <= 1; dr++) {
+    const r = lat + dr;
+    const row: (SurfaceMapCell | null)[] = [];
+    for (let dc = -1; dc <= 1; dc++) {
+      if (r < 0 || r >= grid.rows) {
+        row.push(null); // off the pole — no cell there
+        continue;
+      }
+      const c = (lon + dc + grid.cols) % grid.cols;
+      const idx = regionIndex(r, c, grid.cols);
+      row.push({ biome: regionAt(seed, coord, idx).biome, current: dr === 0 && dc === 0 });
+    }
+    cells.push(row);
+  }
+  return renderSurfaceMap({
+    planetName: planet.name,
+    lat,
+    lon,
+    rows: grid.rows,
+    cols: grid.cols,
+    cells,
+    // North/south are blocked at the poles (E/W always wrap).
+    canNorth: lat > 0,
+    canSouth: lat < grid.rows - 1,
+  });
+}
+
 async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
+  // Context-aware (surface-nav): standing on a surface region (landed, not the
+  // orbital outpost, not a gas giant) → the LOCAL SURFACE map. Otherwise (in
+  // orbit / docked at the outpost / a gas giant in orbit) → the galactic/system
+  // navigation map below. Reuses the orbit-land surface/orbit state — no fork.
+  if (!atOutpost(player) && player.landed) {
+    const here = planetAt(seed, locOf(player));
+    if (!here.isGas) return surfaceMapFrame(player, seed, here);
+  }
+
   const current = systemOf(player);
   const galaxy = galaxyAt(seed, current.galaxy);
   const [discovered, materials] = await Promise.all([

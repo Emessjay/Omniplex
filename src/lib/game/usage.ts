@@ -30,6 +30,7 @@ export const VERBS: string[] = [
   "land",
   "launch",
   "jump",
+  "move",
   "regions",
   "disembark",
   "embark",
@@ -139,6 +140,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
   jump: {
     desc: "jump to another region of this planet (or `O` for its orbital outpost)",
     slots: [{ name: "region", hint: "a region # on this planet, or `O` for the orbital outpost; see `regions`" }],
+  },
+  move: {
+    desc: "walk one cell across this planet's surface (N/S toward the poles, E/W around the globe)",
+    slots: [{ name: "direction" }],
   },
   regions: {
     desc: "list regions of this planet to jump to",

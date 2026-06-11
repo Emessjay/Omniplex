@@ -160,6 +160,11 @@ const DISEMBARKED_ACTIONS = new Set([
 const ANYTIME_OUT_OF_COMBAT = new Set([
   "craft",
   "jump",
+  // surface-nav: directional surface movement, like region `jump` (free, no
+  // fuel). Usable in either embark state out of combat; the handler itself
+  // rejects it when not standing on a surface (orbiting / outpost / gas giant),
+  // mirroring how `jump` does its own gas/outpost guards.
+  "move",
   "rename",
   // player-guidance — emergency rescue. Works stranded in ANY embark/surface
   // state (the anti-softlock safety net), but not mid-fight: `flee` first.
