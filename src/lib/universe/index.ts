@@ -101,3 +101,20 @@ export {
   galacticRadiation,
   radiationHazardFloor,
 } from "./gen";
+
+export {
+  ARCHETYPES,
+  ARCHETYPE_IDS,
+  isArchetypeId,
+  getArchetype,
+  archetypesForRole,
+  TROPHIC_ROLES,
+  TRAIT_DIMENSIONS,
+  TRAIT_DIMENSION_IDS,
+  traitOptions,
+  isValidSpecies,
+  regionFlora,
+  regionFauna,
+  speciesDrop,
+} from "./genome";
+export type { Archetype, TrophicRole, TraitDimension, Species } from "./genome";
