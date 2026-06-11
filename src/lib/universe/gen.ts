@@ -733,13 +733,6 @@ function depositsFor(rng: Rng, hazard: number, biome: Biome): ResourceDeposit[] 
 // ---------------------------------------------------------------------------
 const FREEZING_C = 0;
 const BOILING_C = 100;
-/**
- * Margin (°C) a clamped region temperature is held strictly OFF the 0/100 lines,
- * so that after rounding to one decimal a boiling planet's regions still read
- * `> 100` and a freezing planet's `< 0` (and never land exactly on the line,
- * which `band()` treats as moderate).
- */
-const BAND_MARGIN = 0.1;
 
 // ---------------------------------------------------------------------------
 // Biome affinities & per-region offsets (biome-consistency).
@@ -816,18 +809,6 @@ export function biomeTempOffset(biome: Biome): number {
 /** Per-region hazard offset (added to planet hazard, then clamped to [0,1]). */
 export function biomeHazardOffset(biome: Biome): number {
   return BIOME_HAZARD_OFFSET[biome];
-}
-
-/**
- * Clamp a region's temperature to the SAME band (relative to 0°C / 100°C) as its
- * planet, so region variation can never read as a different landing category.
- * Inputs are one-decimal-rounded; the `BAND_MARGIN` push keeps boiling regions
- * strictly `> 100` and freezing regions strictly `< 0` even after rounding.
- */
-function clampRegionTemp(regionTemp: number, planetTemp: number): number {
-  if (planetTemp > BOILING_C) return Math.max(regionTemp, BOILING_C + BAND_MARGIN);
-  if (planetTemp < FREEZING_C) return Math.min(regionTemp, FREEZING_C - BAND_MARGIN);
-  return Math.min(BOILING_C, Math.max(FREEZING_C, regionTemp));
 }
 
 /** Surface biomes, weighted so the galaxy is varied but barren/desert common. */
@@ -924,16 +905,176 @@ function biomePaletteFor(rng: Rng, temperature: number): Biome[] {
 }
 
 /**
- * Roll a planet's region count LOG-uniformly across
+ * Roll a planet's RAW region count LOG-uniformly across
  * `[REGION_COUNT_MIN, REGION_COUNT_MAX]` = `[100, 100000]`:
  * `round(10 ** randFloat(2, 5))`, then clamped to the bounds. Log-uniform (vs
  * linear) is what gives the wide spread — small ~10² planets and huge ~10⁵ ones
  * both occur with comparable frequency rather than nearly every planet maxing
- * out.
+ * out. The raw count is then SNAPPED to a complete lat×lon grid (`gridDimsFor`),
+ * which is what a planet actually stores as its `regionCount`.
  */
 function regionCountFor(rng: Rng): number {
   const raw = Math.round(10 ** randFloat(rng, 2, 5));
   return Math.min(REGION_COUNT_MAX, Math.max(REGION_COUNT_MIN, raw));
+}
+
+// ---------------------------------------------------------------------------
+// Surface grid (surface-grid). A planet's surface is a lat×lon GRID: the region
+// INDEX (`0 .. regionCount-1`) is reinterpreted as a cell via divmod
+// (`index = lat·cols + lon`), the same index↔position bijection trick the star
+// cloud uses. The index stays canonical, so every region-keyed store
+// (`world_deltas`, `salvaged_sites`, `bases`, `players.region`) is unchanged —
+// NO reset, NO migration; the index just gains a (lat, lon) interpretation.
+//
+// The grid is ~1:2 lat:lon (a real map is wider than tall): `cols = 2·rows`.
+// `rows` is derived from the raw region-count roll as `round(sqrt(raw/2))` and
+// CLAMPED to `[GRID_ROWS_MIN, GRID_ROWS_MAX]` so the snapped `regionCount =
+// rows·cols = 2·rows²` always stays within `[REGION_COUNT_MIN, REGION_COUNT_MAX]`
+// (2·8² = 128 ≥ 100, 2·223² = 99 458 ≤ 100 000). Because `regionCount` is stored
+// as exactly `2·rows²`, `regionGrid` recovers `rows`/`cols` from it losslessly.
+// ---------------------------------------------------------------------------
+
+/** Fewest grid rows (keeps the snapped count ≥ `REGION_COUNT_MIN`: 2·8² = 128). */
+const GRID_ROWS_MIN = 8;
+/** Most grid rows (keeps the snapped count ≤ `REGION_COUNT_MAX`: 2·223² = 99 458). */
+const GRID_ROWS_MAX = 223;
+
+/** Grid dims for a RAW region-count roll: `cols = 2·rows`, `rows` clamped. */
+function gridDimsFor(rawCount: number): { rows: number; cols: number } {
+  const rows = Math.min(
+    GRID_ROWS_MAX,
+    Math.max(GRID_ROWS_MIN, Math.round(Math.sqrt(rawCount / 2))),
+  );
+  return { rows, cols: 2 * rows };
+}
+
+/**
+ * The lat×lon grid dimensions of a planet's surface. `cols = 2·rows` (≈1:2
+ * lat:lon) and `rows·cols === planet.regionCount` exactly. Recovered losslessly
+ * from the stored `regionCount` (which gen snaps to `2·rows²`). A gas giant has
+ * no surface (`regionCount === 0`) — `rows`/`cols` are 0 there; callers branch on
+ * `planet.isGas` before gridding.
+ */
+export function regionGrid(planet: Planet): { rows: number; cols: number } {
+  if (planet.regionCount <= 0) return { rows: 0, cols: 0 };
+  const rows = Math.round(Math.sqrt(planet.regionCount / 2));
+  return { rows, cols: 2 * rows };
+}
+
+/**
+ * The `(lat, lon)` grid cell a region INDEX addresses, via divmod:
+ * `lat = floor(index / cols)`, `lon = index % cols`. `lat ∈ [0, rows)` (row 0 and
+ * `rows-1` are the two poles, the middle rows the equator); `lon ∈ [0, cols)`
+ * wraps cyclically. Inverse of `regionIndex`.
+ */
+export function regionCoords(
+  index: number,
+  _rows: number,
+  cols: number,
+): { lat: number; lon: number } {
+  // `_rows` completes the `(index, rows, cols)` calling convention but the divmod
+  // only needs `cols`; `lat` is naturally bounded by `rows` for an in-range index.
+  return { lat: Math.floor(index / cols), lon: index % cols };
+}
+
+/** The region INDEX of grid cell `(lat, lon)`: `lat·cols + lon`. Inverse of `regionCoords`. */
+export function regionIndex(lat: number, lon: number, cols: number): number {
+  return lat * cols + lon;
+}
+
+// ---------------------------------------------------------------------------
+// Surface climate (surface-grid). A region's temperature is the planet's mean
+// (radius-derived, kept as the baseline) shaped by its GRID POSITION:
+//   • a LATITUDE term — warmest at the equator, coldest at the poles, with the
+//     gradient steepness scaled by the planet's `axialTilt` (higher tilt ⇒ a
+//     sharper equator-pole split);
+//   • a LONGITUDE term — a low-frequency cosine laying down `~rotationSpeed`
+//     wet/dry continental bands around the globe (coherent: neighbors are close);
+//   • a small per-region JITTER, widened by a long `dayLength` (harsher local
+//     swings); and an `eccentricity`-driven global seasonal shift.
+// The biome is then chosen from the planet's palette, weighted by that local
+// temperature (cold cells favor cold-affinity biomes, hot cells hot-affinity),
+// so biomes form latitude bands. This REPLACES the old independent palette draw
+// + per-biome temperature offset; the per-region band-clamp is GONE (latitude
+// may legitimately push polar cells below freezing / equatorial above boiling).
+// ---------------------------------------------------------------------------
+
+/** Planetary-characteristic ranges (documented on `Planet`). */
+const AXIAL_TILT_MAX = 90; // degrees, [0, 90]
+const DAY_LENGTH_MIN = 4; // hours
+const DAY_LENGTH_MAX = 240; // hours
+const ECCENTRICITY_MAX = 0.4; // [0, ECCENTRICITY_MAX) ⊂ [0, 1)
+const ROTATION_MIN = 0.2; // relative to Earth, > 0
+const ROTATION_MAX = 4;
+
+/** Equator-vs-mean temperature amplitude (°C) even at zero axial tilt. */
+const LAT_GRADIENT_BASE = 25;
+/** Extra equator-vs-mean amplitude (°C) added at maximum axial tilt. */
+const LAT_GRADIENT_TILT_COEF = 55;
+/** Longitudinal continental swing amplitude (°C). */
+const LON_VARIATION_AMP = 14;
+/** Base per-region jitter half-range (°C), before the day-length widening. */
+const REGION_TEMP_JITTER = 4;
+/** Global seasonal shift scale (°C) driven by orbital eccentricity. */
+const ECCENTRICITY_TEMP_COEF = 18;
+/** How strongly local temperature bends region-biome selection (cf. `AFFINITY_STRENGTH`). */
+const REGION_AFFINITY_STRENGTH = 3.5;
+
+/**
+ * The climatic temperature (°C) of grid cell `(lat, lon)` on `planet`: the
+ * planet mean shaped by latitude (axial-tilt-scaled), longitude (rotation-banded),
+ * eccentricity (a global shift), and a day-length-widened per-region jitter.
+ * Bounded to `[TEMP_MIN, TEMP_MAX]`. Consumes exactly one `rng()` draw (the
+ * jitter), so the region stream stays deterministic.
+ */
+function regionClimateTemp(
+  planet: Planet,
+  lat: number,
+  lon: number,
+  rows: number,
+  cols: number,
+  rng: Rng,
+): number {
+  // Latitude: 0 at the equator (middle row), 1 at the poles (rows 0 / rows-1).
+  const equator = (rows - 1) / 2;
+  const latNorm = equator > 0 ? Math.abs(lat - equator) / equator : 0;
+  const gradientAmp =
+    LAT_GRADIENT_BASE + LAT_GRADIENT_TILT_COEF * (planet.axialTilt / AXIAL_TILT_MAX);
+  const latOffset = gradientAmp * (1 - 2 * latNorm); // +amp equator → −amp pole
+
+  // Longitude: a coherent low-frequency cosine; band count rises with rotation.
+  const bands = Math.max(1, Math.round(planet.rotationSpeed * 2));
+  const lonAngle = (TWO_PI * bands * lon) / cols + planet.orbitalPhase;
+  const lonOffset = LON_VARIATION_AMP * Math.cos(lonAngle);
+
+  // Day length widens the per-region jitter (long days → harsher local extremes).
+  const dayFactor =
+    1 + (planet.dayLength - DAY_LENGTH_MIN) / (DAY_LENGTH_MAX - DAY_LENGTH_MIN);
+  const jitter = (rng() - 0.5) * 2 * REGION_TEMP_JITTER * dayFactor;
+
+  // Eccentricity: a small global seasonal shift (centered so the mean is ~0).
+  const eccShift = (planet.eccentricity - ECCENTRICITY_MAX / 2) * ECCENTRICITY_TEMP_COEF;
+
+  const t = planet.temperature + latOffset + lonOffset + eccShift + jitter;
+  return Math.min(TEMP_MAX, Math.max(TEMP_MIN, t));
+}
+
+/**
+ * Pick a region's biome from the planet's `biomePalette`, weighted by the local
+ * climate temperature: each member's `BIOME_WEIGHTS` weight is bent by
+ * `exp(REGION_AFFINITY_STRENGTH · affinity · tNorm)` (the same affinity model the
+ * palette builder uses), so cold cells favor cold-affinity biomes (tundra) and
+ * hot cells favor hot-affinity ones (volcanic/desert), giving latitude BANDS.
+ * Always returns a palette member. Consumes one `rng()` draw (the weighted pick),
+ * except a single-member palette which is returned without a draw.
+ */
+function regionBiomeFor(palette: readonly Biome[], regionTemp: number, rng: Rng): Biome {
+  if (palette.length === 1) return palette[0]!;
+  const tNorm = (regionTemp - TEMP_COMFORT_MID) / 100;
+  const weights = palette.map(
+    (b) => BIOME_WEIGHTS[b] * Math.exp(REGION_AFFINITY_STRENGTH * BIOME_TEMP_AFFINITY[b] * tNorm),
+  );
+  return palette[weightedIndex(rng, weights)]!;
 }
 
 function atmosphereFor(rng: Rng): Atmosphere {
@@ -1020,9 +1161,25 @@ function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Plan
   const radFloor = radiationHazardFloor(galacticRadiation(coord.cluster));
   const hazard = Number(Math.max(hazardFor(rng, temperature), radFloor).toFixed(4));
   const biomePalette: Biome[] = isGas ? ["gas"] : biomePaletteFor(rng, temperature);
-  const regionCount = isGas ? 0 : regionCountFor(rng);
+  // SNAP the raw region-count roll to a complete lat×lon grid (`surface-grid`):
+  // `regionCount = rows·cols`. The `regionCountFor(rng)` draw stays in this exact
+  // stream position (only its VALUE is transformed), so every field drawn after
+  // it is byte-identical to before. A gas giant skips the draw (0 regions), as before.
+  const regionCount = isGas
+    ? 0
+    : (() => {
+        const { rows, cols } = gridDimsFor(regionCountFor(rng));
+        return rows * cols;
+      })();
   const orbitalPeriod = Math.round(randFloat(rng, ORBIT_PERIOD_MIN_MS, ORBIT_PERIOD_MAX_MS));
   const orbitalPhase = Number(randFloat(rng, 0, TWO_PI).toFixed(6));
+  // Planetary characteristics (`surface-grid`) — APPENDED last so every field
+  // above is byte-identical to the pre-surface-grid generator for the same coord.
+  // They shape only the per-cell surface climate in `regionAt`.
+  const axialTilt = Number(randFloat(rng, 0, AXIAL_TILT_MAX).toFixed(2));
+  const dayLength = Number(randFloat(rng, DAY_LENGTH_MIN, DAY_LENGTH_MAX).toFixed(2));
+  const eccentricity = Number(randFloat(rng, 0, ECCENTRICITY_MAX).toFixed(4));
+  const rotationSpeed = Number(randFloat(rng, ROTATION_MIN, ROTATION_MAX).toFixed(3));
 
   return {
     coord,
@@ -1039,6 +1196,10 @@ function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Plan
     orbitalRadius,
     orbitalPeriod,
     orbitalPhase,
+    axialTilt,
+    dayLength,
+    eccentricity,
+    rotationSpeed,
   };
 }
 
@@ -1129,19 +1290,20 @@ export function planetAt(seed: string, coord: PlanetCoord): Planet {
 }
 
 /**
- * The region at `regionIndex` of the planet at `planetCoord`. PURE &
+ * The region at `regionIdx` of the planet at `planetCoord`. PURE &
  * deterministic, with its own RNG stream keyed by the full region coord — so a
  * region reproduces without generating its sibling regions (the planet may have
- * up to 100,000 of them). Its `biome` is drawn from the planet's
- * `biomePalette`, and its `deposits` use the existing hazard-coupled
+ * up to ~100,000 of them). The index is a CELL on the planet's lat×lon surface
+ * GRID (`surface-grid`): its `biome` is the palette member the local climate at
+ * that `(lat, lon)` selects, and its `deposits` use the existing hazard-coupled
  * `depositsFor`, so the savage→rare and rarity→abundance couplings carry down to
- * the region tier. `regionIndex` is NOT range-checked here (gen is total over
- * the integers); callers validate against `planet.regionCount`.
+ * the region tier. `regionIdx` is NOT range-checked here (gen is total over the
+ * integers); callers validate against `planet.regionCount`.
  */
 export function regionAt(
   seed: string,
   planetCoord: PlanetCoord,
-  regionIndex: number,
+  regionIdx: number,
 ): Region {
   const planet = planetAt(seed, planetCoord);
   // Gas giants have NO surface — they carry the exclusive `["gas"]` palette and
@@ -1162,23 +1324,24 @@ export function regionAt(
     planetCoord.cluster,
     planetCoord.system,
     planetCoord.planet,
-    regionIndex,
+    regionIdx,
   );
 
-  // Biome is always a member of the planet's palette (AC#2). It's rolled before
-  // temperature/hazard/deposits so the per-region offsets and the biome-aware
-  // candidate pool are deterministic functions of the region coord.
-  const biome = pick(rng, planet.biomePalette);
+  // The region index is a CELL on the planet's lat×lon surface grid
+  // (`surface-grid`). Climate flows from that position: temperature from latitude
+  // (+ longitude / jitter), then the biome is the palette member that climate
+  // selects — so biomes form latitude bands, all ⊆ the planet's palette (AC#2).
+  const { rows, cols } = regionGrid(planet);
+  const { lat, lon } = regionCoords(regionIdx, rows, cols);
 
-  // Per-region temperature & hazard: the planet's mean nudged by the biome, then
-  // (temperature) clamped to the planet's 0/100 band so a region never reads as
-  // a different landing category, and (hazard) clamped to [0, 1].
   const temperature = Number(
-    clampRegionTemp(
-      Number((planet.temperature + biomeTempOffset(biome)).toFixed(1)),
-      planet.temperature,
-    ).toFixed(1),
+    regionClimateTemp(planet, lat, lon, rows, cols, rng).toFixed(1),
   );
+  const biome = regionBiomeFor(planet.biomePalette, temperature, rng);
+
+  // Hazard: the planet's hazard nudged by the biome's offset, clamped to [0,1]
+  // (the landing gate stays planet-level, so a region crossing 0/100 in
+  // temperature never changes landability).
   const hazard = Number(
     Math.min(1, Math.max(0, planet.hazard + biomeHazardOffset(biome))).toFixed(4),
   );
@@ -1191,7 +1354,7 @@ export function regionAt(
   }));
 
   return {
-    coord: { ...planetCoord, region: regionIndex },
+    coord: { ...planetCoord, region: regionIdx },
     biome,
     temperature,
     hazard,

@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   planetAt,
   regionAt,
+  regionGrid,
+  regionIndex,
   BIOMES,
   biomeTempOffset,
   biomeHazardOffset,
@@ -115,18 +117,56 @@ describe("no oceans on boiling/freezing worlds (rule 5)", () => {
   });
 });
 
-describe("per-region temp/hazard never cross 0/100; biome variation (rule 6)", () => {
-  it("each region stays on the planet's side of 0 and 100, hazard in [0,1]", () => {
-    // Gas giants (planet-taxonomy) have no surface regions — skip them.
-    for (const p of samplePlanets(SEED).filter((x) => !x.isGas)) {
-      const planetBand = band(p.temperature);
-      for (let i = 0; i < 6; i++) {
-        const r = regionAt(SEED, p.coord, i % p.regionCount);
-        expect(band(r.temperature)).toBe(planetBand); // never crosses a line
+describe("climatic latitude bands replace the per-region band-clamp (rule 6, surface-grid)", () => {
+  // The old invariant — every region pinned to its planet's 0/100 SIDE — is GONE:
+  // a region's temperature is now a CLIMATIC function of its lat×lon grid cell, so
+  // latitude variation legitimately pushes polar cells below freezing / equatorial
+  // cells above boiling even on a temperate world. What still holds: a warm-equator
+  // / cold-pole GRADIENT, hazard in [0,1], and a PLANET-LEVEL landing category
+  // (the planet mean) that region variation can never flip.
+  it("equator is warmer than the poles; region hazard stays in [0,1]", () => {
+    let checked = 0;
+    // Cap the planet count (each `regionAt` regenerates the system, so this is the
+    // expensive sweep) — the latitude amplitude dominates the row mean by a wide
+    // margin, so a strided column sample over the first planets is plenty.
+    for (const p of samplePlanets(SEED).filter((x) => !x.isGas).slice(0, 60)) {
+      const { rows, cols } = regionGrid(p);
+      const step = Math.max(1, Math.floor(cols / 24));
+      const meanRow = (lat: number) => {
+        let s = 0, n = 0;
+        for (let lon = 0; lon < cols; lon += step) {
+          s += regionAt(SEED, p.coord, regionIndex(lat, lon, cols)).temperature;
+          n++;
+        }
+        return s / n;
+      };
+      // Middle row (equator) is warmer than row 0 (a pole).
+      expect(meanRow(Math.floor(rows / 2))).toBeGreaterThan(meanRow(0));
+      checked++;
+      // Hazard stays bounded across a spread of cells (pole / equator / far pole).
+      for (const idx of [0, Math.floor((rows * cols) / 2), rows * cols - 1]) {
+        const r = regionAt(SEED, p.coord, idx);
         expect(r.hazard).toBeGreaterThanOrEqual(0);
         expect(r.hazard).toBeLessThanOrEqual(1);
       }
     }
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  it("latitude variation MAY cross the planet's freezing/boiling lines (clamp superseded)", () => {
+    // At least one rocky planet must show a region on a DIFFERENT 0/100 side than
+    // its planet mean — direct proof the old band-clamp is gone. (The landing gate
+    // still reads the PLANET mean, so this creates no softlock.)
+    let crossed = false;
+    for (const p of samplePlanets(SEED).filter((x) => !x.isGas)) {
+      const planetBand = band(p.temperature);
+      const { rows, cols } = regionGrid(p);
+      for (const lat of [0, Math.floor(rows / 2), rows - 1]) {
+        const r = regionAt(SEED, p.coord, regionIndex(lat, 0, cols));
+        if (band(r.temperature) !== planetBand) crossed = true;
+      }
+    }
+    expect(crossed).toBe(true);
   });
 
   it("biome offsets order extreme biomes above calm ones (exported helpers)", () => {

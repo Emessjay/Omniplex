@@ -267,19 +267,46 @@ export interface Planet {
   readonly orbitalRadius: number;
   readonly orbitalPeriod: number;
   readonly orbitalPhase: number;
+  /**
+   * Planetary characteristics that shape the per-cell SURFACE CLIMATE
+   * (`surface-grid`). Drawn deterministically per planet coord and APPENDED last
+   * to the planet RNG stream, so every pre-existing field above stays
+   * byte-identical to before. They bias `regionAt`'s climatic temperature (and,
+   * through it, which palette biome each lat/lon cell takes); they have no other
+   * effect this phase.
+   *
+   *  - `axialTilt` — degrees in `[0, 90]`. Steepness of the equator→pole
+   *    temperature gradient: higher tilt ⇒ a sharper hot-equator/cold-pole split.
+   *  - `dayLength` — hours in `[4, 240]`. Day/night swing: a longer day ⇒
+   *    harsher local temperature extremes (bigger per-cell variation).
+   *  - `eccentricity` — `[0, 1)`. Orbital eccentricity; nudges a small global
+   *    seasonal temperature shift across the whole surface.
+   *  - `rotationSpeed` — `> 0`, relative to Earth's. Drives the number of
+   *    wet/dry continental bands the longitude term lays down.
+   */
+  readonly axialTilt: number;
+  readonly dayLength: number;
+  readonly eccentricity: number;
+  readonly rotationSpeed: number;
 }
 
 /**
- * A fully-described, recomputable region of a planet. Its `biome` is always a
- * member of the planet's `biomePalette`. The region carries its OWN
- * `temperature` and `hazard`, derived from the planet's by a small per-biome
- * offset (`biomeTempOffset` / `biomeHazardOffset`): a `volcanic` region reads
- * hotter and more hazardous than a `barren` one on the same world. The
- * temperature offset is CLAMPED so a region never crosses the 0°C / 100°C lines
- * its planet sits on (a moderate planet's regions stay in [0,100], a boiling
- * planet's stay > 100, a freezing planet's stay < 0) — so region variation can
- * never flip the planet-level landing category. `deposits` are rolled with the
- * REGION's hazard, so the savage→rare coupling now bites per-region.
+ * A fully-described, recomputable region of a planet, occupying one cell of the
+ * planet's lat×lon surface GRID (`surface-grid`). The region INDEX maps to a
+ * `(lat, lon)` cell (`regionCoords` / `regionIndex`), and its `biome` is the
+ * planet-palette member the LOCAL CLIMATE at that cell selects — so biomes form
+ * latitude bands (cold-affinity biomes near the poles, hot-affinity near the
+ * equator), always ⊆ the planet's `biomePalette`.
+ *
+ * The region's `temperature` is the planet's mean nudged by a LATITUDE offset
+ * (warm equator → cold poles, steepened by `Planet.axialTilt`), a longitude
+ * continental term, and a small jitter — so unlike the old per-biome offset
+ * model, a region's temperature MAY cross the 0°C / 100°C lines its planet sits
+ * near (real climate range). The landing gate stays PLANET-level, so this never
+ * changes whether a world is landable. `hazard` is the planet's hazard nudged by
+ * the biome's hazard offset (`biomeHazardOffset`), clamped to [0,1]; `deposits`
+ * are rolled with the REGION's hazard, so the savage→rare coupling bites
+ * per-region.
  */
 export interface Region {
   readonly coord: RegionCoord;
