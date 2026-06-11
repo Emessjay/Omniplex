@@ -2215,3 +2215,27 @@ gotchas) accrete here as workers surface things worth persisting. See
   via explore/harvest/attack). Next foundations (per `pillars.md`): sapient
   species + species-empires, then shared presence; codex + breeding (Science) +
   the blurb writer build on the genome.
+
+### Load-bearing decisions from `sapient-species` (species foundation)
+
+- **The galaxy is populated with sapient species** (per `pillars.md`
+  §Foundation). Additive, NO migration, NO faction restructure, NO player-species.
+  `src/lib/game/species.ts` (pure): `Species` cultural-DNA model (`originWorld`,
+  `techAptitude` biotech/materials/computation/industry/broad, `socialStructure`
+  hive/hierarchical/consensus/nomadic/isolationist + name/blurb — origin ecology
+  drives the DNA, Sonnet model). **5 `DOMINANT_SPECIES`** (Kthar/Sylvani/Cindrel/
+  Voorn/Tessarin) + helpers; deterministic **`minorSpeciesAt(seed, key)`**
+  (`makeRng`-based) for the vast minor species.
+- **Each faction is anchored to a dominant species** (`factions.species`,
+  additive — mechanics untouched), techAptitude↔demand aligned: iron_vanguard→
+  Kthar (industry/metals), verdant_compact→Sylvani (biotech/crops),
+  arcanum_collegium→Cindrel (computation/relics), free_traders_league→Voorn
+  (broad/trade); Tessarin unaffiliated (empire TBD). So demand themes now have an
+  in-world reason.
+- **Hubs show their inhabiting species**: `scan` at a settlement / outpost
+  surfaces `inhabitingSpecies` — the hub faction's species (`factionAt`) or a
+  `minorSpeciesAt` fallback. Display-only (no verb/applicability changes).
+  Seeded: `sapient-species.test.ts`. The Politics-pillar buildout (empire/guild
+  sort, alliances, the Conclave), player-species/character creation, species
+  goods/diplomacy, and the Nimbus blurb writer build on this. Shared presence
+  (co-location) is the next foundation.
