@@ -2189,3 +2189,29 @@ gotchas) accrete here as workers surface things worth persisting. See
 - **5a is additive**: `explore`/`harvest`/`attack`/`ranch` still use the fixed
   `wildlife.ts` catalogs. **5b** swaps gameplay onto the genome (encounter state,
   drops, codex); Science breeding + the blurb writer build on these pure functions.
+
+### Load-bearing decisions from `genome-wildlife` (cascade tier 5b — COMPLETES the genome + the cascade)
+
+- **Wild flora/fauna gameplay is now genome-driven.** `explore`/`harvest`/
+  `attack`/`flee` draw from `regionFlora`/`regionFauna`/`speciesDrop` (5a) instead
+  of fixed catalogs — different, environment-fit, food-web creatures region to
+  region. **The fixed `FLORA`/`FAUNA` + `src/lib/game/wildlife.ts` are REMOVED**
+  (no dangling imports); **`FARM_ANIMALS` (ranch) kept** curated (a future phase
+  may ranch genome species). NO migration.
+- **`speciesCombatStats(species) → {maxHp, attack, hostile}`** (pure, `rules.ts`):
+  size/role/defense → hp/attack, temperament → hostile (placid still attackable);
+  reuses the existing `combatRound`/`runDeath`/hazard machinery. Verified:
+  grazers ~22hp/5atk, predators ~52hp/20atk-hostile.
+- **`players.encounter` jsonb reshaped to `{species, hp}`** (the generated
+  `Species` blob + hp; no migration — jsonb; defensive stale-row handling).
+  Creatures shown by a **descriptive `speciesLabel`** (archetype + key traits,
+  e.g. "a large armored grazer") — placeholder until the Nimbus blurb writer.
+  Drops bounded to real `MATERIALS` (5a's `speciesDrop`). Old wildlife/
+  wildlife-catalog tests migrated to the genome, coverage preserved. Seeded:
+  `genome-wildlife.test.ts`.
+- **The generation cascade is now COMPLETE**: galaxy (polar + radiation) →
+  planetary (taxonomy + params) → surface (climate biomes + nav) → geology
+  (formations + resource signatures) → biology (genome + ecological web, lived
+  via explore/harvest/attack). Next foundations (per `pillars.md`): sapient
+  species + species-empires, then shared presence; codex + breeding (Science) +
+  the blurb writer build on the genome.
