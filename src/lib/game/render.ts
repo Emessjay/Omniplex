@@ -215,6 +215,11 @@ export interface ScanView {
   gridCoord?: { lat: number; lon: number; rows: number; cols: number };
   /** True when this region bears a settlement (P11) — surfaced as a note. */
   settlement?: boolean;
+  /**
+   * The name of the sapient species inhabiting this settlement (sapient-species)
+   * — shown so you know whose space you're in. Set only when `settlement`.
+   */
+  settlementSpecies?: string;
   /** An exploration site in this region (Keystone 3), if present — type + salvage state. */
   site?: ScanSite;
   /** Accumulated depletion per resource id in the CURRENT region. */
@@ -598,9 +603,10 @@ export function renderScan(view: ScanView): RenderFrame {
   // Settlement presence (P11): an inhabited region. P12a: its market is open —
   // you can `buy`/`sell` here (the economy is gated to settlements/outposts).
   if (view.settlement) {
+    const who = view.settlementSpecies ? `a ${view.settlementSpecies} settlement` : "a settlement";
     lines.push(
       line([
-        text("⌂ There is a settlement here", "success"),
+        text(`⌂ There is ${who} here`, "success"),
         text(" — its market is open; you can ", "muted"),
         action("buy", "buy", { style: "link", title: "buy at this settlement's market" }),
         text(" / ", "muted"),

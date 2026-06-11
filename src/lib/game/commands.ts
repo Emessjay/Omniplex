@@ -171,6 +171,7 @@ import {
   rivalRepPenalty,
   repPriceDiscount,
 } from "./factions";
+import { getSpecies, minorSpeciesAt, type Species as SapientSpecies } from "./species";
 import {
   cartographyRank,
   nextCartoThreshold,
@@ -628,6 +629,9 @@ async function regionScanFrame(
     region,
     gridCoord: { ...cell, rows: grid.rows, cols: grid.cols },
     settlement: hasSettlement(seed, region.coord),
+    settlementSpecies: hasSettlement(seed, region.coord)
+      ? inhabitingSpecies(seed, regionKey(region.coord)).name
+      : undefined,
     site: siteView,
     depletionMap,
     justDiscovered,
@@ -1402,6 +1406,11 @@ function outpostScanFrame(player: Player, seed: string): RenderFrame {
       text(`${player.warpFuel}`, "default"),
     ]),
     line(text("A station hangs in orbit of the planet — a trade hub.", "default")),
+    line([
+      text("⌂ ", "success"),
+      text(`a ${inhabitingSpecies(seed, hubKeyOf(player)).name} trade outpost`, "accent"),
+      text(" — you can feel whose space you're in.", "muted"),
+    ]),
     line(text("No surface here: no biome, no deposits, no mining.", "muted")),
     line([
       text("Its market is open — you can ", "muted"),
@@ -5702,6 +5711,20 @@ async function handleBuyship(player: Player, args: string[]): Promise<RenderFram
  */
 function hubKeyOf(player: Player): string {
   return regionKey({ ...locOf(player), region: player.region });
+}
+
+/**
+ * The sapient species that INHABITS the trade hub at `hubKey` (sapient-species):
+ * the dominant/founding species of the hub's aligned faction (`factionAt` →
+ * faction → `species`), so a faction hub is peopled by its empire's species.
+ * Deterministic — same hub ⇒ same inhabitants. (Every hub is faction-aligned
+ * today; if a key ever resolved no faction, the minor-species generator
+ * `minorSpeciesAt(seed, hubKey)` is the fallback the spec calls for.)
+ */
+function inhabitingSpecies(seed: string, hubKey: string): SapientSpecies {
+  const factionId = factionAt(seed, hubKey);
+  const faction = FACTIONS.find((f) => f.id === factionId);
+  return faction ? getSpecies(faction.species) : minorSpeciesAt(seed, hubKey);
 }
 
 /** The current contract rotation bucket (the only place `Date.now()` enters). */

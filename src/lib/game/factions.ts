@@ -39,6 +39,14 @@ export interface Faction {
    * costs you rep with its rival, so you can't befriend everyone.
    */
   rival: string;
+  /**
+   * The dominant/founding SPECIES of this empire-faction (a `DOMINANT_SPECIES`
+   * id; see `species.ts`). ADDITIVE — factions keep all mechanics
+   * (demand/rep/ranks/rivalries/contracts); the species is the in-world REASON
+   * the demand theme is what it is (the species' `techAptitude` matches it). The
+   * empire-vs-guild sort + adding empires is a later Politics phase.
+   */
+  species: string;
 }
 
 /**
@@ -63,6 +71,8 @@ export const FACTIONS: readonly Faction[] = [
     blurb: "A militarist order forever rearming — they want metal and ship parts.",
     demand: ["iron", "titanium", "iridium", "hull_plating", "alloy_beam"],
     rival: "arcanum_collegium",
+    // Kthar: high-gravity industry caste — metals + parts is their whole creed.
+    species: "kthar",
   },
   {
     id: "verdant_compact",
@@ -70,6 +80,8 @@ export const FACTIONS: readonly Faction[] = [
     blurb: "Agrarian settlers who feed the frontier — crops, livestock, and rations.",
     demand: ["verdant_fruit", "jungle_tuber", "sunmelon", "poultry_meat", "tender_loin", "spore_broth"],
     rival: "free_traders_league",
+    // Sylvani: ocean-born biotech cultivators — they grow the frontier's food.
+    species: "sylvani",
   },
   {
     id: "arcanum_collegium",
@@ -77,6 +89,8 @@ export const FACTIONS: readonly Faction[] = [
     blurb: "Scholars chasing the rare and the ancient — exotic minerals and relics.",
     demand: ["xenon", "voidstone", "prismatic_gem", "precursor_relic", "void_idol", "meteoric_dust"],
     rival: "iron_vanguard",
+    // Cindrel: frozen-world hive-mind scholars — computation, chasing the exotic.
+    species: "cindrel",
   },
   {
     id: "free_traders_league",
@@ -84,6 +98,8 @@ export const FACTIONS: readonly Faction[] = [
     blurb: "Merchant princes who deal in everything — a broad, mixed basket of goods.",
     demand: ["copper", "cobalt", "silica", "geode_cluster", "circuit_board", "scaled_hide"],
     rival: "verdant_compact",
+    // Voorn: nomadic desert traders — broad generalists who deal in everything.
+    species: "voorn",
   },
 ] as const;
 
