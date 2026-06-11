@@ -2140,3 +2140,27 @@ gotchas) accrete here as workers surface things worth persisting. See
   (caves/seams/resource signatures) + the creature genome / ecological web (the
   biology tier — which also activates the Science pillar's breeding) — and, per
   the pillars doc, the sapient-species + species-empire foundation.
+
+### Load-bearing decisions from `geology` (cascade tier 4b)
+
+- **Regions now have a geological FORMATION, and deposits correlate with it** — a
+  learnable resource map (vents→metals, craters→rare/exotic, plains→sparse),
+  layered on the Phase-A climate grid (biome = climate; formation = geology,
+  independent). NO migration (region keys/index unchanged; formation derived).
+- **Planet geology profile** on `Planet` (`gen.ts`, APPENDED last in the planet
+  RNG stream so all pre-existing fields incl. Phase-A params stay byte-identical):
+  `volcanism`/`impactDensity`/`erosion`/`tectonics` ∈ [0,1], **cascade-coupled**
+  — `volcanism` rises with `eccentricity` (tidal), `erosion` with `rotationSpeed`
+  (wind), impacts a draw.
+- **`RegionFormation`** (`types.ts` enum: `volcanic_vent`/`impact_crater`/
+  `sedimentary_basin`/`cave_system`/`tectonic_ridge`/`plains`) on `Region`,
+  chosen per lat/lon cell on a **distinct RNG sub-stream** that leaves the
+  Phase-A climate/biome draw byte-identical; its distribution **tracks the planet
+  profile** (high-volcanism ⇒ more vents, high-impact ⇒ more craters).
+- **`depositsFor` is formation-aware** — formation sets the resource SIGNATURE
+  (which minerals + abundance), layered OVER the preserved `biome-minerals`
+  pool gate (biome-specific ore only in its biome) + `rarityWeight` hazard→rarity.
+  Verified: vent regions metal-rich (~1.1 avg metal abundance) vs plains sparse
+  (~0.14), craters rare-rich. `scan` shows the formation + resource tendency.
+  Seeded: `geology.test.ts`. **Tier 5 (creature genome + ecological web) is the
+  last cascade tier**; sapient-species + shared-presence foundations are parallel.
