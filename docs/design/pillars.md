@@ -11,32 +11,70 @@
 > [`generation-cascade.md`](./generation-cascade.md).
 > Status legend: ✅ built · ◖ partial · ○ to build.
 
-## The shape of it
+## The shape of it — three social layers
 
-Every pillar is a **career path** with its own progression ladder, rewards, and
-a **public interspecies organization** you rise through — EXCEPT the seventh,
-**Neutralization**, whose organization is hidden. The six public pillars
-**interweave** (a trader funds a builder, a scientist's breakthrough arms a
-combatant, a politician's war makes work for pirates and bounty hunters); the
-neutralizer's path runs underneath them all, touching the universe's stability
-itself.
+Omniplex's society stacks in **three layers**, and the pillars sit on top of all
+three:
 
-The **organizations** (the social spine):
+1. **Species** *(foundational — a prerequisite for the pillars at full scale)*.
+   Procedurally-generated sapient aliens: **a handful of dominant species** (not
+   a fixed four) plus many minor ones, each with cultural DNA derived from its
+   origin world. See [§Foundation](#foundation-sapient-species-the-prerequisite).
+2. **Empires** *(the political structure)*. Empires fall largely along **species
+   lines** — each dominant species anchors an empire — with **cross-cultural
+   mingling** at the edges. This is the **Politics** pillar's playing field. The
+   current 4 NPC factions are the seed (to be reframed/expanded as species-
+   empires).
+3. **Guilds** *(cross-cutting professions — a layer on TOP of species/empires)*.
+   **Seven** organizations, one per pillar, that you rise through regardless of
+   your species or empire (a Kh+ trader and a human Founder belong to the same
+   Free Traders' League). Six are public; the seventh — Neutralization's **Veil**
+   — is hidden. **Politics has its own guild too**: not the empires themselves,
+   but an interspecies association of the influential.
 
-| Pillar | Public organization | What it offers |
+The seven **guilds**:
+
+| Pillar | Guild | What it offers |
 |---|---|---|
 | Discovery | **Cartographers' Union** | survey contracts, charts, first-claim rights, codex prestige |
-| Trade | **Free Traders' League** ✅(faction exists) | market access, trade contracts, broker licenses, (grey) black-market ties |
+| Trade | **Free Traders' League** ◖(faction exists) | market access, trade contracts, broker licenses, (grey) black-market ties |
 | Building | **Founders' Guild** | claim rights, blueprints, megastructure charters, shared-build permits |
 | Combat | **Mercenary Charter** | bounty boards, letters of marque (piracy), military commissions |
-| Science | **Arcanum Collegium** ✅(faction exists) | research grants, lab access, patents, gene-banks |
-| Politics | **the NPC empires** ✅(4 factions) | rank, influence, territory, the right to found your own alliance |
-| Neutralization | *(hidden — "the Veil")* | recruited, never advertised; anomaly dossiers, containment tools |
+| Science | **Arcanum Collegium** ◖(faction exists) | research grants, lab access, patents, gene-banks |
+| Politics | **the Conclave** | an interspecies association of power-brokers "rubbing elbows" — introductions, influence, diplomatic standing, alliance charters (distinct from the empires it operates within) |
+| Neutralization | *(hidden — the Veil)* | recruited, never advertised; anomaly dossiers, containment tools |
 
-Two of the existing four factions (`arcanum_collegium` → Science, `free_traders_
-league` → Trade) already map onto pillar-orgs; `iron_vanguard`/`verdant_compact`
-are political empires. Open design choice (see §Politics): keep pillar-orgs as
-**cross-empire professional guilds** layered over the political empires.
+The existing four factions span both lower layers and will be sorted as we build
+the species foundation: `arcanum_collegium` / `free_traders_league` read
+naturally as the **Science / Trade guilds**, while `iron_vanguard` /
+`verdant_compact` read as **species-empires**.
+
+---
+
+## Foundation: sapient species (the prerequisite)
+
+Before the pillars work at full scale, the universe needs **sapient aliens** —
+because empires, the Conclave, inter-species trade/diplomacy, and most flavor
+all rest on *who* inhabits the galaxy.
+
+- **Procedural, but curated-feeling** (the Sonnet "speculative" sketch +
+  [`generation-cascade.md`](./generation-cascade.md) extended above the
+  non-sapient biology tier). A species' "cultural DNA" derives from three
+  parameters tied to its **origin ecology**: the planet type it evolved on
+  (high-gravity → compact/hierarchical; extreme world → hive/symbiotic), a
+  **technological-aptitude vector** (biotech / materials / computation — which
+  cascades into trade goods + research strengths), and a **social-structure
+  archetype** (hive / hierarchical / consensus / nomadic / isolationist). Players
+  infer the rest; generated text snippets (the Nimbus blurb writer) fill gaps.
+- **A handful of DOMINANT species** (hand-curated or curated-procedural — the
+  narrative anchors with real political weight; ~3–6, "not necessarily four")
+  plus **a vast number of minor species** generated from the parameters above.
+- **Empires along species lines** — each dominant species anchors an empire,
+  with cross-cultural mingling (minorities, trade enclaves, mixed border
+  systems). This is what the **Politics** pillar climbs.
+- **Build order implication:** the sapient-species + species-empire layer is a
+  near-term foundation (alongside finishing the creature-genome cascade tier) —
+  the public pillars only reach full scale once the galaxy is *populated*.
 
 ---
 
@@ -234,31 +272,41 @@ shared world, or just first-mover advantage?
 
 ## vi. Politics
 
-**Vision.** Join an NPC empire and climb it, or **found your own alliance**, and
-accumulate real influence — over territory, trade law, war, and other players.
+**Vision.** Operate on the **species-empire** layer: earn standing with an
+empire and climb it, broker between empires through the Conclave, or **found
+your own alliance** — accumulating real influence over territory, trade law,
+war, and other players.
 
-**Organization — the NPC empires** (✅ 4 factions with reputation, ranks,
-rivalries, rank perks). Plus the new layer: **player alliances**.
+**Two distinct things here (don't conflate them):**
+- **The empires** (§Foundation) — the political *structure*, along species
+  lines. ✅ the 4 NPC factions are the seed (reputation, ranks, rivalries, rank
+  perks) and become species-empires as the species layer lands.
+- **The Conclave** — Politics's own *guild*: an interspecies association of the
+  influential (power-brokers rubbing elbows), distinct from the empires. Your
+  guild rank here is your *personal* political clout — introductions, diplomatic
+  standing, the right to charter an alliance — independent of any one empire's
+  reputation ladder.
 
 **Mechanics & progression.**
-- ✅ faction reputation, the rank ladder (Unknown→Champion), rivalries + standing
+- ✅ empire reputation, the rank ladder (Unknown→Champion), rivalries + standing
   trade-offs, rank-based trade perks, contracts as the demand engine.
-- ○ **player alliances/guilds** (multiplayer): found one, recruit, pool
-  resources, hold territory, coordinate — the social-org backbone the other
+- ○ **the Conclave** (Politics guild): a personal influence track earned by
+  brokering deals/fulfilling cross-empire contracts; gates diplomacy actions +
+  alliance charters.
+- ○ **player alliances** (multiplayer): charter one (via the Conclave), recruit,
+  pool resources, hold territory, coordinate — the social backbone the other
   pillars plug into (alliance bases, alliance trade, alliance war).
-- ○ **influence mechanics**: rise to faction leadership; vote/steer faction
-  behavior; **territory control** (who owns a cluster/system); diplomacy & war
-  between empires and alliances.
-- ○ pillar-org integration: the Cartographers'/Founders'/Mercenary guilds as
-  cross-empire bodies you also rank in (so politics threads every pillar).
+- ○ **influence mechanics**: rise toward empire leadership; steer empire
+  behavior; **territory control** (who owns a cluster/system — coreward systems
+  are the prize); diplomacy & war between empires and alliances.
 
 **Cross-ties.** The connective tissue: trade access, war (Combat), territory
 (Building), survey rights (Discovery), grants (Science) all flow through
-political standing.
+empire reputation + Conclave standing.
 
-**Open Qs.** Alliance governance model? Territory control granularity (system?
-cluster?)? How much can a player meaningfully steer an NPC empire? War
-declaration & resolution rules?
+**Open Qs.** Conclave-influence vs empire-reputation — separate currencies or
+intertwined? Alliance governance model? Territory granularity (system? cluster?)?
+How much can a player steer an NPC empire? War declaration & resolution rules?
 
 ---
 
@@ -342,10 +390,12 @@ Neutralization → hidden; borrows Discovery/Science/Combat; protects the whole 
   materials), Politics (player alliances + territory), Neutralization (the entire
   hidden layer — the most creative net-new).
 - **Sequencing intuition** (for later planning, not committed): finish the
-  **cascade** (surface/geology/creature genome) since it underpins Discovery &
-  Science; then **Science** (research + breeding — it activates the genome and
-  feeds everyone); then **Combat** (the engagement model, which Neutralization
-  reuses); **player alliances** (Politics) and **collaborative building** are the
+  **cascade** (surface ✅/geology/creature genome) since it underpins Discovery &
+  Science; **populate the galaxy with sapient species + species-empires**
+  (§Foundation) — the prerequisite for the pillars at full scale; then
+  **Science** (research + breeding — activates the genome, feeds everyone); then
+  **Combat** (the engagement model, which Neutralization reuses); **player
+  alliances + the Conclave** (Politics) and **collaborative building** are the
   big multiplayer-social additions; **Neutralization** can seed early (anomalies
   already exist) and deepen as a story layer throughout.
 
@@ -363,5 +413,9 @@ Neutralization → hidden; borrows Discovery/Science/Combat; protects the whole 
    empires; war rules.
 6. **Neutralization**: the recruitment reveal; global vs regional stability;
    tone (SCP dossier style?); authored vs procedural late-game mystery.
-7. **Orgs**: keep pillar-guilds as cross-empire bodies layered over the political
-   empires (so the existing 4 factions = empires, and the 6 guilds = professions)?
+7. **Orgs**: ✅ RESOLVED — three layers (species → species-empires → 7 cross-
+   cutting guilds, incl. Politics's Conclave + the hidden Veil). Remaining:
+   Conclave-influence vs empire-reputation as separate vs intertwined currencies.
+8. **Species** (the new foundation): how many dominant species (~3–6)? Hand-
+   author the dominant ones vs curated-procedural? How much do origin-ecology
+   parameters drive empire behavior/demand vs flavor only?
