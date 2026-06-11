@@ -88,6 +88,50 @@ export const SIZE_CLASS_LABELS: Record<SizeClass, string> = {
 };
 
 /**
+ * The geological FORMATION of a surface region (cascade tier 4b). The formation
+ * is the region's GEOLOGY — layered ON TOP of, and INDEPENDENT of, its climate
+ * `biome`: biome = what the surface climate looks like, formation = what kind of
+ * geological feature it is. It is chosen deterministically from the planet's
+ * geology profile (`volcanism`/`impactDensity`/`erosion`), so a high-volcanism
+ * world has more `volcanic_vent` regions, etc. The formation sets each region's
+ * RESOURCE SIGNATURE — which minerals concentrate there and how richly — giving
+ * a planet a coherent, learnable resource map. Source of truth for the
+ * `RegionFormation` union.
+ */
+export const REGION_FORMATIONS = [
+  "volcanic_vent",
+  "impact_crater",
+  "sedimentary_basin",
+  "cave_system",
+  "tectonic_ridge",
+  "plains",
+] as const;
+export type RegionFormation = (typeof REGION_FORMATIONS)[number];
+
+/** Human-readable formation labels for display (`scan`). */
+export const FORMATION_LABELS: Record<RegionFormation, string> = {
+  volcanic_vent: "Volcanic vent",
+  impact_crater: "Impact crater",
+  sedimentary_basin: "Sedimentary basin",
+  cave_system: "Cave system",
+  tectonic_ridge: "Tectonic ridge",
+  plains: "Plains",
+};
+
+/**
+ * A short, player-facing resource-tendency blurb per formation (`scan`), so the
+ * geology→resource coupling is learnable ("Volcanic vent — metal-rich").
+ */
+export const FORMATION_TENDENCY: Record<RegionFormation, string> = {
+  volcanic_vent: "metal-rich",
+  impact_crater: "rare & exotic ore",
+  sedimentary_basin: "common sedimentary ore",
+  cave_system: "crystals & gems",
+  tectonic_ridge: "deep mixed ore",
+  plains: "sparse deposits",
+};
+
+/**
  * The radius (R⊕) at and above which a planet is a GAS giant rather than a
  * ROCKY world. Sub-Neptune and larger (≥ 1.75) are gas: orbit-only, no surface.
  */
@@ -288,6 +332,29 @@ export interface Planet {
   readonly dayLength: number;
   readonly eccentricity: number;
   readonly rotationSpeed: number;
+  /**
+   * Geology profile (cascade tier 4b) — each component in `[0, 1]`, drawn
+   * deterministically per planet coord and APPENDED last to the planet RNG
+   * stream (after the surface-grid params), so every pre-existing field above
+   * stays byte-identical. These bias the per-region FORMATION distribution
+   * (`regionAt().formation`) and, through it, each region's resource signature.
+   * Coupled to the astronomical cascade where natural:
+   *
+   *  - `volcanism` — internal heat / tidal stress. RISES with `eccentricity`
+   *    (tidal heating) plus an independent draw. High ⇒ more `volcanic_vent`
+   *    regions (metal-rich).
+   *  - `impactDensity` — meteoric/impact history. An independent draw. High ⇒
+   *    more `impact_crater` regions (rare/exotic ore).
+   *  - `erosion` — weathering by wind/water. RISES with `rotationSpeed` (faster
+   *    winds) plus an independent draw. High ⇒ more `cave_system` /
+   *    `sedimentary_basin` regions.
+   *  - `tectonics` — crustal activity. An independent draw. High ⇒ more
+   *    `tectonic_ridge` regions (deep mixed ore).
+   */
+  readonly volcanism: number;
+  readonly impactDensity: number;
+  readonly erosion: number;
+  readonly tectonics: number;
 }
 
 /**
@@ -311,6 +378,15 @@ export interface Planet {
 export interface Region {
   readonly coord: RegionCoord;
   readonly biome: Biome;
+  /**
+   * The region's geological FORMATION (cascade tier 4b) — its GEOLOGY, chosen
+   * deterministically from the planet's geology profile on a sub-stream distinct
+   * from the climate/biome draw (so it never perturbs them). Independent of
+   * `biome` (climate): the formation sets the region's RESOURCE SIGNATURE — which
+   * minerals concentrate in `deposits` and how richly — layered over the
+   * biome-gated pool + the hazard→rarity coupling.
+   */
+  readonly formation: RegionFormation;
   /** Mean surface temperature of THIS region in °C (planet temp ± biome offset, band-clamped). */
   readonly temperature: number;
   /** Environmental danger of THIS region in [0, 1] (planet hazard ± biome offset). */

@@ -25,6 +25,7 @@ import {
   PALETTE_MIN,
   REGION_COUNT_MAX,
   REGION_COUNT_MIN,
+  REGION_FORMATIONS,
   STAR_CLASSES,
   type Atmosphere,
   type Biome,
@@ -32,6 +33,7 @@ import {
   type Galaxy,
   type Planet,
   type PlanetCoord,
+  type RegionFormation,
   SITE_TYPES,
   type Region,
   type RegionCoord,
@@ -665,7 +667,127 @@ function hazardFor(rng: Rng, temperature: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Deposits — the hazard→rarity coupling (AC#5).
+// Geology — region formations + their resource signatures (cascade tier 4b).
+//
+// A region's GEOLOGY is independent of its CLIMATE (biome). Each region is
+// assigned a `RegionFormation` (volcanic vent / impact crater / cave system /
+// …), chosen on a sub-stream DISTINCT from the climate/biome draw so it never
+// perturbs them. The formation distribution reflects the planet's geology
+// PROFILE (`volcanism`/`impactDensity`/`erosion`/`tectonics`): a high-volcanism
+// world has more vents, a high-impact world more craters, etc.; a low-everything
+// world is mostly plains.
+//
+// The formation then sets the region's RESOURCE SIGNATURE — a per-formation
+// table of FAVORED mineral ids (a multiplier on each candidate's pick weight)
+// plus a slot-count distribution and a richness factor — LAYERED OVER the
+// existing constraints: the candidate pool is still `mineralsForBiome(biome)`
+// (so biome-specifics stay confined to their biome) and pick weights still carry
+// the `rarityWeight(rarity, hazard)` savage→rare coupling. So a planet gains a
+// coherent, LEARNABLE resource map ("volcanic-vent region → expect metals")
+// without breaking either invariant.
+// ---------------------------------------------------------------------------
+
+/**
+ * How strongly a geology-profile component is driven by its astronomical-cascade
+ * input vs an independent draw (the rest). `0.5` mixes them evenly — enough to
+ * give a clear positive correlation (volcanism↔eccentricity,
+ * erosion↔rotationSpeed) while keeping plenty of per-planet variety.
+ */
+const GEOLOGY_COUPLING = 0.5;
+
+/**
+ * Per-formation resource SIGNATURE. `favored` multiplies the pick weight of the
+ * listed minerals (a mineral absent from the biome pool is simply never picked,
+ * so this never violates the biome-confinement invariant); `slots` is the
+ * deposit-count distribution sampled by `randInt(0, 7)` (rich formations skew to
+ * more deposits, plains to fewer/barren); `richness` boosts the abundance of
+ * favored LOW/MID-rarity ore only (rarity ≤ 3), so it makes vents metal-RICH
+ * without ever inflating rare-ore abundance — preserving the rarity→abundance
+ * coupling (high-rarity veins stay lean). Tunable.
+ */
+interface FormationSignature {
+  readonly favored: Readonly<Record<string, number>>;
+  readonly slots: readonly number[];
+  readonly richness: number;
+}
+
+const FORMATION_SIGNATURES: Record<RegionFormation, FormationSignature> = {
+  // Vents: metal-rich and abundant — iron/copper/titanium (pyrite if volcanic).
+  volcanic_vent: {
+    favored: { iron: 4, copper: 4, titanium: 4, pyrite: 4 },
+    slots: [2, 2, 3, 3, 3, 2, 1, 2],
+    richness: 1.5,
+  },
+  // Craters: the rare-earth zones — iridium/xenon/cobalt. No abundance boost
+  // (these are rare ⇒ lean veins, by design); the signature is WHICH ore, rare.
+  impact_crater: {
+    favored: { iridium: 5, xenon: 5, cobalt: 4 },
+    slots: [1, 2, 2, 2, 3, 1, 1, 0],
+    richness: 1.0,
+  },
+  // Caves: crystalline/gems — prismatic_gem (if crystalline) + silica.
+  cave_system: {
+    favored: { prismatic_gem: 5, silica: 4 },
+    slots: [1, 2, 2, 1, 2, 1, 1, 0],
+    richness: 1.2,
+  },
+  // Basins: common sedimentary ore — silica/iron (aquamarine if ocean).
+  sedimentary_basin: {
+    favored: { silica: 4, iron: 3, aquamarine: 4 },
+    slots: [1, 2, 2, 1, 2, 1, 0, 0],
+    richness: 1.0,
+  },
+  // Ridges: deep mixed ore — metals plus savage-gated voidstone where it occurs.
+  tectonic_ridge: {
+    favored: { iron: 3, copper: 3, titanium: 3, iridium: 2, voidstone: 3 },
+    slots: [2, 2, 3, 2, 1, 2, 1, 0],
+    richness: 1.2,
+  },
+  // Plains: sparse, low — no signature, more barren slots.
+  plains: {
+    favored: {},
+    slots: [1, 1, 0, 1, 0, 1, 0, 0],
+    richness: 1.0,
+  },
+};
+
+/**
+ * The base selection weight per formation (before the profile bias). `plains` is
+ * the high baseline that dominates when the geology profile is all-low; the
+ * others ride a profile-driven term on top. Kept positive everywhere so every
+ * formation can occur on any planet (just rarely when its profile input is low).
+ */
+const FORMATION_BASE_WEIGHT = 1;
+const FORMATION_PLAINS_BASE = 4;
+/** How strongly the profile component lifts its formation's weight. */
+const FORMATION_PROFILE_GAIN = 6;
+
+/**
+ * Choose a region's `RegionFormation` from the planet's geology profile, on a
+ * stream the caller keys distinctly from the climate/biome draw. Each
+ * formation's weight is a base plus its profile-driven term, so the realized
+ * distribution tracks the planet's `volcanism`/`impactDensity`/`erosion`/
+ * `tectonics` (AC#2): a high-volcanism planet yields more `volcanic_vent`
+ * regions than a low-volcanism one. Pure: one `rng()` draw (the weighted pick).
+ */
+function formationFor(rng: Rng, planet: Planet): RegionFormation {
+  const profileTerm: Record<RegionFormation, number> = {
+    volcanic_vent: FORMATION_PROFILE_GAIN * planet.volcanism,
+    impact_crater: FORMATION_PROFILE_GAIN * planet.impactDensity,
+    // Erosion both hollows caves and lays down sediment — split between the two.
+    cave_system: FORMATION_PROFILE_GAIN * 0.6 * planet.erosion,
+    sedimentary_basin: FORMATION_PROFILE_GAIN * 0.6 * planet.erosion,
+    tectonic_ridge: FORMATION_PROFILE_GAIN * planet.tectonics,
+    plains: 0,
+  };
+  const weights = REGION_FORMATIONS.map(
+    (f) => (f === "plains" ? FORMATION_PLAINS_BASE : FORMATION_BASE_WEIGHT) + profileTerm[f],
+  );
+  return REGION_FORMATIONS[weightedIndex(rng, weights)]!;
+}
+
+// ---------------------------------------------------------------------------
+// Deposits — the hazard→rarity coupling (AC#5) + the formation signature (4b).
 // ---------------------------------------------------------------------------
 
 /**
@@ -684,24 +806,38 @@ function rarityWeight(rarity: number, hazard: number): number {
 }
 
 /**
- * Draw the deposits for a region of the given `biome`. Most regions get 1–3
- * deposits; a minority are barren. The candidate pool is biome-aware —
- * `mineralsForBiome(biome)` = every general mineral plus the biome-specific ones
- * for THIS biome, so a deposit can never be a mineral specific to a different
- * biome. Each slot picks a distinct resource from that pool weighted by
- * `rarityWeight(rarity, hazard)`, so the savage→rare coupling still applies over
- * the filtered pool. Determinism is preserved (the biome is rolled before this,
- * so the pool is a deterministic function of the region coord).
+ * Draw the deposits for a region of the given `biome` and `formation`. Most
+ * regions get 1–3 deposits; a minority are barren — the slot-count distribution
+ * comes from the FORMATION's signature (rich formations skew to more, plains to
+ * fewer/barren). The candidate pool is biome-aware — `mineralsForBiome(biome)` =
+ * every general mineral plus the biome-specific ones for THIS biome, so a deposit
+ * can never be a mineral specific to a different biome. Each slot picks a distinct
+ * resource weighted by `rarityWeight(rarity, hazard) × favored`, where `favored`
+ * is the formation signature's per-mineral multiplier — so vents concentrate
+ * metals, craters concentrate rare/exotic ore, etc., WHILE the savage→rare
+ * hazard coupling still applies over the filtered pool. Determinism is preserved
+ * (biome + formation are rolled before this, so the pool + signature are a
+ * deterministic function of the region coord).
  */
-function depositsFor(rng: Rng, hazard: number, biome: Biome): ResourceDeposit[] {
-  // 0:barren  1  2  3  — most regions carry at least one deposit (>0.5).
-  const slots = [1, 1, 2, 2, 2, 3, 3, 0][randInt(rng, 0, 7)]!;
+function depositsFor(
+  rng: Rng,
+  hazard: number,
+  biome: Biome,
+  formation: RegionFormation,
+): ResourceDeposit[] {
+  const sig = FORMATION_SIGNATURES[formation];
+  // Formation-shaped slot count (0 = barren). Most formations carry ≥1 deposit.
+  const slots = sig.slots[randInt(rng, 0, sig.slots.length - 1)]!;
   if (slots === 0) return [];
 
   const available = mineralsForBiome(biome);
   const deposits: ResourceDeposit[] = [];
   for (let i = 0; i < slots && available.length > 0; i++) {
-    const weights = available.map((r) => rarityWeight(r.rarity, hazard));
+    // Pick weight = hazard→rarity coupling × the formation's per-mineral favor
+    // (default 1). Favoring shifts WHICH minerals concentrate, never the pool.
+    const weights = available.map(
+      (r) => rarityWeight(r.rarity, hazard) * (sig.favored[r.id] ?? 1),
+    );
     const idx = weightedIndex(rng, weights);
     const resource = available[idx]!;
     available.splice(idx, 1); // distinct resource per slot
@@ -712,7 +848,12 @@ function depositsFor(rng: Rng, hazard: number, biome: Biome): ResourceDeposit[] 
     // The draw keeps a random component, so veins still vary; only the
     // expected abundance trends down (monotonically) with rarity.
     const rarityBias = 1 - 0.15 * (resource.rarity - 1); // 1.0 at r1 → 0.4 at r5
-    const richness = randFloat(rng, 0.1, 1) * rarityBias;
+    // Formation richness boosts the abundance of FAVORED LOW/MID-rarity ore
+    // (rarity ≤ 3) only — so vents read metal-RICH, while rare-ore veins stay
+    // lean (the rarity→abundance coupling is never inflated for rarity ≥ 4).
+    const richnessMult =
+      sig.favored[resource.id] && resource.rarity <= 3 ? sig.richness : 1;
+    const richness = randFloat(rng, 0.1, 1) * rarityBias * richnessMult;
     const abundance = Math.min(1, richness);
     deposits.push({ resourceId: resource.id, abundance });
   }
@@ -1215,6 +1356,22 @@ function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Plan
   const dayLength = Number(randFloat(rng, DAY_LENGTH_MIN, DAY_LENGTH_MAX).toFixed(2));
   const eccentricity = Number(randFloat(rng, 0, ECCENTRICITY_MAX).toFixed(4));
   const rotationSpeed = Number(randFloat(rng, ROTATION_MIN, ROTATION_MAX).toFixed(3));
+  // Geology profile (cascade tier 4b) — APPENDED last so every field above is
+  // byte-identical to the pre-geology generator for the same coord. Each is in
+  // [0,1] and biases the per-region FORMATION distribution (see `formationFor`).
+  // Where natural, a component RISES with an astronomical-cascade input (tidal
+  // stress → volcanism, fast rotation → erosion) mixed 50/50 with an independent
+  // draw, so the coupling is real (positive correlation) but not deterministic.
+  const eccNorm = eccentricity / ECCENTRICITY_MAX; // [0,1)
+  const rotNorm = (rotationSpeed - ROTATION_MIN) / (ROTATION_MAX - ROTATION_MIN); // [0,1]
+  const volcanism = Number(
+    Math.min(1, Math.max(0, GEOLOGY_COUPLING * eccNorm + (1 - GEOLOGY_COUPLING) * rng())).toFixed(4),
+  );
+  const impactDensity = Number(rng().toFixed(4));
+  const erosion = Number(
+    Math.min(1, Math.max(0, GEOLOGY_COUPLING * rotNorm + (1 - GEOLOGY_COUPLING) * rng())).toFixed(4),
+  );
+  const tectonics = Number(rng().toFixed(4));
 
   return {
     coord,
@@ -1235,6 +1392,10 @@ function generatePlanet(seed: string, coord: PlanetCoord, sysName: string): Plan
     dayLength,
     eccentricity,
     rotationSpeed,
+    volcanism,
+    impactDensity,
+    erosion,
+    tectonics,
   };
 }
 
@@ -1374,6 +1535,22 @@ export function regionAt(
   );
   const biome = regionBiomeFor(planet.biomePalette, temperature, rng);
 
+  // Geological FORMATION (cascade tier 4b) — drawn on a DISTINCT RNG stream
+  // (`"formation"`) so reading/assigning it never perturbs the climate/biome draw
+  // above (which uses the `"region"` stream). Its distribution tracks the planet's
+  // geology profile, and it sets the resource signature `depositsFor` applies.
+  const formationRng = makeRng(
+    seed,
+    "formation",
+    planetCoord.galaxy,
+    planetCoord.arm,
+    planetCoord.cluster,
+    planetCoord.system,
+    planetCoord.planet,
+    regionIdx,
+  );
+  const formation = formationFor(formationRng, planet);
+
   // Hazard: the planet's hazard nudged by the biome's offset, clamped to [0,1]
   // (the landing gate stays planet-level, so a region crossing 0/100 in
   // temperature never changes landability).
@@ -1381,9 +1558,11 @@ export function regionAt(
     Math.min(1, Math.max(0, planet.hazard + biomeHazardOffset(biome))).toFixed(4),
   );
 
-  // Deposits use the REGION's hazard now, so the savage→rare coupling bites
-  // per-region: a volcanic region carries rarer ore than a calm one alongside it.
-  const deposits = depositsFor(rng, hazard, biome).map((d) => ({
+  // Deposits use the REGION's hazard (savage→rare bites per-region) AND its
+  // FORMATION (which minerals concentrate + how richly), layered over the
+  // biome-gated pool. So a volcanic-vent region is metal-rich, an impact crater
+  // carries rarer ore, etc. — a coherent, learnable resource map.
+  const deposits = depositsFor(rng, hazard, biome, formation).map((d) => ({
     resourceId: d.resourceId,
     abundance: Number(d.abundance.toFixed(4)),
   }));
@@ -1391,6 +1570,7 @@ export function regionAt(
   return {
     coord: { ...planetCoord, region: regionIdx },
     biome,
+    formation,
     temperature,
     hazard,
     deposits,

@@ -8,7 +8,7 @@
  * exact string the click submits (AC: "use clickable actions generously").
  */
 import type { Biome, Planet, Region, StarSystem, StarPosition, SiteType } from "@/lib/universe";
-import { getResource, SIZE_CLASS_LABELS } from "@/lib/universe";
+import { getResource, SIZE_CLASS_LABELS, FORMATION_LABELS, FORMATION_TENDENCY } from "@/lib/universe";
 import type { RenderFrame, RenderLine, RenderSpan } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { effectiveAbundance, warpFuelCost, FREEZING_C, BOILING_C } from "./rules";
@@ -565,6 +565,16 @@ export function renderScan(view: ScanView): RenderFrame {
       text(` / ${planet.regionCount}`, "muted"),
       text("   biome ", "muted"),
       text(region.biome, "accent"),
+    ]),
+  );
+  // Geology (cascade tier 4b): the region's FORMATION + a short resource
+  // tendency, so the geology→ore coupling is visible and learnable
+  // ("Volcanic vent — metal-rich").
+  lines.push(
+    line([
+      text("geology ", "muted"),
+      text(FORMATION_LABELS[region.formation], "accent"),
+      text(` — ${FORMATION_TENDENCY[region.formation]}`, "muted"),
     ]),
   );
   // The region's place on the planet's lat×lon surface grid (surface-nav), so
