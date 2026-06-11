@@ -225,6 +225,8 @@ import {
   renderContracts,
   renderCartography,
   renderGuide,
+  renderPresence,
+  presenceLines,
   errorFrame,
   type ContractEntry,
   type MapNeighbor,
@@ -334,6 +336,8 @@ async function orbitalScanFrame(
   const orbitalSalvaged = orbitalSite
     ? await world.hasSalvaged(player.id, planetKey(planet.coord))
     : false;
+  // Co-located players (presence 3a): others orbiting THIS planet (region 0).
+  const present = await world.playersHere({ id: player.id, ...planet.coord, region: 0 });
 
   const lines: RenderLine[] = [
     line([
@@ -447,6 +451,9 @@ async function orbitalScanFrame(
     }
   }
 
+  // Co-located players sharing this orbit (presence 3a) — omitted when alone.
+  lines.push(...presenceLines(present));
+
   if (hasOutpost(seed, locOf(player))) {
     lines.push(
       line([
@@ -549,12 +556,16 @@ async function regionScanFrame(
   // excavators funnel accrued ore into the silos before we read/display the
   // region — so depletion shown below reflects what the excavators just drained.
   await maybeAccrueExcavators(player, region, planet);
-  const [depletionMap, justDiscovered, owned, regionBases, ownBase] = await Promise.all([
+  const [depletionMap, justDiscovered, owned, regionBases, ownBase, present] = await Promise.all([
     world.getEffectiveDepletionMap(rKey),
     world.recordDiscovery(planetKey(coord), player.id),
     world.getOwnedUpgradeIds(player.id),
     world.basesInRegion(rKey),
     world.getBaseInRegion(player.id, rKey),
+    // Co-located players (shared-world presence 3a): OTHERS standing in THIS
+    // region. Keyed by the scanned region (`regionIdx`), not `player.region`,
+    // which may be stale (e.g. `jump` scans the new region pre-refresh).
+    world.playersHere({ id: player.id, ...coord, region: regionIdx }),
   ]);
   // Crop plots at the player's OWN base here (if it has a crop farm): surface
   // their maturity + clickable `plant` hints (red when no free plot — P9b).
@@ -655,6 +666,8 @@ async function regionScanFrame(
       name: b.name,
       mine: b.ownerId === player.id,
     })),
+    // Co-located players standing in this region (presence 3a).
+    present,
     plots,
     plantHints: plantHintList,
     herds,
@@ -1128,6 +1141,8 @@ async function dispatchResolved(
       return handleCartography(player);
     case "who":
       return handleWho();
+    case "here":
+      return handleHere(player, seed);
     case "rename":
       return handleRename(player, args);
     case "distress":
@@ -1381,9 +1396,15 @@ async function handleScan(player: Player, seed: string): Promise<RenderFrame> {
  * trade hub (actual trade arrives in P12). Offers `jump <n>` (or `regions`) to
  * drop down to a surface region.
  */
-function outpostScanFrame(player: Player, seed: string): RenderFrame {
+async function outpostScanFrame(player: Player, seed: string): Promise<RenderFrame> {
   const planet = planetAt(seed, locOf(player));
   const system = systemAt(seed, locOf(player));
+  // Co-located players (presence 3a): others docked at THIS outpost (region -1).
+  const present = await world.playersHere({
+    id: player.id,
+    ...planet.coord,
+    region: OUTPOST_REGION,
+  });
   const lines: RenderLine[] = [
     line([
       text(`${planet.name} — Orbital Outpost`, "heading"),
@@ -1453,6 +1474,8 @@ function outpostScanFrame(player: Player, seed: string): RenderFrame {
       );
     }
   }
+  // Co-located players docked at this outpost (presence 3a) — omitted when alone.
+  lines.push(...presenceLines(present));
   return frame(lines);
 }
 
@@ -1484,7 +1507,9 @@ async function handleJump(
       return errorFrame(`${planet.name} has no orbital outpost. \`jump <n>\` to a surface region.`);
     }
     if (player.region !== OUTPOST_REGION) await world.setRegion(player.id, OUTPOST_REGION);
-    const scan = outpostScanFrame(player, seed);
+    // Scan with the updated region so presence (and any region-derived view)
+    // reflects being docked, not the surface region we just left.
+    const scan = await outpostScanFrame({ ...player, region: OUTPOST_REGION }, seed);
     return frame([line(text(`Docked at the ${planet.name} orbital outpost.`, "success")), ...scan.lines]);
   }
 
@@ -6020,6 +6045,26 @@ async function handleWho(): Promise<RenderFrame> {
       rankTitle: cartographyRank(r.charted).title,
     })),
   });
+}
+
+// ---------------------------------------------------------------------------
+// here  (who else is co-located with you — shared-world presence, foundation 3a)
+// ---------------------------------------------------------------------------
+
+/**
+ * `here` — a dedicated readout of the OTHER players sharing your exact location
+ * (same surface region, same-planet orbit, or same outpost). Informational and
+ * usable in every state. Public-safe: shows each present player's handle + ship
+ * + orbit/surface state (never identity). Polled — reflects DB state at command
+ * time (no live push yet; 3b adds Supabase Realtime). Alone ⇒ an "alone" notice.
+ */
+async function handleHere(player: Player, seed: string): Promise<RenderFrame> {
+  const present = await world.playersHere({
+    id: player.id,
+    ...locOf(player),
+    region: player.region,
+  });
+  return renderPresence({ location: locationLabel(player, seed), present });
 }
 
 // ---------------------------------------------------------------------------

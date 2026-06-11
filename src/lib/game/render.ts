@@ -16,6 +16,28 @@ import { UPGRADES, getUpgrade } from "./upgrades";
 import { USAGE, usageLine } from "./usage";
 import { applicableVerbs, type PlayerStateView } from "./applicability";
 import type { GuideAdvice } from "./advisor";
+import type { PresentPlayer } from "./presence";
+
+/**
+ * Shared formatter for the "Players here:" co-located-players readout (foundation
+ * 3a). Returns the lines for the present players (a heading + one row per
+ * player), or an EMPTY array when no one else is here — so callers can splice it
+ * into any frame and it simply vanishes when the player is alone. Each row shows
+ * the public-safe handle + ship + orbit/surface state (no identity). Pure.
+ */
+export function presenceLines(present: readonly PresentPlayer[]): RenderLine[] {
+  if (present.length === 0) return [];
+  return [line(text("Players here:", "heading")), ...present.map(presenceRow)];
+}
+
+/** One co-located-player row: `• Handle (Ship, state)`. Public-safe. */
+function presenceRow(p: PresentPlayer): RenderLine {
+  return line([
+    text("  • ", "muted"),
+    text(p.handle, "accent"),
+    text(` (${p.ship}, ${p.state})`, "muted"),
+  ]);
+}
 
 /** Display labels for exploration site types (Keystone 3; UI text only). */
 const SITE_TYPE_LABELS: Record<SiteType, string> = {
@@ -262,6 +284,12 @@ export interface ScanView {
   encounter?: EncounterView | null;
   /** Bases present in this region (shared-world presence); yours are marked. */
   bases?: ScanBase[];
+  /**
+   * OTHER players co-located with you here (shared-world presence, 3a) — shown
+   * as a "Players here:" line (handle + ship + state). Omitted/empty ⇒ you're
+   * alone and the line is suppressed.
+   */
+  present?: PresentPlayer[];
   /** Crop plots at the player's OWN base here (crop-farming), per-crop maturity. */
   plots?: PlotSummary[];
   /** Clickable `plant <crop>` hints for this biome (red when no free plot). */
@@ -769,6 +797,10 @@ export function renderScan(view: ScanView): RenderFrame {
       );
     }
   }
+
+  // Co-located players here (shared-world presence, 3a): a "Players here:" line
+  // listing others sharing this exact region. Vanishes when you're alone.
+  lines.push(...presenceLines(view.present ?? []));
 
   // Crop-farm plots at the player's own base here (crop-farming): per-crop
   // maturity + clickable harvest/plant. Only present when you own a farm here.
@@ -1933,6 +1965,34 @@ export function renderWho(view: WhoView): RenderFrame {
     });
   }
   return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Presence — the `here` readout of co-located players (foundation 3a).
+// ---------------------------------------------------------------------------
+
+export interface PresenceView {
+  /** A friendly label for where "here" is (system · planet / outpost). */
+  location: string;
+  /** The OTHER players co-located with you (public-safe). Empty ⇒ alone. */
+  present: PresentPlayer[];
+}
+
+/**
+ * `here` — the dedicated co-located-players readout. Lists everyone sharing your
+ * exact location (handle + ship + state) under a heading, or an "alone" message
+ * when no one else is here. Reuses `presenceLines` so it stays identical to the
+ * `scan` "Players here:" line. Pure.
+ */
+export function renderPresence(view: PresenceView): RenderFrame {
+  const header = line([
+    text("Players here", "heading"),
+    text(`  (${view.location})`, "muted"),
+  ]);
+  if (view.present.length === 0) {
+    return frame([header, line(text("You're alone here.", "muted"))]);
+  }
+  return frame([header, ...view.present.map(presenceRow)]);
 }
 
 // ---------------------------------------------------------------------------

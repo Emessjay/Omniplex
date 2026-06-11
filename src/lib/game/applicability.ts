@@ -58,6 +58,9 @@ const INFORMATIONAL = new Set([
   "regions",
   "storage",
   "base",
+  // shared-world presence (foundation 3a) — `here` lists co-located players.
+  // Read-only, usable in every state like the other info commands.
+  "here",
   // Keystone 1a — faction info. `standing` (your reputation with each faction)
   // is usable anywhere; `contracts` is usable anywhere too and shows the off-hub
   // note itself when you're not at a trade hub (so it stays informational).

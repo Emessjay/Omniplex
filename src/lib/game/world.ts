@@ -29,6 +29,7 @@ import {
   PART_SUPPLY_BASELINE,
 } from "./rules";
 import { isPartId } from "./parts";
+import { presentPlayerView, type PresentPlayer } from "./presence";
 
 /** Re-read the authoritative player row by id (post-mutation refresh). */
 export async function getPlayerById(id: string): Promise<Player | null> {
@@ -1413,6 +1414,65 @@ export async function setLivestockBred(
     .eq("base_id", baseId)
     .eq("animal_id", animalId);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Shared-world presence (foundation 3a). The co-located-players query: OTHER
+// players standing in the SAME place (the full six-tier location tuple — same
+// surface region, same-planet orbit `region = 0`, or same-outpost `region =
+// -1`). Service-role read; PUBLIC-SAFE by construction — it SELECTs only the
+// public columns (handle/ship/embark/landed) and resolves each row through
+// `presentPlayerView`, which carries no `user_id`/email (the same projection
+// discipline the public `leaderboard` view enforces). Polled (no realtime yet —
+// 3b adds live arrive/leave + chat on top of this).
+// ---------------------------------------------------------------------------
+
+/** A location to look for co-located players at, plus the id to exclude (self). */
+export interface PresenceQuery {
+  /** The querying player's id — excluded from the result (you don't see yourself). */
+  id: string;
+  galaxy: number;
+  arm: number;
+  cluster: number;
+  system: number;
+  planet: number;
+  region: number;
+}
+
+/**
+ * The OTHER players co-located with `loc` (`sameLocation` — the full location
+ * tuple), as public-safe presence views. Excludes the querying player (`loc.id`)
+ * and projects only handle/ship/state — never identity. The six `.eq()` filters
+ * implement `sameLocation`; the `.neq("id", …)` excludes self.
+ */
+export async function playersHere(loc: PresenceQuery): Promise<PresentPlayer[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("players")
+    .select("handle, ship_id, embarked, landed")
+    .eq("galaxy", loc.galaxy)
+    .eq("arm", loc.arm)
+    .eq("cluster", loc.cluster)
+    .eq("system", loc.system)
+    .eq("planet", loc.planet)
+    .eq("region", loc.region)
+    .neq("id", loc.id)
+    .order("handle", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as {
+      handle: string;
+      ship_id: string;
+      embarked: boolean;
+      landed: boolean;
+    };
+    return presentPlayerView({
+      handle: r.handle,
+      shipId: r.ship_id,
+      embarked: r.embarked,
+      landed: r.landed,
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
