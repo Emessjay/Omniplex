@@ -71,6 +71,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # CI-ONLY: stub the Supabase-provided `auth` schema. The migrations
+      # reference `auth.users` (FK target) + `auth.uid()` (RLS), which Supabase
+      # provides in prod but vanilla postgres:16 does not. This mimics just
+      # enough for the migrations to apply on a clean DB. (migrate.mjs must NOT
+      # create these — Supabase owns the auth schema in production.)
+      - name: Bootstrap Supabase auth schema (CI stub)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d omniplex -v ON_ERROR_STOP=1 <<'SQL'
+          create schema if not exists auth;
+          create table if not exists auth.users (id uuid primary key);
+          create or replace function auth.uid() returns uuid language sql stable as $$ select null::uuid $$;
+          SQL
+
       # Applies every supabase/migrations/*.sql to a clean DB via scripts/migrate.mjs
       # (the same runner Railway's start command uses). Fails the build if any
       # migration errors against real Postgres — the gate that would have caught
