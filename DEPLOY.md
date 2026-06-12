@@ -289,3 +289,60 @@ The app builds and runs **without** Supabase configured (clients init
 lazily and only error when actually used), so you can work on the terminal
 UI with no secrets. See [`README.md`](README.md) for the full quickstart and
 the multi-worktree workflow.
+
+---
+
+## 7. Staging environment (test deployments for big updates)
+
+For a large multi-phase update (e.g. the pillars push), develop on a **`staging`
+branch** with its own Railway environment + its own Supabase project, and keep
+**`main`/production frozen** until the update is solid and playtested. Then
+promote in one merge.
+
+### Branch model
+
+```
+staging branch ──auto-deploy──► STAGING env + staging Supabase   (all WIP lands here)
+       │ when solid + playtested
+       ▼ git checkout main && git merge staging && git push
+  main ─────────auto-deploy──► PRODUCTION env + prod Supabase     (frozen until promote)
+```
+
+The auditor/worker flow merges feature branches into whatever integration branch
+is checked out; while on `staging`, set `NIMBUS_BASE_BRANCH=staging` so
+`merge-worker.sh` targets it (it defaults to `main`).
+
+### One-time setup (Railway + Supabase dashboards)
+
+1. **Second Supabase project** — create a fresh project (e.g. `omniplex-staging`).
+   Grab the same four credentials as §1 (`NEXT_PUBLIC_SUPABASE_URL`,
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and the pooler
+   `DATABASE_URL`). Do the §3 Auth redirect-allowlist step for the **staging
+   domain** too (magic-link/OAuth break otherwise).
+2. **Railway staging environment** — in the Railway project, add an environment
+   named `staging` and point its deploy trigger at the **`staging` git branch**
+   (Settings → Source → branch). Set its variables to the staging Supabase values
+   above + a `WORLD_SEED` (use the **same seed as prod** for universe parity, or a
+   distinct one if you want an isolated test universe) + `OMNIPLEX_DEV_LOGIN=1`
+   (staging only — makes two-session playtests frictionless; NEVER set this in
+   production). Enable **"Wait for CI"** (Settings → Deploy) so a red run can't
+   deploy.
+3. Migrations run automatically on every staging deploy (the same
+   `node scripts/migrate.mjs` start command), against the **staging** DB — so a
+   big migration stack is proven on a throwaway database before it ever touches
+   prod.
+
+### Promoting to production
+
+When staging is solid and playtested:
+
+```bash
+git checkout main
+git merge staging          # fast-forward / merge the whole update
+git push                   # prod deploys + migrates
+git checkout staging       # back to the WIP branch
+```
+
+Production's Railway env (tracking `main`) deploys and migrates as usual. Because
+both environments use the identical build + `migrate.mjs` start command, prod sees
+exactly what staging already validated.
