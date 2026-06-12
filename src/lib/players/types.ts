@@ -80,6 +80,15 @@ export interface Player {
    * cartography rank/title (`cartography.ts`). Starts at 0 (no backfill).
    */
   charted: number;
+  /**
+   * The FITTED ship modules (Combat-1a) — an ordered list of `modules.ts` catalog
+   * ids in slot order. Length ≤ the current ship's slot count
+   * (`shipSlots(shipId)`); an id may repeat if the player owns + fits duplicates.
+   * Modules are OWNED in `player_modules`; this is the subset currently fitted.
+   * Trimmed on a ship change to a smaller hull (the extras stay owned). Defaults
+   * to `[]` (nothing fitted).
+   */
+  loadout: string[];
   /** ISO timestamp the row was created. */
   createdAt: string;
 }
@@ -122,5 +131,7 @@ export interface PlayerRow {
   landed: boolean;
   encounter: PlayerEncounter | null;
   charted: number;
+  /** Fitted module-id list (jsonb array). Defaults to `[]`. */
+  loadout: string[] | null;
   created_at: string;
 }

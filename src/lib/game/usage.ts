@@ -60,6 +60,10 @@ export const VERBS: string[] = [
   "buy",
   "shipyard",
   "buyship",
+  "loadout",
+  "fit",
+  "equip",
+  "unequip",
   "standing",
   "contracts",
   "fulfill",
@@ -278,6 +282,23 @@ export const USAGE: Record<string, UsageDescriptor> = {
   buyship: {
     desc: "buy & swap to another ship at a settlement/outpost (net of your trade-in)",
     slots: [{ name: "id" }],
+  },
+  loadout: {
+    desc: "show your ship's module slots: what's fitted and what you can equip",
+    slots: [],
+  },
+  fit: {
+    desc: "alias for loadout",
+    slots: [],
+    alias: true,
+  },
+  equip: {
+    desc: "fit an owned ship module into a free slot",
+    slots: [{ name: "module" }],
+  },
+  unequip: {
+    desc: "remove a fitted ship module (it stays in your hold)",
+    slots: [{ name: "module" }],
   },
   standing: {
     desc: "show your reputation with each NPC faction",

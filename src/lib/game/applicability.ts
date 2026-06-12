@@ -77,6 +77,10 @@ const INFORMATIONAL = new Set([
   // it shows the off-hub note itself when you can't yet `buyship` here (the
   // actual purchase is the economy-gated `buyship`).
   "shipyard",
+  // Combat-1a — the fitting screen. Read-only (browse your ship's module slots),
+  // usable in every state; the `fit` alias follows its canonical `loadout` verb.
+  "loadout",
+  "fit",
 ]);
 
 /** Combat actions — applicable ONLY while in an encounter. */
@@ -172,6 +176,11 @@ const ANYTIME_OUT_OF_COMBAT = new Set([
   // player-guidance — emergency rescue. Works stranded in ANY embark/surface
   // state (the anti-softlock safety net), but not mid-fight: `flee` first.
   "distress",
+  // Combat-1a — refit your ship's modules. Allowed in either embark/surface state
+  // and anywhere, but NOT mid-fight (you can't swap gear in the middle of a
+  // battle); the fitting screen (`loadout`) stays informational.
+  "equip",
+  "unequip",
 ]);
 
 /**

@@ -36,6 +36,13 @@ export interface Ship {
   name: string;
   /** Cargo-hold capacity this ship grants (becomes `players.cargo_cap`). */
   cargoCap: number;
+  /**
+   * Module-slot count (Combat-1a): how many ship modules this hull can fit at
+   * once. Strictly ascending with cargo/price (shuttle 2 → hauler 5). Any module
+   * type fits any slot (shallow model — no per-slot-type counts). The fitting
+   * rules in `modules.ts` cap a loadout's length at this value.
+   */
+  slots: number;
   /** Purchase price in credits (the starter is free at 0). */
   price: number;
   /** Optional flavor text. */
@@ -67,6 +74,7 @@ export const SHIPS: readonly Ship[] = [
     id: "shuttle",
     name: "Shuttle",
     cargoCap: 50,
+    slots: 2,
     price: 0,
     blurb: "The standard-issue starter hull. Cramped, but it's yours and it flies.",
   },
@@ -74,6 +82,7 @@ export const SHIPS: readonly Ship[] = [
     id: "courier",
     name: "Courier",
     cargoCap: 150,
+    slots: 3,
     price: 6_000,
     blurb: "A nimble light hauler — triple the hold for your first real trade runs.",
     // ≈ 3,580 cr of parts (< 6,000 buy price).
@@ -83,6 +92,7 @@ export const SHIPS: readonly Ship[] = [
     id: "freighter",
     name: "Freighter",
     cargoCap: 500,
+    slots: 4,
     price: 50_000,
     blurb: "A proper cargo vessel. Bulk minerals, big contract deliveries.",
     // ≈ 26,450 cr of parts + ingots (< 50,000 buy price).
@@ -98,6 +108,7 @@ export const SHIPS: readonly Ship[] = [
     id: "hauler",
     name: "Hauler",
     cargoCap: 1_500,
+    slots: 5,
     price: 250_000,
     blurb: "An industrial leviathan. The endgame hold — and the endgame price.",
     // ≈ 121,920 cr of parts + ingots (< 250,000 buy price).
@@ -138,6 +149,11 @@ export function getShip(id: string): Ship {
 /** A ship's cargo-hold capacity. Throws on unknown id. */
 export function shipCargoCap(id: string): number {
   return getShip(id).cargoCap;
+}
+
+/** A ship's module-slot count (Combat-1a). Throws on unknown id. */
+export function shipSlots(id: string): number {
+  return getShip(id).slots;
 }
 
 /**

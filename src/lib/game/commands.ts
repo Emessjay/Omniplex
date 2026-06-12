@@ -141,6 +141,7 @@ import {
   shipTradeIn,
   isBuildableShip,
   shipRecipeOf,
+  shipSlots,
 } from "./ships";
 import {
   INGOTS,
@@ -148,6 +149,16 @@ import {
   isIngotId,
   getIngot,
 } from "./ingots";
+import {
+  MODULE_IDS,
+  isModuleId,
+  getModule,
+  moduleValue,
+  canEquip,
+  loadoutAfterEquip,
+  loadoutAfterUnequip,
+  trimLoadout,
+} from "./modules";
 import {
   isCropId,
   getCrop,
@@ -218,6 +229,7 @@ import {
   renderInventory,
   renderUpgrades,
   renderShipyard,
+  renderLoadout,
   renderBases,
   renderStorage,
   renderWho,
@@ -765,6 +777,10 @@ interface ArgDomainContext {
   herdCandidates: string[] | null;
   /** Ship ids you can swap to — every catalog ship except the one you fly. */
   buyshipCandidates: string[] | null;
+  /** Owned module ids you can equip right now (free slot + an unfitted copy). */
+  equipCandidates: string[] | null;
+  /** Currently-fitted module ids — the `unequip` arg domain. */
+  unequipCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -778,6 +794,8 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   ranchCandidates: null,
   herdCandidates: null,
   buyshipCandidates: null,
+  equipCandidates: null,
+  unequipCandidates: null,
 };
 
 /**
@@ -876,6 +894,22 @@ async function loadArgDomainContext(
     // re-buying it). Derived purely from the player row — no DB read needed.
     return { ...EMPTY_ARG_CONTEXT, buyshipCandidates: SHIP_IDS.filter((id) => id !== player.shipId) };
   }
+  if (verb === "equip") {
+    // The owned modules you can fit RIGHT NOW: a free slot AND an unfitted copy.
+    // Same `canEquip` gate the handler enforces, so help can't offer an unfittable
+    // module (and the slot-count + ownership are read from authoritative state).
+    const owned = await world.getPlayerModules(player.id);
+    const slots = shipSlots(player.shipId);
+    const equipable = owned
+      .filter((m) => canEquip(player.loadout, m.qty, m.moduleId, slots))
+      .map((m) => m.moduleId);
+    return { ...EMPTY_ARG_CONTEXT, equipCandidates: equipable };
+  }
+  if (verb === "unequip") {
+    // You can only unequip a module that's currently fitted — the distinct ids in
+    // the loadout. No DB read needed (the loadout rides on the player row).
+    return { ...EMPTY_ARG_CONTEXT, unequipCandidates: [...new Set(player.loadout)] };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -907,6 +941,10 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       if ((verb === "feed" || verb === "slaughter") && argIndex === 0) return ctx.herdCandidates;
       // `buyship`'s domain: every catalog ship except your current one.
       if (verb === "buyship" && argIndex === 0) return ctx.buyshipCandidates;
+      // `equip`'s domain: owned modules fittable right now (free slot + unfitted
+      // copy). `unequip`'s domain: the modules currently fitted (Combat-1a).
+      if (verb === "equip" && argIndex === 0) return ctx.equipCandidates;
+      if (verb === "unequip" && argIndex === 0) return ctx.unequipCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants, the
       // blast-furnace smelting tier, the crop-farming crop farm, and the
@@ -926,7 +964,7 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // (Keystone 2b — granted via `setShip`, not storage). One verb, four
       // building-gated branches.
       if (verb === "produce" && argIndex === 0)
-        return [...INGOT_IDS, ...PART_IDS, ...UPGRADE_IDS, ...SHIP_IDS.filter(isBuildableShip)];
+        return [...INGOT_IDS, ...PART_IDS, ...UPGRADE_IDS, ...MODULE_IDS, ...SHIP_IDS.filter(isBuildableShip)];
       // `craft` now only cooks food (P9a — upgrades moved to `produce`). Its arg
       // is OPAQUE: `handleCraft` resolves a food prefix itself, so a fully-typed
       // upgrade id reaches the handler and gets a redirect to `produce` (rather
@@ -1159,6 +1197,13 @@ async function dispatchResolved(
       return handleShipyard(player, seed);
     case "buyship":
       return handleBuyship(player, args);
+    case "loadout":
+    case "fit":
+      return handleLoadout(player);
+    case "equip":
+      return handleEquip(player, args);
+    case "unequip":
+      return handleUnequip(player, args);
     case "standing":
       return handleStanding(player);
     case "contracts":
@@ -1210,6 +1255,10 @@ function emptyDomainNote(verb: string): string {
     case "feed":
     case "slaughter":
       return "you herd no animals here — `ranch` one first";
+    case "equip":
+      return "no modules to fit — `produce` one at a base, or `unequip` to free a slot";
+    case "unequip":
+      return "nothing fitted — `equip` a module first";
     default:
       return "nothing available right now";
   }
@@ -3474,12 +3523,13 @@ async function handleFlee(player: Player): Promise<RenderFrame> {
 
 async function handleInventory(player: Player, seed: string): Promise<RenderFrame> {
   const here = planetAt(seed, locOf(player));
-  const [stacks, prices, materials, parts] = await Promise.all([
+  const [stacks, prices, materials, parts, modules] = await Promise.all([
     world.getInventory(player.id),
     // Prices are per-system now — show the prices of the system you're in.
     world.getMarketPrices(systemKey(systemOf(player))),
     world.getPlayerMaterials(player.id),
     world.getPlayerParts(player.id),
+    world.getPlayerModules(player.id),
   ]);
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const cargoUsed = stacks.reduce((sum, s) => sum + s.qty, 0);
@@ -3506,6 +3556,21 @@ async function handleInventory(player: Player, seed: string): Promise<RenderFram
       value: materialValue(m.materialId),
       heal: getMaterial(m.materialId).heal,
     })),
+    // Ship modules (Combat-1a) — owned fitting gear, fitted or not. Listed with
+    // the slot + value; an `equip` action where a copy is fittable right now.
+    modules: modules.map((m) => {
+      const mod = getModule(m.moduleId);
+      const fittedCount = fresh.loadout.filter((id) => id === m.moduleId).length;
+      return {
+        moduleId: m.moduleId,
+        qty: m.qty,
+        name: mod.name,
+        slot: mod.slot,
+        value: moduleValue(m.moduleId),
+        fitted: fittedCount,
+        canEquip: canEquip(fresh.loadout, m.qty, m.moduleId, shipSlots(fresh.shipId)),
+      };
+    }),
     cargoUsed,
     cargoCap: fresh.cargoCap,
     shipName: getShip(fresh.shipId).name,
@@ -4819,9 +4884,9 @@ async function handleProduce(
   args: string[],
 ): Promise<RenderFrame> {
   const targetId = args[0]?.toLowerCase();
-  if (!targetId) return errorFrame("Usage: produce <ingot|part|upgrade|ship> [qty]  (see `storage`)");
-  if (!isIngotId(targetId) && !isPartId(targetId) && !isUpgradeId(targetId) && !isBuildableShip(targetId)) {
-    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the ingot/parts/ship list.`);
+  if (!targetId) return errorFrame("Usage: produce <ingot|part|upgrade|module|ship> [qty]  (see `storage`)");
+  if (!isIngotId(targetId) && !isPartId(targetId) && !isUpgradeId(targetId) && !isModuleId(targetId) && !isBuildableShip(targetId)) {
+    return errorFrame(`Can't produce "${targetId}". Try \`storage\` for the ingot/parts/module/ship list.`);
   }
 
   const base = await baseHere(player, seed);
@@ -4883,6 +4948,13 @@ async function handleProduce(
   // capacity-free — to split out.
   if (isUpgradeId(targetId)) {
     return handleProduceUpgrade(player, base, stored, args[1], targetId);
+  }
+
+  // Combat-1a: a module id manufactures the MODULE (consuming siloed PARTS,
+  // granting ownership into `player_modules`) — like the upgrade branch, the
+  // module isn't siloed, so there's no capacity check. Equip it via `equip`.
+  if (isModuleId(targetId)) {
+    return handleProduceModule(player, base, stored, args[1], targetId);
   }
 
   // Keystone 2b: a buildable ship id BUILDS the ship (consuming siloed PARTS +
@@ -5073,6 +5145,66 @@ async function handleProduceUpgrade(
 }
 
 /**
+ * Manufacture a ship MODULE at the current region's production line (Combat-1a —
+ * the fitting gear). The recipe is ship PARTS (`modules.ts`), consumed from THIS
+ * base's silo storage (`add_base_storage(-)`); on success the module is GRANTED to
+ * the player (`add_player_module(+)`) rather than banked into storage — like
+ * upgrades, so there's no capacity check (modules don't sit in the silo). The
+ * player then fits it with `equip`. Validation (qty, inputs siloed) happens BEFORE
+ * any mutation, so a failed produce changes nothing; consumption + grant are
+ * atomic via the RPCs. The base/production-line/power checks already ran in
+ * `handleProduce`.
+ */
+async function handleProduceModule(
+  player: Player,
+  base: { id: string; name: string | null; rKey: string },
+  stored: world.StorageStack[],
+  qtyArg: string | undefined,
+  moduleId: string,
+): Promise<RenderFrame> {
+  const mod = getModule(moduleId);
+  const recipe = mod.recipe;
+
+  const requested = qtyArg === undefined ? 1 : toInt(qtyArg);
+  if (requested === null || requested <= 0) {
+    return errorFrame("Usage: produce <module> [qty]  — qty must be a positive whole number.");
+  }
+
+  // Siloed amounts. The recipe references PART ids (parts live in storage).
+  const siloed: Record<string, number> = {};
+  for (const s of stored) siloed[s.itemId] = s.qty;
+
+  if (!canProduce(siloed, recipe, requested)) {
+    const short = Object.entries(recipe)
+      .filter(([pid, perUnit]) => (siloed[pid] ?? 0) < perUnit * requested)
+      .map(([pid, perUnit]) => `${perUnit * requested} ${getPart(pid).name} in the silo (have ${siloed[pid] ?? 0})`);
+    return errorFrame(`Can't produce ${requested} ${mod.name} — need ${short.join(", ")}.`);
+  }
+
+  // Consume the part inputs from the silo, then grant the module — atomic RPCs.
+  for (const [pid, perUnit] of Object.entries(recipe)) {
+    await world.addBaseStorage(base.id, pid, -(perUnit * requested));
+  }
+  const owned = await world.addPlayerModule(player.id, moduleId, requested);
+
+  const consumed = Object.entries(recipe)
+    .map(([pid, perUnit]) => `${perUnit * requested} ${getPart(pid).name}`)
+    .join(" + ");
+  return frame([
+    line([
+      text(`Manufactured ${requested} ${mod.name}. `, "success"),
+      text(`Consumed ${consumed}. `, "muted"),
+      text(`You now own ${owned}.`, "accent"),
+    ]),
+    line([
+      text("`equip` ", "muted"),
+      text(`${moduleId}`, "default"),
+      text(" to fit it to your ship.", "muted"),
+    ]),
+  ]);
+}
+
+/**
  * Build a SHIP at the current region's production line (Keystone 2b — the
  * materials-not-cash alternative to `buyship`). The recipe is ship PARTS +
  * INGOTS (`ships.ts`), consumed from THIS base's silo storage
@@ -5137,6 +5269,9 @@ async function handleProduceShip(
     await world.addBaseStorage(base.id, itemId, -qty);
   }
   await world.setShip(player.id, ship.id, ship.cargoCap);
+  // Combat-1a: trim the loadout to the new hull's slot count (a smaller ship
+  // can't keep more modules fitted than it has slots; the extras stay owned).
+  await world.setLoadout(player.id, trimLoadout(fresh.loadout, ship.slots));
 
   const current = getShip(fresh.shipId);
   const consumed = Object.entries(recipe)
@@ -5738,6 +5873,9 @@ async function handleBuyship(player: Player, args: string[]): Promise<RenderFram
   // Atomic: charge the net cost, then swap ship + cargo capacity together.
   const newBalance = await world.addPlayerCredits(player.id, -netCost);
   await world.setShip(player.id, target.id, target.cargoCap);
+  // Combat-1a: trim the loadout to the new hull's slot count (a downgrade can't
+  // keep more modules fitted than it has slots; the extras stay owned).
+  await world.setLoadout(player.id, trimLoadout(fresh.loadout, target.slots));
 
   return frame([
     line([
@@ -5747,6 +5885,148 @@ async function handleBuyship(player: Player, args: string[]): Promise<RenderFram
       text(`Balance ${newBalance} cr.`, "accent"),
     ]),
     line(text(`  Cargo capacity now ${target.cargoCap}.`, "muted")),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// loadout / equip / unequip  (Combat-1a — ship-module fitting). `loadout` (alias
+// `fit`) is the informational fitting screen; `equip`/`unequip` mutate the
+// persisted loadout under the pure rules in `modules.ts`. Modules are OWNED in
+// `player_modules` (produced at a base) and the FITTED subset is `players.loadout`
+// (≤ the ship's slot count, trimmed on a ship change). No fighting yet — the
+// stats are consumed by Combat-1b.
+// ---------------------------------------------------------------------------
+
+/**
+ * `loadout` (alias `fit`) — the fitting screen: the ship + slots used/total, each
+ * fitted module (slot + key stat) with an `unequip` action, and the owned-but-
+ * unfitted modules with an `equip` action (P9b red when there's no free slot).
+ * Informational; usable anywhere.
+ */
+async function handleLoadout(player: Player): Promise<RenderFrame> {
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const owned = await world.getPlayerModules(fresh.id);
+  const slots = shipSlots(fresh.shipId);
+  const loadout = fresh.loadout;
+
+  // Fitted modules, in slot order.
+  const fitted = loadout.map((id) => {
+    const m = getModule(id);
+    return { moduleId: id, name: m.name, slot: m.slot, stat: moduleStatLabel(m) };
+  });
+
+  // Owned-but-unfitted: for each owned module, how many copies are not fitted.
+  const fittedCount = new Map<string, number>();
+  for (const id of loadout) fittedCount.set(id, (fittedCount.get(id) ?? 0) + 1);
+  const unfitted = owned
+    .map((m) => ({ moduleId: m.moduleId, unfitted: m.qty - (fittedCount.get(m.moduleId) ?? 0) }))
+    .filter((m) => m.unfitted > 0)
+    .map((m) => {
+      const mod = getModule(m.moduleId);
+      return {
+        moduleId: m.moduleId,
+        name: mod.name,
+        slot: mod.slot,
+        stat: moduleStatLabel(mod),
+        unfitted: m.unfitted,
+        // Red when there's no free slot to fit it into right now.
+        canEquip: canEquip(loadout, owned.find((o) => o.moduleId === m.moduleId)?.qty ?? 0, m.moduleId, slots),
+      };
+    });
+
+  return renderLoadout({
+    shipName: getShip(fresh.shipId).name,
+    slotsUsed: loadout.length,
+    slotsTotal: slots,
+    fitted,
+    unfitted,
+  });
+}
+
+/** A short human label for a module's headline stat (for the fitting/inventory UI). */
+function moduleStatLabel(m: ReturnType<typeof getModule>): string {
+  switch (m.stats.slot) {
+    case "weapon":
+      return `${m.stats.damage} dmg (${m.stats.profile})`;
+    case "shield":
+      return `${m.stats.absorb} absorb`;
+    case "evasion":
+      return `${m.stats.evade} evade`;
+    case "ecm":
+      return `${m.stats.jam} jam`;
+    case "targeting":
+      return `${m.stats.lock} lock`;
+  }
+}
+
+/**
+ * `equip <module>` — fit one owned, unfitted copy of a module into a free slot.
+ * Validate `isModuleId` + `canEquip` (free slot AND an unfitted owned copy) — else
+ * a clear error — then persist `loadoutAfterEquip`. `ANYTIME_OUT_OF_COMBAT`.
+ */
+async function handleEquip(player: Player, args: string[]): Promise<RenderFrame> {
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: equip <module>  (see `loadout`)");
+  if (!isModuleId(target)) {
+    return errorFrame(`Unknown module "${target}". \`produce\` one at a base, then \`equip\` it.`);
+  }
+
+  const mod = getModule(target);
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const owned = await world.getPlayerModules(fresh.id);
+  const ownedQty = owned.find((m) => m.moduleId === target)?.qty ?? 0;
+  const slots = shipSlots(fresh.shipId);
+  const shipName = getShip(fresh.shipId).name;
+
+  if (ownedQty <= 0) {
+    return errorFrame(`You don't own a ${mod.name} — \`produce\` one at a base's production line first.`);
+  }
+  if (fresh.loadout.length >= slots) {
+    return errorFrame(`No free slots — your ${shipName} has ${slots} (all fitted). \`unequip\` one first, or fly a bigger ship.`);
+  }
+  // Owns some, has a slot, but every copy is already fitted.
+  if (!canEquip(fresh.loadout, ownedQty, target, slots)) {
+    return errorFrame(`You don't own an unfitted ${mod.name} — all ${ownedQty} are already equipped.`);
+  }
+
+  const next = loadoutAfterEquip(fresh.loadout, target);
+  await world.setLoadout(fresh.id, next);
+  return frame([
+    line([
+      text(`Equipped the ${mod.name}. `, "success"),
+      text(`(${mod.slot} — ${moduleStatLabel(mod)}) `, "muted"),
+      text(`Slots ${next.length}/${slots}.`, "accent"),
+    ]),
+  ]);
+}
+
+/**
+ * `unequip <module>` — remove one fitted copy of a module (first occurrence). The
+ * module stays OWNED in `player_modules`; only the loadout shrinks. Error if it
+ * isn't fitted. `ANYTIME_OUT_OF_COMBAT`.
+ */
+async function handleUnequip(player: Player, args: string[]): Promise<RenderFrame> {
+  const target = args[0]?.toLowerCase();
+  if (!target) return errorFrame("Usage: unequip <module>  (see `loadout`)");
+  if (!isModuleId(target)) {
+    return errorFrame(`Unknown module "${target}". See \`loadout\` for what's fitted.`);
+  }
+
+  const mod = getModule(target);
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  if (!fresh.loadout.includes(target)) {
+    return errorFrame(`The ${mod.name} isn't fitted — nothing to unequip.`);
+  }
+
+  const next = loadoutAfterUnequip(fresh.loadout, target);
+  await world.setLoadout(fresh.id, next);
+  const slots = shipSlots(fresh.shipId);
+  return frame([
+    line([
+      text(`Unequipped the ${mod.name}. `, "success"),
+      text(`It's still in your hold. `, "muted"),
+      text(`Slots ${next.length}/${slots}.`, "accent"),
+    ]),
   ]);
 }
 

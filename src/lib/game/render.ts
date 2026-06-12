@@ -1271,6 +1271,20 @@ export interface InventoryView {
    * cargo cost. Listed with name + fixed sell value, like materials.
    */
   parts?: { partId: string; qty: number; name: string; value: number }[];
+  /**
+   * Ship modules owned (Combat-1a — fitting gear, no cargo cost). Listed with the
+   * slot + fixed value + how many are fitted; an `equip` action when a copy is
+   * fittable right now (`canEquip` false ⇒ no free slot, marked red).
+   */
+  modules?: {
+    moduleId: string;
+    qty: number;
+    name: string;
+    slot: string;
+    value: number;
+    fitted: number;
+    canEquip: boolean;
+  }[];
   cargoUsed: number;
   cargoCap: number;
   /** The ship the player flies — its name is shown alongside the cargo line. */
@@ -1399,6 +1413,102 @@ export function renderInventory(view: InventoryView): RenderFrame {
       );
     }
   }
+
+  // Ship modules (Combat-1a) — owned fitting gear (fitted or not). Each shows its
+  // slot + value + fitted count, with an `equip` action (red when no free slot).
+  const modules = view.modules ?? [];
+  if (modules.length > 0) {
+    lines.push(line(text("Ship modules (`equip` to fit; see `loadout`):", "heading")));
+    for (const m of modules) {
+      const spans: RenderSpan[] = [
+        text("  • ", "muted"),
+        text(`${m.name} ×${m.qty}  `, "default"),
+        text(`(${m.slot})  `, "muted"),
+        text(`@ ${m.value}/u  `, "muted"),
+      ];
+      if (m.fitted > 0) spans.push(text(`${m.fitted} fitted  `, "accent"));
+      spans.push(
+        action(`equip ${m.moduleId}`, `equip ${m.moduleId}`, {
+          style: "link",
+          title: `equip ${m.name}`,
+          disabled: !m.canEquip,
+        }),
+      );
+      lines.push(line(spans));
+    }
+  }
+  return frame(lines);
+}
+
+export interface LoadoutView {
+  /** The ship the player flies (its name heads the screen). */
+  shipName: string;
+  /** Slots currently filled. */
+  slotsUsed: number;
+  /** The ship's total module slots. */
+  slotsTotal: number;
+  /** Fitted modules in slot order — each with an `unequip` action. */
+  fitted: { moduleId: string; name: string; slot: string; stat: string }[];
+  /** Owned-but-unfitted modules — each with an `equip` action (red when no free slot). */
+  unfitted: { moduleId: string; name: string; slot: string; stat: string; unfitted: number; canEquip: boolean }[];
+}
+
+/**
+ * The fitting screen (Combat-1a): ship + slots used/total, the fitted modules
+ * (slot + headline stat) each with an `unequip` action, the owned-but-unfitted
+ * modules each with an `equip` action (P9b red when there's no free slot), and a
+ * `produce <module>` hint when you've nothing to fit. Pure — the handler computes
+ * equip/unequip-ability + the red flags.
+ */
+export function renderLoadout(view: LoadoutView): RenderFrame {
+  const full = view.slotsUsed >= view.slotsTotal;
+  const lines: RenderLine[] = [
+    line([
+      text("Loadout ", "heading"),
+      text(`${view.shipName}  `, "default"),
+      text(`slots ${view.slotsUsed}/${view.slotsTotal}`, full ? "warning" : "accent"),
+    ]),
+  ];
+
+  if (view.fitted.length === 0) {
+    lines.push(line(text("Nothing fitted.", "muted")));
+  } else {
+    lines.push(line(text("Fitted:", "heading")));
+    for (const m of view.fitted) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${m.name}  `, "default"),
+          text(`(${m.slot} — ${m.stat})  `, "muted"),
+          action(`unequip ${m.moduleId}`, `unequip ${m.moduleId}`, {
+            style: "link",
+            title: `unequip ${m.name}`,
+          }),
+        ]),
+      );
+    }
+  }
+
+  if (view.unfitted.length > 0) {
+    lines.push(line(text("In the hold (unfitted):", "heading")));
+    for (const m of view.unfitted) {
+      lines.push(
+        line([
+          text("  • ", "muted"),
+          text(`${m.name} ×${m.unfitted}  `, "default"),
+          text(`(${m.slot} — ${m.stat})  `, "muted"),
+          action(`equip ${m.moduleId}`, `equip ${m.moduleId}`, {
+            style: "link",
+            title: `equip ${m.name}`,
+            disabled: !m.canEquip,
+          }),
+        ]),
+      );
+    }
+  } else if (view.fitted.length === 0) {
+    lines.push(line(text("`produce <module>` at a base's production line to build fitting gear.", "muted")));
+  }
+
   return frame(lines);
 }
 

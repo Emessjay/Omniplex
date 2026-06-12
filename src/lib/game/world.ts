@@ -461,6 +461,68 @@ export async function addPlayerPart(
 }
 
 // ---------------------------------------------------------------------------
+// Ship modules (player_modules) — the Combat-1a fitting gear the player owns
+// (fitted or not). Ownership counts only; the catalog lives in code
+// (`modules.ts`). Direct mirror of the player_parts adapters. The FITTED subset
+// is `players.loadout` (set via `setLoadout`).
+// ---------------------------------------------------------------------------
+
+export interface ModuleStack {
+  moduleId: string;
+  qty: number;
+}
+
+/** A player's owned ship modules (qty > 0), ascending by id for stable display. */
+export async function getPlayerModules(playerId: string): Promise<ModuleStack[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("player_modules")
+    .select("module_id, qty")
+    .eq("player_id", playerId)
+    .gt("qty", 0)
+    .order("module_id", { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    moduleId: (r as { module_id: string }).module_id,
+    qty: (r as { qty: number }).qty,
+  }));
+}
+
+/**
+ * Atomically adjust a module count by `delta` (negative to consume/sell); returns
+ * the new qty. Clamped at 0 in SQL, but handlers validate ownership first.
+ */
+export async function addPlayerModule(
+  playerId: string,
+  moduleId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("add_player_module", {
+    p_player: playerId,
+    p_module: moduleId,
+    p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+/**
+ * Set the player's FITTED loadout (`players.loadout` jsonb) — the ordered list of
+ * fitted module ids. The caller computes the new list with the pure `modules.ts`
+ * fitting ops (`loadoutAfterEquip`/`loadoutAfterUnequip`/`trimLoadout`) and
+ * validates against the ship's slot count before calling.
+ */
+export async function setLoadout(playerId: string, loadout: string[]): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ loadout })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Materials (player_materials) — harvested/looted/dropped goods. Ownership
 // counts only; the catalog (names, values) lives in code (`materials.ts`).
 // Direct mirror of the player_upgrades adapters above.

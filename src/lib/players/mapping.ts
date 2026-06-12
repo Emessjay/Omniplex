@@ -27,6 +27,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     landed: row.landed,
     encounter: row.encounter ?? null,
     charted: row.charted,
+    loadout: Array.isArray(row.loadout) ? row.loadout : [],
     createdAt: row.created_at,
   };
 }

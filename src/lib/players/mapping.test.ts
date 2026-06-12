@@ -23,6 +23,7 @@ describe("rowToPlayer", () => {
     landed: false,
     encounter: null,
     charted: 0,
+    loadout: [],
     created_at: "2026-06-07T00:00:00.000Z",
   };
 
@@ -47,6 +48,7 @@ describe("rowToPlayer", () => {
       landed: false,
       encounter: null,
       charted: 0,
+      loadout: [],
       createdAt: "2026-06-07T00:00:00.000Z",
     });
   });
