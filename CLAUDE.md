@@ -2417,3 +2417,39 @@ gotchas) accrete here as workers surface things worth persisting. See
   notoriety, ship-destruction + the free-replacement insurance) and Combat-3
   (live co-located duels on the 3b Realtime layer + the combat-logging penalty)
   build on this resolver + session.
+
+### Load-bearing decisions from `creature-blurbs` (deterministic blurb assembly)
+
+- **Procedural creatures now get Omniplex-voice blurbs assembled DETERMINISTICALLY
+  at runtime from a STATIC, pre-written component library — ZERO model/API calls.**
+  The library is authored OFFLINE by the Nimbus `compose-batch` tool (committed as
+  `src/lib/game/blurbs/creature-library.json`); this module is the runtime
+  assembler. NO migration (pure code + a committed JSON).
+- **`src/lib/game/blurbs/index.ts`** (pure): `assembleBlurb(library, species,
+  biome, seedParts) → string | null` (takes the library as an ARG — pure, testable;
+  `makeRng` variant pick, no `Date`/`Math.random`). Grammar: `[biome opener, ]` +
+  archetype SPINE clause + up to `MAX_TRAIT_CLAUSES`(2) trait clauses (fixed
+  `TRAIT_PRIORITY`, "none"-values skipped), comma-joined with a final "and",
+  capitalized, period-terminated. **`blurbOf(species, biome, ...seedParts)`** =
+  `assembleBlurb(LIBRARY, …) ?? speciesLabel(species)` (imports the committed
+  library).
+- **Component-key scheme (FIXED — the library is keyed by it; `compose-batch`
+  authors to it)**: `archetype.<archetypeId>#<n>` (the SPINE — missing ⇒ blurb is
+  `null` ⇒ fallback), `trait.<dimensionId>.<value>#<n>`, `biome.<biome>#<n>`; **3
+  variants** each (`#1`/`#2`/`#3`); fragments lowercase, no trailing punctuation.
+- **Partial-library tolerance is LOAD-BEARING** (the library fills asynchronously):
+  `pickFragment` chooses ONLY among variants that actually exist in the library, so
+  a missing key/variant never leaks `#n`/`undefined`; a missing biome opener or
+  trait clause is omitted; only a missing archetype spine yields `null` (→
+  `speciesLabel`). Ships + works against an EMPTY/partial library, lighting up as
+  it fills. The full 255-fragment library is dropped in by a separate lightweight
+  once the offline `compose-batch` run completes.
+- **Wiring**: `blurbOf(species, regionBiome, <stable per-occurrence seed parts>)`
+  replaces the bare `speciesLabel` at the genome-wildlife encounter sites
+  (explore/attack) in `commands.ts`; `speciesLabel` retained as the fallback +
+  terse form. Deterministic per occurrence.
+- **REUSE**: this assembler pattern (static library + grammar + seeded variant
+  pick + `speciesLabel`-style fallback) is the template for future blurb targets —
+  exploration sites, sapient species, planets — each a new key namespace authored
+  by `compose-batch`, never a runtime API call. See Nimbus `COMPOSE.md`
+  §"Batching a component LIBRARY".
