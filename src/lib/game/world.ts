@@ -1115,7 +1115,25 @@ export async function setShip(
   const db = getServerClient();
   const { error } = await db
     .from("players")
-    .update({ ship_id: shipId, cargo_cap: cargoCap })
+    // A newly-acquired ship (buyship / `produce <ship>`) is pristine: reset
+    // ship_condition to 100 in the SAME write that swaps ship_id + cargo_cap
+    // (Combat-2). So a swap never inherits the old hull's battle damage.
+    .update({ ship_id: shipId, cargo_cap: cargoCap, ship_condition: 100 })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
+ * Set the player's ship condition (0–100; the column CHECK enforces the range).
+ * Combat-2: a defeat tows the ship in at the disabled floor; `repair` restores
+ * it. Read-compute-write on the player's own sequential commands (same model as
+ * fuel/health), so no atomic RPC is needed.
+ */
+export async function setShipCondition(playerId: string, condition: number): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ ship_condition: condition })
     .eq("id", playerId);
   if (error) throw error;
 }

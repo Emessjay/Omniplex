@@ -16,6 +16,9 @@ export function rowToPlayer(row: PlayerRow): Player {
     warpFuel: row.warp_fuel,
     cargoCap: row.cargo_cap,
     shipId: row.ship_id,
+    // Defensive default for old rows / fixtures predating the column (the
+    // migration backfills existing rows to 100; this keeps the mapper total).
+    shipCondition: row.ship_condition ?? 100,
     manifold: row.manifold,
     galaxy: row.galaxy,
     arm: row.arm,

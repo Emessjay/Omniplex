@@ -124,6 +124,7 @@ function statusFromPlayer(player?: Player): StatusBar | undefined {
     health: player.health,
     maxHealth: 100,
     ship: player.shipId,
+    condition: player.shipCondition ?? 100,
   };
 }
 
@@ -135,6 +136,8 @@ function statusFromPlayer(player?: Player): StatusBar | undefined {
 function StatusHeader({ status }: { status?: StatusBar }) {
   if (!status) return null;
   const lowHealth = status.health <= status.maxHealth * 0.3;
+  // Ship hull condition (Combat-2): red when damaged below half (P9b color-only).
+  const lowCondition = status.condition < 50;
   return (
     <div
       className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-term-muted/30 px-3 py-1.5 text-xs"
@@ -161,7 +164,13 @@ function StatusHeader({ status }: { status?: StatusBar }) {
         <span className={STYLE_CLASS.default}>{status.warpFuel}</span>
       </span>
       <span className={STYLE_CLASS.muted}>·</span>
-      <span className={STYLE_CLASS.default}>{status.ship}</span>
+      <span>
+        <span className={STYLE_CLASS.default}>{status.ship}</span>
+        <span className={STYLE_CLASS.muted}> hull </span>
+        <span className={lowCondition ? STYLE_CLASS.danger : STYLE_CLASS.default}>
+          {status.condition}%
+        </span>
+      </span>
       {status.heat ? (
         <>
           <span className={STYLE_CLASS.muted}>·</span>

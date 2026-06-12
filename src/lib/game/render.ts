@@ -280,6 +280,10 @@ export interface ScanView {
   fuel?: number;
   /** Warp fuel (burned to `warp` between systems). */
   warpFuel?: number;
+  /** Ship hull condition 0–100 (Combat-2); shown red when low, with a `repair` hint. */
+  shipCondition?: number;
+  /** True when this region is a trade location (settlement) where `repair` works. */
+  repairAvailable?: boolean;
   /** Active combat encounter to surface (with `attack`/`flee` options), or null. */
   encounter?: EncounterView | null;
   /** Bases present in this region (shared-world presence); yours are marked. */
@@ -573,6 +577,27 @@ export function renderScan(view: ScanView): RenderFrame {
         text(`${view.warpFuel ?? 0}`, "default"),
       ]),
     );
+  }
+
+  // Ship hull condition (Combat-2): red when damaged. At a trade location offer a
+  // clickable `repair` hint; elsewhere a damaged ship is still flyable — tells the
+  // player they can limp to a hub to fix it.
+  if (view.shipCondition !== undefined) {
+    const cond = view.shipCondition;
+    const lowCond = cond < 50;
+    const spans: RenderSpan[] = [
+      text("hull ", "muted"),
+      text(`${cond}%`, lowCond ? "danger" : "default"),
+    ];
+    if (cond < 100) {
+      spans.push(text("   ", "muted"));
+      if (view.repairAvailable) {
+        spans.push(action("repair", "repair", { style: "link", title: "repair your hull here (credits or mined Iron Ore)" }));
+      } else {
+        spans.push(text("(repair at a settlement/outpost)", "muted"));
+      }
+    }
+    lines.push(line(spans));
   }
 
   // Active combat encounter: name the creature, its HP, and the attack/flee

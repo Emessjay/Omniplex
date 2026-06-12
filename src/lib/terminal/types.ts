@@ -92,6 +92,12 @@ export interface StatusBar {
   /** Current ship's display name. */
   ship: string;
   /**
+   * Ship hull CONDITION 0–100 (Combat-2): `hull N%`. Rendered RED (`danger`,
+   * P9b color-only) when low so a disabled/damaged ship is always visible, even
+   * after `clear`. Always present.
+   */
+  condition: number;
+  /**
    * Heat/notoriety readout — the tier title (e.g. "WANTED"), present ONLY when
    * not clean (tier > 0); omitted when clean. Rendered in the `danger` style
    * (color-only, P9b — no geometry change). Additive; the shared Combat ⇄ Trade
