@@ -2361,3 +2361,59 @@ gotchas) accrete here as workers surface things worth persisting. See
   PvP is mandatory but ONLINE-only (live mode); a destroyed-last-ship player with
   no assets gets a free replacement (emergency services) — pins Combat-2's
   insurance + the async/live split keying off online presence.**
+
+### Load-bearing decisions from `combat-resolver` (Combat-1b — interactive ship combat + PvE bounty board)
+
+- **The CENTREPIECE of the Combat pillar (completes Combat-1): a stateful,
+  turn-by-turn ship-to-ship fight proven against a PvE bounty board.** Consumes
+  Combat-1a loadouts (the fitted modules' `stats` finally bite). PvE ship combat
+  ONLY — PvP/live-mode/combat-logging-penalty/ship-destruction+insurance/notoriety
+  are Combat-2/3 (the session is SHAPED to carry them). On-foot wildlife
+  `attack`/`flee` is untouched (a SEPARATE system).
+- **Pure engine `src/lib/game/combat.ts`** (no `Date`/`Math.random` — rolls + NPC
+  choice injected at the handler boundary, the `combatRound`/`contractsAt`
+  pattern): `ShipCombatStats {hullMax, shield, evade, jam, lock, weapons:{burst,
+  sustained,missile}}`; `loadoutStats(loadout, shipId)` aggregates fitted modules
+  (+ `Ship.hull`/`shipHull`, ascending; empty loadout = hull only). A fight is one
+  **approach** phase (sets `Range` close|mid|long) then repeated **exchange**
+  rounds. `RANGE_WEAPON_MULT` (burst✦close / sustained✦mid / missile✦long).
+  `resolveApproach(playerChoice, enemyChoice, rolls)` / `resolveExchange(state,
+  playerChoice, enemyChoice, rolls) → {state, log, outcome?}` with the FOUR
+  counters: targeting↔evasion (lock vs evade in hit-quality), ecm↔targeting (jam
+  cuts effective lock), shield↔burst (extra burst absorb), evasion↔missiles (evade
+  dodges missile damage). Subsystem choices `weapons` (cut enemy weapons next
+  round) / `engines` (cut enemy evade next round) / `hull` (straight) / `alpha`
+  (bonus damage, drop your own evade). Seeded NPC AI `npcApproach`/`npcExchange`.
+  Seeded contracts: `combat.test.ts` + `combat-resolver.test.ts`.
+- **`bountiesAt(seed, hubKey, timeBucket, rankTier?)`** (pure, mirrors
+  `contractsAt`): deterministic premium tier-scaled rotating PvE wanted-ships
+  posted at a hub (aligned to `factionAt`), `key = "<hub>|<bucket>|<slot>"`.
+- **Session + verbs** (migration `20260611120000_combat-resolver.sql`, forward-
+  only/idempotent): **`players.combat jsonb`** (nullable; the active `ShipCombat`
+  session — bounty + both ships' SNAPSHOT stats + live hull/shield + phase;
+  distinct from `encounter`; persists across reconnect — combat-logging penalty is
+  Combat-3) on `Player`/`PlayerRow`/`rowToPlayer`; `world.setShipCombat`.
+  **`completed_bounties`** (`player_id→players cascade, bounty_key text, pk`,
+  read-own RLS, service-role writes — mirrors `completed_contracts`);
+  `getCompletedBountyKeys`/`markBountyComplete`. **`engage <choice>`** = the ONE
+  phase-contextual combat verb (arg-0 domain = the current phase's choices,
+  loaded in `loadArgDomainContext`; clickable). **`flee`** EXTENDED to ship combat
+  (spans on-foot AND ship). **`bounties`** (INFORMATIONAL, off-hub note) +
+  **`hunt <n>`** (HUB_COMBAT — `atTradeLocation && !inCombat && !inShipCombat` →
+  snapshot `loadoutStats` and start the fight). `render.ts` `renderBounties` +
+  combat-phase frames.
+- **Outcomes** (`commands.ts`): **victory** → `addPlayerCredits(reward)` +
+  `addReputation(factionId, rewardRep)` + `markBountyComplete` + clear session.
+  **PvE defeat = NON-PERMANENT** "disabled & recovered" → clear session,
+  `addPlayerCredits(-penalty)`, `setDistressLocation(nearest outpost, MAX_HEALTH)`
+  — **NO ship loss** (destruction + emergency-ship insurance is Combat-2). `flee` →
+  clear on success / enemy parting exchange on fail. No persistent hull damage
+  between fights (each starts at full).
+- **Applicability**: `PlayerStateView.inShipCombat` (`combat != null`) OVERRIDES
+  everything (like `inCombat`) → only `engage`/`flee` + `ALWAYS`; `bounties`
+  informational; `hunt` hub-gated. `flee` applies in EITHER `inCombat` OR
+  `inShipCombat`. Help-parity + per-state suites updated.
+- **Next**: Combat-2 (async PvP + Mercenary Charter: piracy, base raids,
+  notoriety, ship-destruction + the free-replacement insurance) and Combat-3
+  (live co-located duels on the 3b Realtime layer + the combat-logging penalty)
+  build on this resolver + session.
