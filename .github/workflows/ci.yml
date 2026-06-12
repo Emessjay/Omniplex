@@ -71,12 +71,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # CI-ONLY: stub the Supabase-provided `auth` schema. The migrations
-      # reference `auth.users` (FK target) + `auth.uid()` (RLS), which Supabase
-      # provides in prod but vanilla postgres:16 does not. This mimics just
-      # enough for the migrations to apply on a clean DB. (migrate.mjs must NOT
-      # create these — Supabase owns the auth schema in production.)
-      - name: Bootstrap Supabase auth schema (CI stub)
+      # CI-ONLY: stub the Supabase-provided primitives. The migrations reference
+      # the `auth` schema (`auth.users` FK target + `auth.uid()` RLS) and the
+      # predefined `anon`/`authenticated` roles (GRANT targets / RLS `to ...`),
+      # all of which Supabase provides in prod but vanilla postgres:16 does not.
+      # This mimics just enough for the migrations to apply on a clean DB.
+      # (migrate.mjs must NOT create these — Supabase owns them in production.)
+      - name: Bootstrap Supabase primitives (CI stub)
         env:
           PGPASSWORD: postgres
         run: |
@@ -84,6 +85,10 @@ jobs:
           create schema if not exists auth;
           create table if not exists auth.users (id uuid primary key);
           create or replace function auth.uid() returns uuid language sql stable as $$ select null::uuid $$;
+          do $$ begin
+            if not exists (select from pg_roles where rolname = 'anon') then create role anon nologin; end if;
+            if not exists (select from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
+          end $$;
           SQL
 
       # Applies every supabase/migrations/*.sql to a clean DB via scripts/migrate.mjs
