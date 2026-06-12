@@ -31,15 +31,15 @@ describe("galaxyAt", () => {
   });
 });
 
-describe("keys round-trip at 4 / 5 / 6 segments", () => {
-  const sc: SystemCoord = { galaxy: 2, arm: 5, cluster: 9, system: 14 };
+describe("keys round-trip at 5 / 6 / 7 segments", () => {
+  const sc: SystemCoord = { manifold: 0, galaxy: 2, arm: 5, cluster: 9, system: 14 };
   const pc: PlanetCoord = { ...sc, planet: 3 };
   const rc: RegionCoord = { ...pc, region: 8123 };
 
-  it("formats with galaxy:arm:cluster:system… ordering", () => {
-    expect(systemKey(sc)).toBe("2:5:9:14");
-    expect(planetKey(pc)).toBe("2:5:9:14:3");
-    expect(regionKey(rc)).toBe("2:5:9:14:3:8123");
+  it("formats with manifold:galaxy:arm:cluster:system… ordering", () => {
+    expect(systemKey(sc)).toBe("0:2:5:9:14");
+    expect(planetKey(pc)).toBe("0:2:5:9:14:3");
+    expect(regionKey(rc)).toBe("0:2:5:9:14:3:8123");
   });
 
   it("parses back to the right coord shape", () => {
@@ -54,11 +54,11 @@ describe("warpDistance — polar planar metric, arm-wrapping", () => {
   // `cluster` a radius; inter-cluster distance is the real planar distance
   // between cluster centers (law of cosines). The span-based weighted sum is gone.
   const ARM_COUNT = 12;
-  const base: SystemCoord = { galaxy: 0, arm: 0, cluster: 0, system: 0 };
+  const base: SystemCoord = { manifold: 0, galaxy: 0, arm: 0, cluster: 0, system: 0 };
 
   it("is zero to self and symmetric", () => {
     expect(warpDistance(SEED, base, base, ARM_COUNT)).toBe(0);
-    const x: SystemCoord = { galaxy: 0, arm: 3, cluster: 2, system: 5 };
+    const x: SystemCoord = { manifold: 0, galaxy: 0, arm: 3, cluster: 2, system: 5 };
     expect(warpDistance(SEED, base, x, ARM_COUNT)).toBeCloseTo(
       warpDistance(SEED, x, base, ARM_COUNT),
       9,
@@ -85,8 +85,8 @@ describe("warpDistance — polar planar metric, arm-wrapping", () => {
   });
 
   it("inter-cluster distance is the planar gap between cluster centers (law of cosines)", () => {
-    const a: SystemCoord = { galaxy: 0, arm: 2, cluster: 3, system: 7 };
-    const b: SystemCoord = { galaxy: 0, arm: 5, cluster: 6, system: 11 };
+    const a: SystemCoord = { manifold: 0, galaxy: 0, arm: 2, cluster: 3, system: 7 };
+    const b: SystemCoord = { manifold: 0, galaxy: 0, arm: 5, cluster: 6, system: 11 };
     const ca = clusterCenter(a.arm, a.cluster, ARM_COUNT);
     const cb = clusterCenter(b.arm, b.cluster, ARM_COUNT);
     expect(warpDistance(SEED, a, b, ARM_COUNT)).toBeCloseTo(
@@ -127,14 +127,14 @@ describe("warpDistance — polar planar metric, arm-wrapping", () => {
   });
 
   it("is Infinity across different galaxies (not a warp)", () => {
-    const other: SystemCoord = { galaxy: 1, arm: 0, cluster: 0, system: 0 };
+    const other: SystemCoord = { manifold: 0, galaxy: 1, arm: 0, cluster: 0, system: 0 };
     expect(warpDistance(SEED, base, other, ARM_COUNT)).toBe(Infinity);
   });
 });
 
 describe("planet generation keys off the full six-tier coord", () => {
   it("planetAt is deterministic and varies across galaxy/arm", () => {
-    const c: PlanetCoord = { galaxy: 0, arm: 0, cluster: 1, system: 2, planet: 0 };
+    const c: PlanetCoord = { manifold: 0, galaxy: 0, arm: 0, cluster: 1, system: 2, planet: 0 };
     expect(planetAt(SEED, c)).toStrictEqual(planetAt(SEED, c));
     const sameButGalaxy: PlanetCoord = { ...c, galaxy: 1 };
     expect(JSON.stringify(planetAt(SEED, c))).not.toBe(

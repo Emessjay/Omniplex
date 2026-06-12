@@ -40,6 +40,7 @@ describe("presentPlayerView — ship name resolution", () => {
 
 describe("sameLocation — region groups orbit/outpost", () => {
   const at = (region: number) => ({
+    manifold: 0,
     galaxy: 1,
     arm: 2,
     cluster: 3,

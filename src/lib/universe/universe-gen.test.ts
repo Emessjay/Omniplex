@@ -340,10 +340,10 @@ describe("hazard scales with temperature extremity", () => {
 
 describe("location keys round-trip (AC#7)", () => {
   it("systemKey/planetKey parse back to the coord", () => {
-    const sc: SystemCoord = { galaxy: 0, arm: 1, cluster: 5, system: 12 };
-    const pc: PlanetCoord = { galaxy: 0, arm: 1, cluster: 5, system: 12, planet: 3 };
-    expect(systemKey(sc)).toBe("0:1:5:12");
-    expect(planetKey(pc)).toBe("0:1:5:12:3");
+    const sc: SystemCoord = { manifold: 0, galaxy: 0, arm: 1, cluster: 5, system: 12 };
+    const pc: PlanetCoord = { manifold: 0, galaxy: 0, arm: 1, cluster: 5, system: 12, planet: 3 };
+    expect(systemKey(sc)).toBe("0:0:1:5:12");
+    expect(planetKey(pc)).toBe("0:0:1:5:12:3");
     expect(parseLocationKey(systemKey(sc))).toStrictEqual(sc);
     expect(parseLocationKey(planetKey(pc))).toStrictEqual(pc);
   });

@@ -27,6 +27,8 @@ import { getShip } from "./ships";
  * superset, so a `Player` is a valid argument.
  */
 export interface LocationView {
+  /** Manifold partition (manifolds phase) — co-location requires the same one. */
+  manifold: number;
   galaxy: number;
   arm: number;
   cluster: number;
@@ -44,6 +46,7 @@ export interface LocationView {
  */
 export function sameLocation(a: LocationView, b: LocationView): boolean {
   return (
+    a.manifold === b.manifold &&
     a.galaxy === b.galaxy &&
     a.arm === b.arm &&
     a.cluster === b.cluster &&
@@ -138,7 +141,7 @@ export interface PresenceHint {
  * each other's `say`). Pure; no IO.
  */
 export function presenceChannelFor(loc: LocationView): string {
-  return `loc:${loc.galaxy}:${loc.arm}:${loc.cluster}:${loc.system}:${loc.planet}:${loc.region}`;
+  return `loc:${loc.manifold}:${loc.galaxy}:${loc.arm}:${loc.cluster}:${loc.system}:${loc.planet}:${loc.region}`;
 }
 
 /**

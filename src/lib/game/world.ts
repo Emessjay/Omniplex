@@ -1558,6 +1558,8 @@ export async function setLivestockBred(
 export interface PresenceQuery {
   /** The querying player's id — excluded from the result (you don't see yourself). */
   id: string;
+  /** Manifold partition (manifolds phase) — only same-manifold players co-locate. */
+  manifold: number;
   galaxy: number;
   arm: number;
   cluster: number;
@@ -1569,14 +1571,16 @@ export interface PresenceQuery {
 /**
  * The OTHER players co-located with `loc` (`sameLocation` — the full location
  * tuple), as public-safe presence views. Excludes the querying player (`loc.id`)
- * and projects only handle/ship/state — never identity. The six `.eq()` filters
- * implement `sameLocation`; the `.neq("id", …)` excludes self.
+ * and projects only handle/ship/state — never identity. The seven `.eq()` filters
+ * implement `sameLocation` (incl. the manifold partition); `.neq("id", …)`
+ * excludes self.
  */
 export async function playersHere(loc: PresenceQuery): Promise<PresentPlayer[]> {
   const db = getServerClient();
   const { data, error } = await db
     .from("players")
     .select("handle, ship_id, embarked, landed")
+    .eq("manifold", loc.manifold)
     .eq("galaxy", loc.galaxy)
     .eq("arm", loc.arm)
     .eq("cluster", loc.cluster)
@@ -1641,12 +1645,18 @@ export interface BoardRow {
   credits: number;
 }
 
-/** Top players by credits (from the public leaderboard view). */
-export async function topByCredits(limit: number): Promise<BoardRow[]> {
+/**
+ * Top players by credits (from the public leaderboard view), SCOPED to the
+ * viewer's `manifold` — test (−1) and prod (0) players never share a board
+ * (manifolds phase). The leaderboard view exposes `manifold` (public-safe; it's
+ * not identity, and `user_id`/email stay off the view).
+ */
+export async function topByCredits(limit: number, manifold: number): Promise<BoardRow[]> {
   const db = getServerClient();
   const { data, error } = await db
     .from("leaderboard")
     .select("id, handle, credits")
+    .eq("manifold", manifold)
     .order("credits", { ascending: false })
     .limit(limit);
   if (error) throw error;
@@ -1661,11 +1671,13 @@ export async function topByCredits(limit: number): Promise<BoardRow[]> {
  */
 export async function topByCharted(
   limit: number,
+  manifold: number,
 ): Promise<{ handle: string; charted: number }[]> {
   const db = getServerClient();
   const { data, error } = await db
     .from("leaderboard")
     .select("handle, charted")
+    .eq("manifold", manifold)
     .gt("charted", 0)
     .order("charted", { ascending: false })
     .limit(limit);

@@ -513,6 +513,7 @@ async function orbitalScanFrame(
 
 function locOf(player: Player): PlanetCoord {
   return {
+    manifold: player.manifold,
     galaxy: player.galaxy,
     arm: player.arm,
     cluster: player.cluster,
@@ -524,6 +525,7 @@ function locOf(player: Player): PlanetCoord {
 /** The player's current system coordinate (location minus planet/region). */
 function systemOf(player: Player): SystemCoord {
   return {
+    manifold: player.manifold,
     galaxy: player.galaxy,
     arm: player.arm,
     cluster: player.cluster,
@@ -1285,7 +1287,7 @@ async function dispatchResolved(
     case "cartography":
       return handleCartography(player);
     case "who":
-      return handleWho();
+      return handleWho(player);
     case "here":
       return handleHere(player, seed);
     case "say":
@@ -1834,7 +1836,7 @@ function neighborCandidates(current: SystemCoord, armCount: number): SystemCoord
       if (cluster < 0 || cluster >= MAX_CLUSTERS_PER_ARM) continue;
       // Arm wraps around the ring and is canonicalized into [0, armCount).
       const arm = ((current.arm + da) % armCount + armCount) % armCount;
-      const coord: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
+      const coord: SystemCoord = { manifold: current.manifold, galaxy: current.galaxy, arm, cluster, system };
       const key = systemKey(coord);
       if (key === systemKey(current) || seen.has(key)) continue;
       seen.add(key);
@@ -1996,7 +1998,7 @@ async function handleMap(player: Player, seed: string): Promise<RenderFrame> {
  */
 function resolveWarpCoord(
   seed: string,
-  cluster: { galaxy: number; arm: number; cluster: number },
+  cluster: { manifold: number; galaxy: number; arm: number; cluster: number },
   token: string,
 ): { ok: true; system: number } | { ok: false; error: string } {
   const parts = token.split(",");
@@ -2059,7 +2061,7 @@ async function handleWarp(
   // `warp 13 …` in a 12-arm galaxy lands on arm 1. Negative inputs wrap too.
   const { armCount } = galaxyAt(seed, current.galaxy);
   const arm = ((armArg % armCount) + armCount) % armCount;
-  const destCluster = { galaxy: current.galaxy, arm, cluster };
+  const destCluster = { manifold: current.manifold, galaxy: current.galaxy, arm, cluster };
 
   // The third arg is EITHER a star index OR an `x,y,z` coordinate triple
   // (star-coordinates). A comma marks the coordinate form.
@@ -2079,7 +2081,7 @@ async function handleWarp(
   }
 
   // Galaxy is unchanged this phase (inter-galaxy travel is later).
-  const dest: SystemCoord = { galaxy: current.galaxy, arm, cluster, system };
+  const dest: SystemCoord = { manifold: current.manifold, galaxy: current.galaxy, arm, cluster, system };
   if (
     dest.arm === current.arm &&
     dest.cluster === current.cluster &&
@@ -2193,7 +2195,7 @@ async function handleHyperwarp(
       );
     }
     const arm = ((armArg % armCount) + armCount) % armCount;
-    const dest: SystemCoord = { galaxy: player.galaxy, arm, cluster, system };
+    const dest: SystemCoord = { manifold: player.manifold, galaxy: player.galaxy, arm, cluster, system };
     arrivalCoord = { ...dest, planet: 0 };
     const destSystem = systemAt(seed, dest);
     banner = line([
@@ -2217,6 +2219,7 @@ async function handleHyperwarp(
     const destGalaxy = galaxyAt(seed, target);
     const arm = 0 % destGalaxy.armCount; // always 0 — explicit about the ring wrap.
     arrivalCoord = {
+      manifold: player.manifold, // travel NEVER changes manifold (manifolds phase)
       galaxy: target,
       arm,
       cluster: MAX_CLUSTERS_PER_ARM - 1, // arrive at the rim
@@ -6751,10 +6754,13 @@ async function handleFulfill(
 // who
 // ---------------------------------------------------------------------------
 
-async function handleWho(): Promise<RenderFrame> {
+async function handleWho(player: Player): Promise<RenderFrame> {
+  // Leaderboards are MANIFOLD-SCOPED (manifolds phase): a player only ever sees
+  // others in their own manifold — test accounts (−1) never appear on prod's
+  // board (0), and vice-versa.
   const [topCredits, topExplorers] = await Promise.all([
-    world.topByCredits(5),
-    world.topByCharted(5),
+    world.topByCredits(5, player.manifold),
+    world.topByCharted(5, player.manifold),
   ]);
   return renderWho({
     topCredits: topCredits.map((r) => ({ handle: r.handle, credits: r.credits })),

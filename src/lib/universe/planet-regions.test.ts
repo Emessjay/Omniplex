@@ -130,8 +130,9 @@ describe("regions draw biome from the planet palette + valid deposits (AC#2)", (
 });
 
 describe("region location keys (AC#3)", () => {
-  it("regionKey round-trips as a 6-segment key", () => {
+  it("regionKey round-trips as a 7-segment key", () => {
     const rc: RegionCoord = {
+      manifold: 0,
       galaxy: 2,
       arm: 4,
       cluster: 5,
@@ -139,18 +140,20 @@ describe("region location keys (AC#3)", () => {
       planet: 3,
       region: 9001,
     };
-    expect(regionKey(rc)).toBe("2:4:5:12:3:9001");
+    expect(regionKey(rc)).toBe("0:2:4:5:12:3:9001");
     expect(parseLocationKey(regionKey(rc))).toStrictEqual(rc);
   });
 
-  it("4- and 5-segment keys still parse (system / planet)", () => {
-    expect(parseLocationKey("2:4:5:12")).toStrictEqual({
+  it("5- and 6-segment keys still parse (system / planet)", () => {
+    expect(parseLocationKey("0:2:4:5:12")).toStrictEqual({
+      manifold: 0,
       galaxy: 2,
       arm: 4,
       cluster: 5,
       system: 12,
     });
-    expect(parseLocationKey("2:4:5:12:3")).toStrictEqual({
+    expect(parseLocationKey("0:2:4:5:12:3")).toStrictEqual({
+      manifold: 0,
       galaxy: 2,
       arm: 4,
       cluster: 5,

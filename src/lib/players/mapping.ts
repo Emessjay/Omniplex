@@ -16,6 +16,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     warpFuel: row.warp_fuel,
     cargoCap: row.cargo_cap,
     shipId: row.ship_id,
+    manifold: row.manifold,
     galaxy: row.galaxy,
     arm: row.arm,
     cluster: row.cluster,

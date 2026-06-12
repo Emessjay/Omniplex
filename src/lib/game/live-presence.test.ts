@@ -9,7 +9,7 @@ import {
 } from "@/lib/game/presence";
 
 const loc = (o: Partial<any> = {}) => ({
-  galaxy: 0, arm: 0, cluster: 5, system: 100, planet: 2, region: 57, ...o,
+  manifold: 0, galaxy: 0, arm: 0, cluster: 5, system: 100, planet: 2, region: 57, ...o,
 });
 
 describe("presenceChannelFor — channel ⇔ co-location", () => {
@@ -26,7 +26,7 @@ describe("presenceChannelFor — channel ⇔ co-location", () => {
     // any differing coord → different channel (and matches sameLocation)
     for (const diff of [
       { region: 58 }, { planet: 3 }, { system: 101 },
-      { cluster: 6 }, { arm: 1 }, { galaxy: 1 },
+      { cluster: 6 }, { arm: 1 }, { galaxy: 1 }, { manifold: -1 },
     ]) {
       const other = loc(diff);
       expect(sameLocation(base, other)).toBe(false);

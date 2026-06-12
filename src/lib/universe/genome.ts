@@ -387,6 +387,7 @@ function distinctArchetypes(species: readonly Species[]): string[] {
 /** A planet coord from a region coord (drops the region index). */
 function planetOf(coord: RegionCoord): PlanetCoord {
   return {
+    manifold: coord.manifold,
     galaxy: coord.galaxy,
     arm: coord.arm,
     cluster: coord.cluster,

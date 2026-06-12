@@ -49,7 +49,7 @@ describe("starting world follows the sorted ordering", () => {
   it("startingWorld resolves to the planet sitting at its sorted index, rocky + moderate", () => {
     const w = startingWorld(SEED);
     expect(w).toStrictEqual(startingWorld(SEED)); // deterministic
-    const sys = systemAt(SEED, { galaxy: w.galaxy, arm: w.arm, cluster: w.cluster, system: w.system });
+    const sys = systemAt(SEED, { manifold: w.manifold, galaxy: w.galaxy, arm: w.arm, cluster: w.cluster, system: w.system });
     const p = planetAt(SEED, w);
     expect(p).toStrictEqual(sys.planets[w.planet]); // index is the sorted index
     expect(p.isGas).toBe(false);

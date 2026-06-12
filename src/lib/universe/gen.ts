@@ -61,30 +61,30 @@ import {
 // must not drift.
 // ---------------------------------------------------------------------------
 
-/** `"<galaxy>:<arm>:<cluster>:<system>"` (4 segments). */
+/** `"<manifold>:<galaxy>:<arm>:<cluster>:<system>"` (5 segments). */
 export function systemKey(coord: SystemCoord): string {
-  return `${coord.galaxy}:${coord.arm}:${coord.cluster}:${coord.system}`;
+  return `${coord.manifold}:${coord.galaxy}:${coord.arm}:${coord.cluster}:${coord.system}`;
 }
 
-/** `"<galaxy>:<arm>:<cluster>:<system>:<planet>"` (5 segments). */
+/** `"<manifold>:<galaxy>:<arm>:<cluster>:<system>:<planet>"` (6 segments). */
 export function planetKey(coord: PlanetCoord): string {
   return `${systemKey(coord)}:${coord.planet}`;
 }
 
 /**
- * `"<galaxy>:<arm>:<cluster>:<system>:<planet>:<region>"` (6 segments) — the
- * per-region depletion key.
+ * `"<manifold>:<galaxy>:<arm>:<cluster>:<system>:<planet>:<region>"` (7
+ * segments) — the per-region depletion key.
  */
 export function regionKey(coord: RegionCoord): string {
   return `${planetKey(coord)}:${coord.region}`;
 }
 
 /**
- * Parse a system / planet / region key back into its coord object. Four
- * segments → `SystemCoord`; five → `PlanetCoord`; six → `RegionCoord`. Old
- * 2/3/4-segment keys were migrated to the galaxy-0/arm-0 prefix form by the
- * `addressing-overhaul` migration, so only 4/5/6 are valid now. Throws on
- * malformed input.
+ * Parse a system / planet / region key back into its coord object. The leading
+ * segment is the `manifold` tier (manifolds phase), so counts shifted up by one:
+ * FIVE segments → `SystemCoord`; six → `PlanetCoord`; seven → `RegionCoord`. Old
+ * 4/5/6-segment keys were migrated to the manifold-0 prefix form by the
+ * `manifolds` migration, so only 5/6/7 are valid now. Throws on malformed input.
  */
 export function parseLocationKey(
   key: string,
@@ -97,26 +97,34 @@ export function parseLocationKey(
     }
     return n;
   });
-  if (nums.length === 4) {
-    return { galaxy: nums[0]!, arm: nums[1]!, cluster: nums[2]!, system: nums[3]! };
-  }
   if (nums.length === 5) {
     return {
-      galaxy: nums[0]!,
-      arm: nums[1]!,
-      cluster: nums[2]!,
-      system: nums[3]!,
-      planet: nums[4]!,
+      manifold: nums[0]!,
+      galaxy: nums[1]!,
+      arm: nums[2]!,
+      cluster: nums[3]!,
+      system: nums[4]!,
     };
   }
   if (nums.length === 6) {
     return {
-      galaxy: nums[0]!,
-      arm: nums[1]!,
-      cluster: nums[2]!,
-      system: nums[3]!,
-      planet: nums[4]!,
-      region: nums[5]!,
+      manifold: nums[0]!,
+      galaxy: nums[1]!,
+      arm: nums[2]!,
+      cluster: nums[3]!,
+      system: nums[4]!,
+      planet: nums[5]!,
+    };
+  }
+  if (nums.length === 7) {
+    return {
+      manifold: nums[0]!,
+      galaxy: nums[1]!,
+      arm: nums[2]!,
+      cluster: nums[3]!,
+      system: nums[4]!,
+      planet: nums[5]!,
+      region: nums[6]!,
     };
   }
   throw new Error(`invalid location key: ${key}`);
@@ -180,9 +188,14 @@ function gaussian(rng: Rng): number {
   return Math.sqrt(-2 * Math.log(1 - u1)) * Math.cos(2 * Math.PI * u2);
 }
 
-/** The cluster a system coordinate belongs to (drops `system`). */
+/** The cluster a system coordinate belongs to (drops `system`; carries `manifold`). */
 export function clusterOf(coord: SystemCoord): ClusterCoord {
-  return { galaxy: coord.galaxy, arm: coord.arm, cluster: coord.cluster };
+  return {
+    manifold: coord.manifold,
+    galaxy: coord.galaxy,
+    arm: coord.arm,
+    cluster: coord.cluster,
+  };
 }
 
 const POS_KEY = (p: StarPosition): string => `${p.x},${p.y},${p.z}`;
@@ -397,6 +410,9 @@ export function warpDistance(
   b: SystemCoord,
   armCount: number,
 ): number {
+  // Manifolds are PARALLEL DATA LAYERS with no travel between them (manifolds
+  // phase): a cross-manifold hop is not a warp, exactly like cross-galaxy.
+  if (a.manifold !== b.manifold) return Infinity;
   if (a.galaxy !== b.galaxy) return Infinity;
   if (a.arm === b.arm && a.cluster === b.cluster) {
     // Same star cloud: fine-grained intra-cluster Euclidean distance.
@@ -1907,6 +1923,7 @@ export function systemOutpostPlanets(seed: string, coord: SystemCoord): number[]
 /** Whether the planet at `coord` has an orbital outpost in its system. */
 export function hasOutpost(seed: string, coord: PlanetCoord): boolean {
   return systemOutpostPlanets(seed, {
+    manifold: coord.manifold,
     galaxy: coord.galaxy,
     arm: coord.arm,
     cluster: coord.cluster,
@@ -1949,9 +1966,9 @@ export const SPAWN_CLUSTER = MAX_CLUSTERS_PER_ARM - 1;
  * terminates within a handful of systems; the bounded limit + origin fallback
  * guarantee it returns.
  */
-export function startingWorld(seed: string): PlanetCoord {
+export function startingWorld(seed: string, manifold = 0): PlanetCoord {
   for (let system = 0; system < STARTING_WORLD_SCAN_LIMIT; system++) {
-    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system };
+    const sysCoord: SystemCoord = { manifold, galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system };
     const sys = systemAt(seed, sysCoord);
     for (let p = 0; p < sys.planetCount; p++) {
       const planet = sys.planets[p]!;
@@ -1961,13 +1978,13 @@ export function startingWorld(seed: string): PlanetCoord {
         planet.temperature < BOILING_C &&
         planet.hazard <= STARTING_WORLD_MAX_HAZARD
       ) {
-        return { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system, planet: p };
+        return { manifold, galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system, planet: p };
       }
     }
   }
   // Unreachable in practice (moderate rocky worlds are plentiful); the rim spawn
   // ring's first system is a deterministic last resort.
-  return { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system: 0, planet: 0 };
+  return { manifold, galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system: 0, planet: 0 };
 }
 
 /** Max retry budget for `randomStartingWorld` before falling back to `startingWorld`. */
@@ -1983,15 +2000,18 @@ const RANDOM_SPAWN_MAX_TRIES = 64;
  * `rand` is INJECTED (not `Math.random` inside) so the function stays
  * pure/deterministic given a fixed `rand` sequence and is unit-testable without
  * side-effects. Falls back to `startingWorld(seed)` if the retry budget is
- * exhausted.
+ * exhausted. The `manifold` arg (default 0) is STAMPED onto the returned coord
+ * (and thus every key the new player writes); generation is manifold-invariant,
+ * so the same rim spawn-world set is found in any manifold (manifolds phase).
  */
 export function randomStartingWorld(
   seed: string,
   rand: () => number,
+  manifold = 0,
 ): PlanetCoord {
   for (let i = 0; i < RANDOM_SPAWN_MAX_TRIES; i++) {
     const system = Math.floor(rand() * STARS_PER_CLUSTER);
-    const sysCoord: SystemCoord = { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system };
+    const sysCoord: SystemCoord = { manifold, galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system };
     const sys = systemAt(seed, sysCoord);
     const habitable = sys.planets.filter(
       (p) =>
@@ -2002,8 +2022,8 @@ export function randomStartingWorld(
     );
     if (habitable.length > 0) {
       const planet = habitable[Math.floor(rand() * habitable.length)]!;
-      return { galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system, planet: planet.coord.planet };
+      return { manifold, galaxy: 0, arm: 0, cluster: SPAWN_CLUSTER, system, planet: planet.coord.planet };
     }
   }
-  return startingWorld(seed);
+  return startingWorld(seed, manifold);
 }

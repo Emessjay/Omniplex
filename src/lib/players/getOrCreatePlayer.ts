@@ -20,6 +20,7 @@ import "server-only";
 import { getServerClient } from "@/lib/supabase/server";
 import { randomStartingWorld } from "@/lib/universe";
 import { getWorldSeed } from "@/lib/game/seed";
+import { spawnManifold } from "@/lib/game/config";
 import { rowToPlayer } from "./mapping";
 import { generateCallsign, uniqueHandle } from "./handle";
 import type { Player, PlayerRow } from "./types";
@@ -39,13 +40,17 @@ export async function getOrCreatePlayer(
   const existing = await findByUserId(userId);
   if (existing) return existing;
 
-  // New players spawn on a RANDOM habitable world in cluster 0 — rocky,
-  // temperate, low-hazard — so players spread across the starting cluster
-  // rather than all stacking on one world. `Math.random` lives here (the
-  // impure DB boundary); `randomStartingWorld` itself stays pure (injected
-  // rand). Falls back to the deterministic `startingWorld` if no habitable
-  // world is found within the retry budget (very unlikely).
-  const spawn = randomStartingWorld(getWorldSeed(), Math.random);
+  // New players spawn into the MANIFOLD chosen by `OMNIPLEX_SPAWN_MANIFOLD`
+  // (default 0 = prod's prime universe; staging sets −1 so every test account
+  // is born in the airtight test universe). Generation is manifold-invariant, so
+  // the same rim spawn-world set is found in any manifold; only the partition
+  // (and thus every key the player writes) differs. Then a RANDOM habitable world
+  // on the rim ring — rocky, temperate, low-hazard — so players spread out rather
+  // than stacking on one world. `Math.random` lives here (the impure DB boundary);
+  // `randomStartingWorld` stays pure (injected rand). Falls back to the
+  // deterministic `startingWorld` if no habitable world is found in the budget.
+  const manifold = spawnManifold();
+  const spawn = randomStartingWorld(getWorldSeed(), Math.random, manifold);
 
   // Insert, retrying on handle collisions. New players take the DB column
   // defaults for everything EXCEPT location (1000 credits, 100 fuel, 50
@@ -62,6 +67,7 @@ export async function getOrCreatePlayer(
       .insert({
         user_id: userId,
         handle,
+        manifold: spawn.manifold,
         galaxy: spawn.galaxy,
         arm: spawn.arm,
         cluster: spawn.cluster,

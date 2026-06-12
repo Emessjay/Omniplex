@@ -36,6 +36,14 @@ export interface Player {
    */
   shipId: string;
   /**
+   * Manifold — the top coordinate tier (a PURE DATA PARTITION above `galaxy`).
+   * 0 = prime universe (prod); −1 = the isolated test universe. Set at spawn from
+   * `OMNIPLEX_SPAWN_MANIFOLD` and NEVER changed by travel — a player is confined
+   * to their manifold, which is the test-isolation guarantee. See
+   * `SystemCoord.manifold`.
+   */
+  manifold: number;
+  /**
    * Current location — the six-tier coordinate
    * (`galaxy → arm → cluster → system → planet → region`). `(0,0,0,0,0,0)` is
    * the start location. `galaxy` is unbounded; `arm` is canonical in
@@ -165,6 +173,7 @@ export interface PlayerRow {
   warp_fuel: number;
   cargo_cap: number;
   ship_id: string;
+  manifold: number;
   galaxy: number;
   arm: number;
   cluster: number;

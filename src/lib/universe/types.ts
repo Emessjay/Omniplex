@@ -183,6 +183,15 @@ export const ARM_COUNT_MAX = 16;
  *  - `system`  ≥ 0, index of a system within a cluster.
  */
 export interface SystemCoord {
+  /**
+   * Top coordinate tier — a PURE DATA PARTITION above `galaxy` (the manifolds
+   * phase). 0 = the prime universe (prod); −1 = the isolated test universe; any
+   * integer is valid. Generation is manifold-INVARIANT (manifold never enters an
+   * RNG stream, so manifold −1 generates byte-identical worlds to manifold 0),
+   * but every stored row keys by manifold and there is no travel between
+   * manifolds, so a manifold is an airtight isolated layer of the same universe.
+   */
+  readonly manifold: number;
   readonly galaxy: number;
   readonly arm: number;
   readonly cluster: number;
@@ -196,6 +205,8 @@ export interface SystemCoord {
  * `systemFromPosition`).
  */
 export interface ClusterCoord {
+  /** Top coordinate tier (manifolds phase) — see `SystemCoord.manifold`. */
+  readonly manifold: number;
   readonly galaxy: number;
   readonly arm: number;
   readonly cluster: number;

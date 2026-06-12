@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { sameLocation, presentPlayerView } from "@/lib/game/presence"; // wherever it lives
 
 const loc = (o: Partial<any> = {}) => ({
-  galaxy: 0, arm: 0, cluster: 5, system: 100, planet: 2, region: 57, ...o,
+  manifold: 0, galaxy: 0, arm: 0, cluster: 5, system: 100, planet: 2, region: 57, ...o,
 });
 
 describe("sameLocation — full-tuple co-location", () => {
@@ -14,6 +14,9 @@ describe("sameLocation — full-tuple co-location", () => {
     expect(sameLocation(loc(), loc({ cluster: 6 }))).toBe(false);
     expect(sameLocation(loc(), loc({ arm: 1 }))).toBe(false);
     expect(sameLocation(loc(), loc({ galaxy: 1 }))).toBe(false);
+    // Manifolds are isolated layers: a different manifold is NOT co-located even
+    // at an otherwise-identical location (manifolds phase).
+    expect(sameLocation(loc(), loc({ manifold: -1 }))).toBe(false);
   });
 
   it("groups same-planet orbiters (region 0) and same-outpost dockers (region -1)", () => {
