@@ -2306,3 +2306,58 @@ gotchas) accrete here as workers surface things worth persisting. See
   the same `presenceState` label) — cosmetic, acceptable for ephemeral presence.
 - **Next**: co-located COMBAT (the two-mode model) builds on this presence channel
   (Combat-3, after the Combat-1/2 ship-combat core).
+
+### Load-bearing decisions from `combat-fitting` (Combat-1a — ship modules + loadouts)
+
+- **The FITTING foundation for the Combat pillar (per `docs/design/pillars.md`
+  §iv): ships have module slots; modules are a manufactured good you `equip` into
+  a persisted loadout.** Ships GEAR + fitting UX only — **NO fighting** (the
+  interactive phase resolver + PvE bounty board = Combat-1b, which consumes the
+  loadout and is where module `stats` finally bite).
+- **`src/lib/game/modules.ts` (pure, mirrors `parts.ts`)**: `ShipModule = {id,
+  name, slot, recipe (PART ids), value, stats}`; `ModuleSlot =
+  weapon|shield|evasion|ecm|targeting`; `ModuleStats` is a discriminated union
+  keyed by slot (weapon `{damage, profile: burst|sustained|missile}`, shield
+  `{absorb}`, evasion `{evade}`, ecm `{jam}`, targeting `{lock}` — all positive).
+  Helpers `MODULES`/`MODULE_IDS`/`isModuleId`/`getModule`/`moduleRecipeOf`/
+  `moduleValue`/`moduleInputValue`. 7 modules covering all 5 slots; **invariant
+  (unit-tested): `moduleValue > moduleInputValue`** (`value =
+  round(inputValue × MODULE_VALUE_MARKUP=1.4)` — manufacturing adds value, like
+  parts/ingots). Recipes reference only real `PARTS`.
+- **`Ship.slots`** added to every `SHIPS` entry, **strictly ascending** (shuttle 2
+  → courier 3 → freighter 4 → hauler 5); helper `shipSlots(id)`. Any module fits
+  any slot (shallow model — no per-slot-type counts).
+- **Pure fitting rules** (`modules.ts`): `canEquip(loadout, ownedQty, moduleId,
+  shipSlots)` = free slot (`loadout.length < shipSlots`) AND an unfitted owned
+  copy (`count(moduleId in loadout) < ownedQty`); `loadoutAfterEquip` (append),
+  `loadoutAfterUnequip` (remove FIRST occurrence, no-op if absent), `trimLoadout(
+  loadout, newSlots)` = `slice(0, max(0,newSlots))`. Seeded: `combat-fitting.test.ts`.
+- **Persistence** (migration `20260611000000_combat-fitting.sql`, forward-only/
+  idempotent): `public.player_modules` (`player_id→players cascade, module_id text
+  [code catalog, no FK], qty int ≥0, pk(player_id,module_id)`, **RLS read-own** +
+  service-role writes, atomic clamped `add_player_module(p_player, p_module,
+  p_delta)` RPC — mirrors `player_parts`); **`players.loadout jsonb default '[]'`**
+  = the fitted module-id list (slot order; may repeat). Carried on `Player.loadout:
+  string[]`/`PlayerRow`/`rowToPlayer` (defensive `Array.isArray ?? []`). World
+  adapters `getPlayerModules`/`addPlayerModule`/`setLoadout`.
+- **Commands**: `produce <module>` is a NEW `handleProduce` branch (after the
+  shared base + production-line + **power** gate, like parts/upgrades/ships):
+  consume the part recipe from the silo (`add_base_storage(-)`), GRANT the module
+  to `player_modules` (`add_player_module(+)`, NOT siloed → no capacity check);
+  `produce` arg-0 domain gains `...MODULE_IDS`. **`equip <module>`/`unequip
+  <module>`** (`ANYTIME_OUT_OF_COMBAT` — refit anywhere but not mid-fight): arg
+  domains are owned-and-`canEquip`-now / currently-fitted respectively (loaded in
+  `loadArgDomainContext`). **`loadout` (alias `fit`)** (INFORMATIONAL): the fitting
+  screen (slots used/total, fitted + owned-unfitted modules, P9b red when no free
+  slot) via `renderLoadout`. **Ship-change loadout trim**: BOTH `handleBuyShip`
+  AND `handleProduceShip` call `setLoadout(trimLoadout(loadout, newShip.slots))`
+  after the swap (a downgrade leaves the extras owned-but-unfitted). `inventory`
+  lists owned modules with an `equip` action. Registered `VERBS`/`USAGE`/
+  `applicability`; help-parity held.
+- **Deferred (Combat-1b+)**: the resolver/combat-session/bounty board; module
+  `stats` are stored but UNUSED here. **Buying/selling modules at hubs** is a
+  noted later add (plumb module ids into `system_supply` like parts — `item_id` is
+  free-text, no schema change). **Owner answers (`pillars.md` §iv, 2026-06-11):
+  PvP is mandatory but ONLINE-only (live mode); a destroyed-last-ship player with
+  no assets gets a free replacement (emergency services) — pins Combat-2's
+  insurance + the async/live split keying off online presence.**

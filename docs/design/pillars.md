@@ -92,6 +92,17 @@ engage in *real-time*, with the asynchronous/snapshot model reserved for
 haulers). Open: presence scope (region vs system vs station), how "live" the
 interaction is (live tick vs near-real-time), and online/offline handling.
 
+**→ Answered (owner, 2026-06-11).** **Species count: ~5 DOMINANT species
+(hand-authored, with explicitly-set DNA parameters) + a handful of
+procedurally-generated others.** For the procgen species, **origin-ecology
+determines much of their empire-specific behavior** (the cultural-DNA cascade);
+the dominant ones get their parameters set by hand rather than derived. (This is
+exactly what `sapient-species` shipped — 5 hand-authored `DOMINANT_SPECIES` +
+`minorSpeciesAt` procgen — so the foundation already matches.) **Combat
+online/offline (from §iv answer):** PvP only against ONLINE players → live
+co-located mode; the async/snapshot model covers offline targets (base raids,
+hauler intercepts).
+
 ---
 
 ## i. Discovery
@@ -164,6 +175,15 @@ interdiction) and brushes **Neutralization** (anomaly byproducts are contraband)
 **Open Qs.** How illicit do we go (bribery/black-market tone)? Passive-income
 businesses — how hands-off? A notoriety/heat system shared with Combat?
 
+**→ Answered (owner, 2026-06-11).** **It's up to the player how illicit they
+go** — fully black-market is possible, and so is running a *publicly-traded
+company*. **Businesses give passive income but exist IN the world** (EVE-style):
+they can be **attacked by pirates**, so passive ≠ safe. **Company notoriety
+works like personal piracy notoriety** (the shared heat axis). Cross illicit
+lines (e.g. start a mafia gang) and **the law comes after you**. So Trade and
+Combat are coupled through the notoriety/heat axis at both the personal and the
+corporate level.
+
 ---
 
 ## iii. Building
@@ -197,6 +217,14 @@ tie to **Combat**.
 
 **Open Qs.** Co-ownership model (shared vs contribution-shares)? How big do
 megastructures get? Are stations a new building tier or a new place-type?
+
+**→ Answered (owner, 2026-06-11).** **Co-ownership = invite other players as
+base co-owners** (simple shared ownership, not contribution-shares).
+**Space stations are a totally DIFFERENT structure type** (orbital, not a surface
+base tier). **Megastructures can span MULTIPLE sectors** when you build a really
+large settlement — and **planting settlements + attracting people to them is
+itself part of Building** (a new growth mechanic: a base/settlement that draws
+population, scaling up to multi-sector megastructures).
 
 ---
 
@@ -248,6 +276,18 @@ borrows the combat resolver to fight hostile anomalies.
 **Open Qs.** How deep do ship modules go? Is the phase-resolver turn-based-visible
 (you pick maneuvers and watch) or instant-with-a-log? How much PvP is opt-in vs
 ambient-risk? Insurance/death-stakes for ships?
+
+**→ Answered (owner, 2026-06-11).** **PvP is NOT opt-in** (ambient risk is real)
+— **BUT you can only PvP a player who is actively online.** An engagement between
+two online players is a **live back-and-forth**: each side **receives live
+updates on the state of their ship (or suit)** as it unfolds (this is the live
+co-located mode — Combat-3, on the 3b Realtime layer; the resolver itself is the
+interactive turn-by-turn model already chosen below). **Insurance / death-stakes:**
+if your **only** ship is destroyed and you **lack the assets to buy a new one**,
+**emergency services provide a replacement ship at no cost** — so a wipe stings
+but can never permanently strand you (the same anti-softlock spirit as
+`distress`). This confirms async-vs-live keys off online presence, and pins the
+ship-loss safety net for Combat-2.
 
 **Resolved (2026-06, build plan).** Ship combat is a **distinct system from
 on-foot wildlife `attack`** (which stays the on-foot melee layer); they may share
@@ -324,6 +364,15 @@ lab access, **patents** (own a recipe others must license), and gene-banks.
 recipe space (finite-but-huge, like the genome)? Patents — enforceable in a
 shared world, or just first-mover advantage?
 
+**→ Answered (owner, 2026-06-11).** **NOT a prebuilt tech tree.** Science is a
+**complex system of chaotic (deterministic-but-not-predictable) processes** —
+real **experimentation, time, and chance**. Example: developing a new cultivar
+is time + chance, where new genetic material *helps* but doesn't guarantee.
+**Patents aren't enforced** — discoveries are theoretically available to anyone,
+but **HOW to reproduce one is not obvious** (the know-how is the moat, not legal
+protection). So research is closer to a search through a vast chaotic space than
+to unlocking tree nodes — first-mover advantage comes from knowing the *method*.
+
 ---
 
 ## vi. Politics
@@ -363,6 +412,15 @@ empire reputation + Conclave standing.
 **Open Qs.** Conclave-influence vs empire-reputation — separate currencies or
 intertwined? Alliance governance model? Territory granularity (system? cluster?)?
 How much can a player steer an NPC empire? War declaration & resolution rules?
+
+**→ Answered (owner, 2026-06-11).** **Conclave influence and empire influence
+are NOT the same** — but **empire influence implies Conclave influence** (and
+maybe vice-versa); they're intertwined, not one currency. **Progression is a
+ladder of scale:** you start as a **low-level governor** making **policy
+decisions** and doing **capture-the-flag-style engagements** for local military
+work, then **rise the ranks over time** to do those same things (policy +
+military ops) at ever larger scales. So the Politics climb is "same verbs, bigger
+stage" — local governance → regional → empire/Conclave.
 
 ---
 
@@ -418,6 +476,16 @@ leak between the hidden world and the public one.
 stability global or regional? How "SCP" in tone — wiki-style dossiers (great fit
 for the text interface + Nimbus blurb writer)? Is the late-game "what causes
 anomalies" a fixed authored mystery or procedural?
+
+**→ Answered (owner, 2026-06-11).** **Recruitment trigger:** the Veil sends a
+message **to the player's base** once they've earned a **threshold of TOTAL
+reputation across the other factions** (cross-faction standing is the key that
+gets you noticed). **Stability is REGIONAL** — only small pockets of instability:
+at the largest scale maybe an entire system, at the smallest maybe just specific
+*animals*. **Anomalies are mostly procedurally-generated but with a story element
+woven in** — when the Veil assigns you to hunt a procgen anomaly, it ships with a
+**procedurally-generated blurb** (the Nimbus blurb writer's job). So: procgen
+substrate + authored throughline, surfaced as dossier-style briefings.
 
 ---
 
