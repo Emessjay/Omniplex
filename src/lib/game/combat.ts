@@ -111,6 +111,65 @@ export function loadoutStats(
 }
 
 // ---------------------------------------------------------------------------
+// Base defenses (Combat-2a) — a player's base, rendered as a ship-combat enemy.
+//
+// A raider fights the target base's installed DEFENSE buildings through the SAME
+// resolver/`engage` session a bounty hunt uses: turrets supply the base's attack
+// profile, shield generators its shield, and the base TIER its "hull". The
+// crucial coupling: defenses are POWER-GATED — when the base is `!powered`, its
+// guns and shields read NEAR-ZERO (only the inert hull remains), so an unpowered
+// base is easy pickings. Pure: the building counts + `powered` are passed in
+// (the handler reads them off the base + `basePower`).
+// ---------------------------------------------------------------------------
+
+/** Base "hull" (the integrity a raider must grind to 0) per base tier. */
+const BASE_DEFENSE_HULL_PER_TIER = 80;
+/** Per-turret weapon damage, split across the three firing profiles (a mix). */
+const TURRET_WEAPONS: WeaponDamage = { burst: 4, sustained: 3, missile: 2 };
+/** Shield absorb each shield generator contributes. */
+const SHIELD_PER_GENERATOR = 8;
+/** Targeting lock each turret contributes (so a defended base can actually hit). */
+const TURRET_LOCK = 3;
+
+/**
+ * The combat profile a base presents to a raider (Combat-2a), as a
+ * `ShipCombatStats` the standard resolver fights. Turrets fold into the weapon
+ * mix + targeting lock; shield generators into shield absorb; the base `tier`
+ * into `hullMax` (a base's integrity, monotonic in tier, always > 0). When the
+ * base is **`!powered`**, the active defenses are OFFLINE — weapons and shield
+ * read zero (only the inert tier-hull remains), so an unpowered base is trivially
+ * raidable (this is what ties power to defense). A base never evades or jams.
+ * Pure.
+ */
+export function baseDefenseStats(args: {
+  turrets: number;
+  shieldGenerators: number;
+  tier: number;
+  powered: boolean;
+}): ShipCombatStats {
+  const turrets = Math.max(0, Math.floor(args.turrets));
+  const gens = Math.max(0, Math.floor(args.shieldGenerators));
+  const tier = Math.max(1, Math.floor(args.tier));
+  const hullMax = BASE_DEFENSE_HULL_PER_TIER * tier;
+  if (!args.powered) {
+    // Defenses offline: only the hull stands — near-zero, raidable.
+    return { hullMax, shield: 0, evade: 0, jam: 0, lock: 0, weapons: { burst: 0, sustained: 0, missile: 0 } };
+  }
+  return {
+    hullMax,
+    shield: gens * SHIELD_PER_GENERATOR,
+    evade: 0,
+    jam: 0,
+    lock: turrets * TURRET_LOCK,
+    weapons: {
+      burst: turrets * TURRET_WEAPONS.burst,
+      sustained: turrets * TURRET_WEAPONS.sustained,
+      missile: turrets * TURRET_WEAPONS.missile,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Range model + the fight state
 // ---------------------------------------------------------------------------
 

@@ -116,6 +116,16 @@ const SHIP_COMBAT_ONLY = new Set(["engage", "flee"]);
 const HUB_COMBAT = new Set(["hunt"]);
 
 /**
+ * Surface-region combat action (Combat-2a) — `raid` attacks another player's
+ * base in the region you're standing on. Like the surface/base work it's gated
+ * on being on a SURFACE region (`landed`, whether aboard or on foot — orbiting /
+ * outpost have no region to hold a raidable base), and out of any combat. The
+ * handler does the finer checks (an enemy base is actually here, not on cooldown,
+ * a valid target).
+ */
+const SURFACE_COMBAT = new Set(["raid"]);
+
+/**
  * Economy commands — applicable iff at a TRADE LOCATION (a settlement region or
  * the orbital outpost) and out of combat, REGARDLESS of embark state (P12a). You
  * can only `buy`/`sell` where there's actually a market to trade with; this
@@ -257,6 +267,9 @@ export function isApplicable(verb: string, state: PlayerStateView): boolean {
   if (COMBAT_ONLY.has(verb)) return false; // nothing to fight
   // `hunt` starts a bounty fight — a hub action (location-gated like economy).
   if (HUB_COMBAT.has(verb)) return state.atTradeLocation;
+  // `raid` attacks a base in the surface region you're on — usable while landed
+  // (aboard) or on foot, but not while orbiting/at the outpost (no region).
+  if (SURFACE_COMBAT.has(verb)) return state.landed;
   if (ANYTIME_OUT_OF_COMBAT.has(verb)) return true;
   // Salvage: orbital derelict (orbiting) OR surface site (on foot) — anything
   // but landed-aboard. Checked before the embark split because it spans states.

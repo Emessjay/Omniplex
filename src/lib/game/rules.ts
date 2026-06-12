@@ -622,6 +622,72 @@ export function conditionAfterRepair(condition: number, points: number): number 
 }
 
 // ---------------------------------------------------------------------------
+// Base raids (Combat-2a) — the first async PvP loop. A raider fights another
+// player's base DEFENSES (turrets/shield generators, see `baseDefenseStats` in
+// `combat.ts`) through the same ship-combat resolver; a WIN loots a capped share
+// of the base's silo and knocks the defenses offline for a cooldown (NO
+// permanent destruction). These are the PURE rules: the loot share, the cooldown
+// predicate, the constants. As elsewhere, no `Date`/`Math.random`/IO — the
+// handler injects `now` and resolves the fight; these stay deterministic.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fraction of EACH silo stack a successful raid transfers — a CAPPED share, well
+ * below the whole stack (you can't strip a base bare in one raid). In (0, 1).
+ * Tunable.
+ */
+export const RAID_LOOT_FRACTION = 0.25;
+
+/**
+ * How long a base's defenses stay offline (and the base un-raidable) after a
+ * successful raid — the cooldown that protects an OFFLINE owner from being
+ * camped. Six hours. > 0. Tunable.
+ */
+export const RAID_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Notoriety/heat a raider gains on a successful raid (the FIRST real heat-gain
+ * source — see `addNotoriety`/`notorietyTier`). Tuned to push a repeat raider up
+ * the tier ladder (`NOTORIETY_TIERS`). Tunable.
+ */
+export const RAID_NOTORIETY_GAIN = 150;
+
+/**
+ * The capped silo loot a successful raid transfers: a per-stack
+ * `floor(qty × fraction)` of each stored stack. Never the whole stack (`fraction`
+ * < 1), and stacks that floor to 0 are dropped, so an empty (or near-empty) silo
+ * yields nothing. The handler bounds the actual transfer further by the raider's
+ * free cargo. Pure — the loot is a deterministic function of the silo + fraction.
+ */
+export function raidLoot(
+  siloStacks: readonly { itemId: string; qty: number }[],
+  fraction: number = RAID_LOOT_FRACTION,
+): { itemId: string; qty: number }[] {
+  const f = Math.max(0, fraction);
+  const out: { itemId: string; qty: number }[] = [];
+  for (const s of siloStacks) {
+    const take = Math.floor(Math.max(0, s.qty) * f);
+    if (take > 0) out.push({ itemId: s.itemId, qty: take });
+  }
+  return out;
+}
+
+/**
+ * Whether a base is still on its post-raid cooldown at `now`: `true` iff it was
+ * raided within the last `cooldownMs` (`now − raidedAt < cooldownMs`). A base
+ * that was never raided (`raidedAt` null/NaN) is never on cooldown. Pure — `now`
+ * (and `raidedAt`, in ms) are injected by the handler. Protects offline owners.
+ */
+export function raidOnCooldown(
+  raidedAt: number | null,
+  now: number,
+  cooldownMs: number = RAID_COOLDOWN_MS,
+): boolean {
+  if (raidedAt === null || raidedAt === undefined || Number.isNaN(raidedAt)) return false;
+  return now - raidedAt < cooldownMs;
+}
+
+// ---------------------------------------------------------------------------
 // Wildlife — exploring, and on-foot combat with fauna (P5).
 //
 // Exploring a region (on foot) rolls one of three outcomes; encountering a
@@ -901,6 +967,16 @@ export const EXCAVATOR_POWER_DEMAND = 4;
 export const PRODUCTION_LINE_POWER_DEMAND = 6;
 /** Power one blast furnace draws — heavy industry, on par with a production line. */
 export const BLAST_FURNACE_POWER_DEMAND = 6;
+/**
+ * Power one turret draws (Combat-2a defense). > 0 — a defense building is a power
+ * CONSUMER like the industrial structures: an unpowered base can't run its guns,
+ * which is exactly what makes an unpowered base raidable (`baseDefenseStats` reads
+ * near-zero when `!powered`). Modest so a small plant can keep the lights AND the
+ * guns on.
+ */
+export const TURRET_POWER_DEMAND = 3;
+/** Power one shield generator draws (Combat-2a defense). > 0, like the turret. */
+export const SHIELD_POWER_DEMAND = 3;
 
 /**
  * Thermal plant power per °C above `THERMAL_FLOOR_C`. Tuned so a warm region
@@ -954,6 +1030,9 @@ export function basePower(args: {
   excavators: number;
   productionLines: number;
   blastFurnaces: number;
+  /** Combat-2a defense consumers (default 0 so pre-raid call sites read unchanged). */
+  turrets?: number;
+  shieldGenerators?: number;
   temperature: number;
   atmosphere: Atmosphere;
   tier?: number;
@@ -965,7 +1044,9 @@ export function basePower(args: {
   const demand =
     Math.max(0, args.excavators) * EXCAVATOR_POWER_DEMAND +
     Math.max(0, args.productionLines) * PRODUCTION_LINE_POWER_DEMAND +
-    Math.max(0, args.blastFurnaces) * BLAST_FURNACE_POWER_DEMAND;
+    Math.max(0, args.blastFurnaces) * BLAST_FURNACE_POWER_DEMAND +
+    Math.max(0, args.turrets ?? 0) * TURRET_POWER_DEMAND +
+    Math.max(0, args.shieldGenerators ?? 0) * SHIELD_POWER_DEMAND;
   return { supply, demand, powered: supply >= demand };
 }
 

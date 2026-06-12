@@ -47,6 +47,7 @@ export const VERBS: string[] = [
   "engage",
   "bounties",
   "hunt",
+  "raid",
   "inventory",
   "upgrades",
   "craft",
@@ -223,6 +224,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
     desc: "engage a posted bounty's wanted ship in combat (at a trade hub)",
     slots: [{ name: "n", hint: "a bounty # from `bounties`" }],
   },
+  raid: {
+    desc: "raid another player's base in this region — fight its defenses for a share of its silo",
+    slots: [{ name: "handle", optional: true, hint: "the owner's handle (when several bases are here)" }],
+  },
   inventory: { desc: "show cargo, credits, fuel and status", slots: [] },
   upgrades: {
     desc: "show installed ship upgrades + capabilities",
@@ -237,7 +242,7 @@ export const USAGE: Record<string, UsageDescriptor> = {
     slots: [{ name: "food" }],
   },
   build: {
-    desc: "build a base or an in-base structure (silo/excavator/production_line/blast_furnace/crop_farm/power plant) here (on foot)",
+    desc: "build a base or an in-base structure (silo/excavator/production_line/blast_furnace/crop_farm/power plant/turret/shield_generator) here (on foot)",
     slots: [
       { name: "structure" },
       { name: "name", optional: true, hint: "an optional base name (build base only)" },

@@ -18,6 +18,8 @@ describe("structure-kind catalog", () => {
     expect(isStructureKind("blast_furnace")).toBe(true); // blast-furnace phase
     expect(isStructureKind("crop_farm")).toBe(true); // crop-farming phase
     expect(isStructureKind("livestock_pen")).toBe(true); // animal-husbandry phase
+    expect(isStructureKind("turret")).toBe(true); // base-raids phase (Combat-2a)
+    expect(isStructureKind("shield_generator")).toBe(true); // base-raids phase (Combat-2a)
     expect(isStructureKind("base")).toBe(false); // the base itself is not an in-base structure
     expect(isStructureKind("nonsense")).toBe(false);
     expect([...STRUCTURE_KINDS]).toEqual([
@@ -29,6 +31,8 @@ describe("structure-kind catalog", () => {
       "blast_furnace",
       "crop_farm",
       "livestock_pen",
+      "turret",
+      "shield_generator",
     ]);
   });
 });

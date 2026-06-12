@@ -320,6 +320,20 @@ export interface ScanBase {
   name: string | null;
   /** True when this base belongs to the scanning player. */
   mine: boolean;
+  /** Defense counts (Combat-2a): turrets + shield generators installed. */
+  turrets?: number;
+  shieldGenerators?: number;
+  /** Whether its defenses are UP (powered + not recharging). False ⇒ raidable. */
+  defensesUp?: boolean;
+  /** Whether it's on a post-raid cooldown (can't be raided — recharging). */
+  onCooldown?: boolean;
+  /**
+   * For OTHER players' bases (`!mine`), whether to surface a `raid` action and
+   * whether it should read red/advisory (P9b — on cooldown, or you clearly can't
+   * win). Still clickable when red. Absent ⇒ no raid action.
+   */
+  raidable?: boolean;
+  raidAdvisory?: boolean;
 }
 
 /**
@@ -822,13 +836,33 @@ export function renderScan(view: ScanView): RenderFrame {
     lines.push(line(text("Bases here:", "heading")));
     for (const b of bases) {
       const label = b.name && b.name.length > 0 ? b.name : "(unnamed base)";
-      lines.push(
-        line([
-          text("  • ", "muted"),
-          text(`${label} `, b.mine ? "accent" : "default"),
-          text(b.mine ? "(yours)" : `— ${b.handle}`, "muted"),
-        ]),
-      );
+      const spans: RenderSpan[] = [
+        text("  • ", "muted"),
+        text(`${label} `, b.mine ? "accent" : "default"),
+        text(b.mine ? "(yours)" : `— ${b.handle}`, "muted"),
+      ];
+      // Defense posture (Combat-2a): turret/shield counts + up/recharging/offline.
+      if ((b.turrets ?? 0) > 0 || (b.shieldGenerators ?? 0) > 0 || b.onCooldown) {
+        const tag = b.onCooldown
+          ? text("  [defenses recharging]", "danger")
+          : b.defensesUp
+            ? text(`  [${b.turrets ?? 0} turret/${b.shieldGenerators ?? 0} shield, up]`, "default")
+            : text(`  [defenses offline — raidable]`, "warning");
+        spans.push(tag);
+      }
+      // A non-owner with a raidable base gets a clickable `raid <handle>` action;
+      // red/advisory when on cooldown or clearly outmatched (still clickable).
+      if (!b.mine && b.raidable) {
+        spans.push(text("  ", "muted"));
+        spans.push(
+          action(`raid ${b.handle}`, `raid ${b.handle}`, {
+            style: "link",
+            title: b.onCooldown ? "its defenses are recharging" : `raid ${b.handle}'s base`,
+            disabled: b.raidAdvisory,
+          }),
+        );
+      }
+      lines.push(line(spans));
     }
   }
 
@@ -1767,6 +1801,19 @@ export interface StorageView {
   herds?: HerdSummary[];
   /** Clickable `ranch <animal>` hints for this biome (red when pen full). */
   ranchHints?: RanchHint[];
+  /** Defense buildings (Combat-2a): turret + shield-generator counts. */
+  turrets?: number;
+  shieldGenerators?: number;
+  /** Whether the base's defenses are UP (powered AND not recharging from a raid). */
+  defensesUp?: boolean;
+  /** Whether the defenses are on a post-raid cooldown (recharging — base protected). */
+  defensesRecharging?: boolean;
+  /**
+   * Recent raids against this base (Combat-2a) — the owner's aftermath log. Each
+   * is who raided, what they took (summary), and how long ago. Empty/absent ⇒
+   * never raided.
+   */
+  raids?: { raiderHandle: string; loot: string; ago: string }[];
   /**
    * Power balance (P13): plant `supply` vs consumer `demand`. Rendered as
    * `Power supply/demand`, green ✓ when `powered`, red when short (per P9b).
@@ -1828,6 +1875,8 @@ export interface StorageView {
     blast_furnace?: boolean;
     crop_farm?: boolean;
     livestock_pen?: boolean;
+    turret?: boolean;
+    shield_generator?: boolean;
   };
 }
 
@@ -1880,6 +1929,40 @@ export function renderStorage(view: StorageView): RenderFrame {
         ...(tierBonus && tierBonus > 0 ? [text(`  (incl. +${tierBonus} tier)`, "muted")] : []),
       ]),
     );
+  }
+
+  // Defenses + raid aftermath (Combat-2a). Show the turret/shield counts and
+  // whether the defenses are UP or RECHARGING (post-raid cooldown — the base is
+  // protected then but can't fend off the next attacker). Then the owner's
+  // aftermath log of recent raids (danger-styled — you lost goods).
+  const turrets = view.turrets ?? 0;
+  const shields = view.shieldGenerators ?? 0;
+  if (turrets > 0 || shields > 0 || (view.raids && view.raids.length > 0)) {
+    const status = view.defensesRecharging
+      ? text("recharging (recently raided)", "danger")
+      : view.defensesUp
+        ? text("up ✓", "success")
+        : text("offline (unpowered)", "danger");
+    lines.push(
+      line([
+        text("defenses ", "muted"),
+        text(`${turrets} turret${turrets === 1 ? "" : "s"}, ${shields} shield`, "default"),
+        text("   ", "muted"),
+        status,
+      ]),
+    );
+  }
+  if (view.raids && view.raids.length > 0) {
+    for (const r of view.raids) {
+      lines.push(
+        line([
+          text("  ⚠ raided by ", "danger"),
+          text(r.raiderHandle, "default"),
+          text(` ${r.ago}`, "muted"),
+          text(r.loot ? ` — lost ${r.loot}` : " — nothing taken", "muted"),
+        ]),
+      );
+    }
   }
 
   // Tier upgrade (Keystone 2c): a clickable `upgrade base` hint showing the next
@@ -2062,6 +2145,18 @@ export function renderStorage(view: StorageView): RenderFrame {
       style: "link",
       title: b && b.livestock_pen === false ? "can't afford a livestock pen" : "add a pen for ranching animals",
       disabled: b ? b.livestock_pen === false : false,
+    }),
+    text("   ", "muted"),
+    action("build turret", "build turret", {
+      style: "link",
+      title: b && b.turret === false ? "can't afford a turret" : "arm the base against raiders",
+      disabled: b ? b.turret === false : false,
+    }),
+    text("   ", "muted"),
+    action("build shield_generator", "build shield_generator", {
+      style: "link",
+      title: b && b.shield_generator === false ? "can't afford a shield generator" : "shield the base against raiders",
+      disabled: b ? b.shield_generator === false : false,
     }),
   ];
   lines.push(line(hints));

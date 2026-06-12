@@ -150,6 +150,21 @@ export interface ShipCombat {
   enemyName: string;
   /** Hub faction that posted the bounty — rep is awarded to it on victory. */
   factionId?: string;
+  /**
+   * When set, this session is a base RAID (Combat-2a) rather than a PvE bounty
+   * hunt: the enemy is the target base's `baseDefenseStats`. The outcome branch
+   * (`handleEngage`) reads this to loot the silo + set the cooldown + log the raid
+   * + raise notoriety on a WIN, or tow the raider on a LOSS. `bountyKey` is empty
+   * and the rewards are 0 for a raid (the loot is the reward, applied directly).
+   */
+  raid?: {
+    /** The target base's row id (its silo/buildings/cooldown live here). */
+    baseId: string;
+    /** The target base's region key (manifold-partitioned, like everything region-keyed). */
+    regionKey: string;
+    /** The base owner's public handle, for the combat log + aftermath. */
+    ownerHandle: string;
+  };
   /** Player ship profile, snapshotted from `loadoutStats` at engage-start. */
   player: ShipCombatStats;
   /** Enemy ship profile (the bounty's tier-scaled NPC). */

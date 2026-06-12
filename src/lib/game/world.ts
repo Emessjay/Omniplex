@@ -1287,9 +1287,15 @@ export async function setDistressLocation(
 
 /** A base as seen by others in a region: owner handle/id + optional name. */
 export interface RegionBase {
+  /** The base row id — needed to address its buildings/storage when raiding it. */
+  baseId: string;
   ownerId: string;
   handle: string;
   name: string | null;
+  /** The base's tier (1..MAX_BASE_TIER) — feeds its defense profile (Combat-2a). */
+  tier: number;
+  /** When it was last successfully raided, or null. Drives the raid cooldown. */
+  raidedAt: string | null;
 }
 
 /** A base the current player owns: where it is + its name. */
@@ -1329,11 +1335,17 @@ export async function basesInRegion(regionKey: string): Promise<RegionBase[]> {
   const db = getServerClient();
   const { data, error } = await db
     .from("bases")
-    .select("owner_id, name")
+    .select("id, owner_id, name, tier, raided_at")
     .eq("region_key", regionKey)
     .order("created_at", { ascending: true });
   if (error) throw error;
-  const rows = (data ?? []) as { owner_id: string; name: string | null }[];
+  const rows = (data ?? []) as {
+    id: string;
+    owner_id: string;
+    name: string | null;
+    tier: number | null;
+    raided_at: string | null;
+  }[];
   if (rows.length === 0) return [];
 
   // Resolve handles from the public leaderboard view (handle is public-safe).
@@ -1349,9 +1361,12 @@ export async function basesInRegion(regionKey: string): Promise<RegionBase[]> {
     handleById.set(r.id, r.handle);
   }
   return rows.map((r) => ({
+    baseId: r.id,
     ownerId: r.owner_id,
     handle: handleById.get(r.owner_id) ?? "unknown",
     name: r.name,
+    tier: r.tier ?? 1,
+    raidedAt: r.raided_at,
   }));
 }
 
@@ -1392,6 +1407,8 @@ export interface OwnedBaseRow {
   name: string | null;
   /** The base's tier (1..MAX_BASE_TIER); scales its storage capacity. */
   tier: number;
+  /** When it was last successfully raided, or null (Combat-2a). */
+  raidedAt: string | null;
 }
 
 /**
@@ -1406,14 +1423,14 @@ export async function getBaseInRegion(
   const db = getServerClient();
   const { data, error } = await db
     .from("bases")
-    .select("id, name, tier")
+    .select("id, name, tier, raided_at")
     .eq("owner_id", ownerId)
     .eq("region_key", regionKey)
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  const r = data as { id: string; name: string | null; tier: number | null };
-  return { id: r.id, name: r.name, tier: r.tier ?? 1 };
+  const r = data as { id: string; name: string | null; tier: number | null; raided_at: string | null };
+  return { id: r.id, name: r.name, tier: r.tier ?? 1, raidedAt: r.raided_at };
 }
 
 /** Set a base's tier (the `upgrade base` mutator). Service-role write. */
@@ -1421,6 +1438,63 @@ export async function setBaseTier(baseId: string, tier: number): Promise<void> {
   const db = getServerClient();
   const { error } = await db.from("bases").update({ tier }).eq("id", baseId);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Base raids (Combat-2a) — the cooldown clock + the aftermath log. A successful
+// raid stamps `bases.raided_at` (drives `raidOnCooldown` + the defenses-
+// recharging window) and inserts a `base_raids` row (public-read shared-world
+// event; the owner sees it via `storage`/`scan`). Service-role writes.
+// ---------------------------------------------------------------------------
+
+/** A logged base raid: who raided, what they took, and when. */
+export interface RaidRecord {
+  raiderHandle: string;
+  loot: { itemId: string; qty: number }[];
+  raidedAt: string;
+}
+
+/**
+ * Stamp a base's `raided_at` (a successful raid sets `now`; clearing passes
+ * null). Drives the post-raid cooldown + the defenses-recharging window.
+ */
+export async function setBaseRaidedAt(baseId: string, raidedAt: string | null): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db.from("bases").update({ raided_at: raidedAt }).eq("id", baseId);
+  if (error) throw error;
+}
+
+/** Append an aftermath log row for a successful raid. Service-role write. */
+export async function recordRaid(
+  baseId: string,
+  raiderHandle: string,
+  loot: { itemId: string; qty: number }[],
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("base_raids")
+    .insert({ base_id: baseId, raider_handle: raiderHandle, loot });
+  if (error) throw error;
+}
+
+/** The most recent raids on a base (newest first), for the owner's aftermath view. */
+export async function recentRaidsOn(baseId: string, limit = 5): Promise<RaidRecord[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("base_raids")
+    .select("raider_handle, loot, raided_at")
+    .eq("base_id", baseId)
+    .order("raided_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as { raider_handle: string; loot: unknown; raided_at: string };
+    return {
+      raiderHandle: r.raider_handle,
+      loot: Array.isArray(r.loot) ? (r.loot as { itemId: string; qty: number }[]) : [],
+      raidedAt: r.raided_at,
+    };
+  });
 }
 
 /** All buildings in a base, oldest first. */

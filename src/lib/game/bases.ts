@@ -83,6 +83,14 @@ export const STRUCTURE_KINDS = [
   // the crop farm, agriculture — NOT power-gated. Each pen provides
   // `LIVESTOCK_PEN_CAPACITY` head (see `rules.ts`).
   "livestock_pen",
+  // base-raids phase (Combat-2a): DEFENSE buildings. A `turret` arms the base's
+  // attack profile, a `shield_generator` its shield (see `baseDefenseStats` in
+  // `combat.ts`). Both are POWER-GATED consumers (`TURRET_POWER_DEMAND` /
+  // `SHIELD_POWER_DEMAND` in `rules.ts`) — an unpowered base can't run its guns,
+  // which is exactly what makes it raidable. They never reduce capacity; they
+  // turn a base into the "enemy" an attacker's `raid` fights.
+  "turret",
+  "shield_generator",
 ] as const;
 export type StructureKind = (typeof STRUCTURE_KINDS)[number];
 
@@ -113,6 +121,11 @@ export const BUILDING_BUILD_COST: Readonly<Record<StructureKind, Readonly<Record
   // Agriculture — a livestock pen (also not power-gated). Holds
   // `LIVESTOCK_PEN_CAPACITY` head; slightly pricier than a crop farm.
   livestock_pen: { credits: 400, iron: 5 },
+  // Defense (Combat-2a) — a turret arms the base; a shield generator protects it.
+  // Priced in the industrial band (metals + credits): a real investment in
+  // keeping a base raid-proof, gated further by needing power to run.
+  turret: { credits: 500, iron: 6, titanium: 3 },
+  shield_generator: { credits: 600, copper: 5, titanium: 4 },
 };
 
 /** The cost map for one structure kind. */

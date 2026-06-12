@@ -129,6 +129,11 @@ import {
   pointsAffordable,
   REPAIR_CREDITS_PER_POINT,
   REPAIR_METAL_PER_POINT,
+  raidLoot,
+  raidOnCooldown,
+  RAID_LOOT_FRACTION,
+  RAID_COOLDOWN_MS,
+  RAID_NOTORIETY_GAIN,
 } from "./rules";
 import {
   UPGRADES,
@@ -202,6 +207,7 @@ import {
   resolveExchange,
   npcApproach,
   npcExchange,
+  baseDefenseStats,
   bountiesAt,
   BOUNTY_ROTATION_MS,
   APPROACH_CHOICES,
@@ -722,6 +728,48 @@ async function regionScanFrame(
   // legible in `scan` (and the surface `map`).
   const grid = regionGrid(planet);
   const cell = regionCoords(regionIdx, grid.rows, grid.cols);
+  // Defense posture per base (Combat-2a): turret/shield counts + whether the
+  // defenses are up / recharging, plus a `raid` action on OTHERS' bases. Each
+  // base's `powered` is computed from its own buildings + this region/planet.
+  const scanNow = Date.now();
+  const scanBases: ScanBase[] = await Promise.all(
+    regionBases.map(async (b): Promise<ScanBase> => {
+      const mine = b.ownerId === player.id;
+      const blds = await world.getBaseBuildings(b.baseId);
+      const turrets = blds.filter((x) => x.kind === "turret").length;
+      const shieldGenerators = blds.filter((x) => x.kind === "shield_generator").length;
+      const power = basePower({
+        thermalPlants: blds.filter((x) => x.kind === "thermal_plant").length,
+        solarArrays: blds.filter((x) => x.kind === "solar_array").length,
+        excavators: blds.filter((x) => x.kind === "excavator").length,
+        productionLines: blds.filter((x) => x.kind === "production_line").length,
+        blastFurnaces: blds.filter((x) => x.kind === "blast_furnace").length,
+        turrets,
+        shieldGenerators,
+        temperature: region.temperature,
+        atmosphere: planet.atmosphere,
+        tier: b.tier,
+      });
+      const raidedAtMs = b.raidedAt ? Date.parse(b.raidedAt) : null;
+      const onCooldown = raidOnCooldown(
+        Number.isNaN(raidedAtMs ?? NaN) ? null : raidedAtMs,
+        scanNow,
+        RAID_COOLDOWN_MS,
+      );
+      return {
+        handle: b.handle,
+        name: b.name,
+        mine,
+        turrets,
+        shieldGenerators,
+        defensesUp: power.powered && !onCooldown,
+        onCooldown,
+        raidable: !mine,
+        // Advisory (red but still clickable): can't raid a base on cooldown.
+        raidAdvisory: !mine && onCooldown,
+      };
+    }),
+  );
   return renderScan({
     planet,
     system,
@@ -752,12 +800,9 @@ async function regionScanFrame(
     // At a settlement region you can repair too (the surface trade-location case).
     repairAvailable: hasSettlement(seed, region.coord),
     encounter: encounterView(player, region),
-    // Shared-world presence: bases here, yours marked, others shown by handle.
-    bases: regionBases.map((b): ScanBase => ({
-      handle: b.handle,
-      name: b.name,
-      mine: b.ownerId === player.id,
-    })),
+    // Shared-world presence: bases here, yours marked, others shown by handle,
+    // each with its defense posture + (on others') a `raid` action (Combat-2a).
+    bases: scanBases,
     // Co-located players standing in this region (presence 3a).
     present,
     plots,
@@ -873,6 +918,8 @@ interface ArgDomainContext {
   unequipCandidates: string[] | null;
   /** The current ship-combat phase's choices — the `engage` arg domain. */
   engageCandidates: string[] | null;
+  /** Handles of OTHER players' bases in this region — the `raid` arg domain. */
+  raidCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -889,6 +936,7 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   equipCandidates: null,
   unequipCandidates: null,
   engageCandidates: null,
+  raidCandidates: null,
 };
 
 /**
@@ -1015,6 +1063,19 @@ async function loadArgDomainContext(
       : [];
     return { ...EMPTY_ARG_CONTEXT, engageCandidates: choices };
   }
+  if (verb === "raid") {
+    // The raid targets are the OTHER players' bases in the current region (by
+    // handle, so `raid ali` abbreviates). No surface region (outpost/gas) ⇒ none.
+    if (atOutpost(player)) return { ...EMPTY_ARG_CONTEXT, raidCandidates: [] };
+    const coord = locOf(player);
+    if (planetAt(seed, coord).isGas) return { ...EMPTY_ARG_CONTEXT, raidCandidates: [] };
+    const rKey = regionKey(regionAt(seed, coord, player.region).coord);
+    const here = await world.basesInRegion(rKey);
+    return {
+      ...EMPTY_ARG_CONTEXT,
+      raidCandidates: here.filter((b) => b.ownerId !== player.id).map((b) => b.handle),
+    };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -1054,12 +1115,15 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // so `engage cl` → `engage close` (approach) / `engage we` → `engage
       // weapons` (exchange). The `hunt` arg (a bounty #) is opaque/numeric.
       if (verb === "engage" && argIndex === 0) return ctx.engageCandidates;
+      // `raid`'s domain: the handles of OTHER players' bases in this region, so
+      // `raid <handle>` abbreviates (Combat-2a).
+      if (verb === "raid" && argIndex === 0) return ctx.raidCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants, the
       // blast-furnace smelting tier, the crop-farming crop farm, and the
       // animal-husbandry livestock pen).
       if (verb === "build" && argIndex === 0)
-        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm", "livestock_pen"];
+        return ["base", "silo", "excavator", "production_line", "thermal_plant", "solar_array", "blast_furnace", "crop_farm", "livestock_pen", "turret", "shield_generator"];
       // `upgrade`'s domain (Keystone 2c): just the base today — `upgrade base`
       // raises the base's tier (more storage capacity). Extensible later.
       if (verb === "upgrade" && argIndex === 0) return ["base"];
@@ -1294,6 +1358,8 @@ async function dispatchResolved(
       return handleBounties(player, seed);
     case "hunt":
       return handleHunt(player, seed, args);
+    case "raid":
+      return handleRaid(player, seed, args);
     case "inventory":
       return handleInventory(player, seed);
     case "upgrades":
@@ -3851,9 +3917,16 @@ async function handleEngage(player: Player, seed: string, args: string[]): Promi
   const res = resolveExchange(state, choice as ExchangeChoice, npc, [Math.random(), Math.random()]);
 
   if (res.outcome === "victory") {
-    return shipCombatVictory(player, combat, res.log);
+    // A raid (Combat-2a) loots the base + cooldowns it + raises heat; a bounty
+    // hunt pays credits/rep. The session's `raid` marker picks the branch.
+    return combat.raid
+      ? raidVictory(player, combat, res.log)
+      : shipCombatVictory(player, combat, res.log);
   }
   if (res.outcome === "defeat") {
+    // Either way a loss tows the raider via the ship-repair primitive (the base
+    // is unharmed on a raid loss — no loot, no cooldown). `shipCombatDefeat`
+    // already does the tow; the raid frame just notes the base shrugged it off.
     return shipCombatDefeat(player, seed, combat, res.log);
   }
   const next: ShipCombat = { ...combat, ...res.state };
@@ -3996,6 +4069,194 @@ async function handleShipFlee(player: Player, seed: string): Promise<RenderFrame
     [`You fail to break away — the ${combat.enemyName} lands a parting hit.`, ...res.log],
     EXCHANGE_CHOICES,
   );
+}
+
+// ---------------------------------------------------------------------------
+// raid (Combat-2a) — the first PvP loop: attack ANOTHER player's base in the
+// current region, fighting its installed DEFENSES (turrets/shield generators)
+// through the SAME ship-combat resolver/`engage` session a bounty hunt uses. A
+// WIN loots a capped share of the base's silo into your cargo, knocks the
+// defenses offline for a cooldown, logs the raid, and raises your notoriety; a
+// LOSS tows your ship via the ship-repair primitive (the base is unharmed). NO
+// permanent destruction — only silo goods move and the defenses recharge.
+// ---------------------------------------------------------------------------
+
+/** Resource ids (the only loot that fits in cargo — parts/ingots stay siloed). */
+const RAIDABLE_RESOURCE_IDS = new Set(RESOURCES.map((r) => r.id));
+
+/** Count a building kind in a base's building list. */
+function countKind(buildings: world.BaseBuilding[], kind: string): number {
+  return buildings.filter((b) => b.kind === kind).length;
+}
+
+/**
+ * The target base's defense profile: `baseDefenseStats` over its turret/shield
+ * counts + tier, with `powered` computed from the base's full building set and
+ * the region/planet it sits in. An UNPOWERED base reads near-zero (raidable).
+ */
+async function baseDefenseProfile(
+  baseId: string,
+  tier: number,
+  region: Region,
+  planet: Planet,
+): Promise<ShipCombatStats> {
+  const buildings = await world.getBaseBuildings(baseId);
+  const turrets = countKind(buildings, "turret");
+  const shieldGenerators = countKind(buildings, "shield_generator");
+  const power = basePower({
+    thermalPlants: countKind(buildings, "thermal_plant"),
+    solarArrays: countKind(buildings, "solar_array"),
+    excavators: countKind(buildings, "excavator"),
+    productionLines: countKind(buildings, "production_line"),
+    blastFurnaces: countKind(buildings, "blast_furnace"),
+    turrets,
+    shieldGenerators,
+    temperature: region.temperature,
+    atmosphere: planet.atmosphere,
+    tier,
+  });
+  return baseDefenseStats({ turrets, shieldGenerators, tier, powered: power.powered });
+}
+
+/**
+ * `raid [handle]` — start a raid on another player's base in the current region.
+ * Valid when this region holds a base you don't own that is NOT on cooldown, and
+ * you're out of any combat (the applicability gate already requires being on a
+ * surface region). Multiple enemy bases ⇒ `raid <handle>` selects; one ⇒ bare
+ * `raid`. Region-keyed ⇒ manifold-partitioned automatically. Starts a ship-combat
+ * session (marked `raid`) whose enemy is the target's `baseDefenseStats`; the
+ * existing `engage` plays it out.
+ */
+async function handleRaid(player: Player, seed: string, args: string[]): Promise<RenderFrame> {
+  if (player.combat) {
+    return errorFrame("You're already in a ship fight — finish it (`engage`) or `flee` first.");
+  }
+  if (atOutpost(player)) {
+    return errorFrame("You're docked at the orbital outpost — drop to a surface region to raid a base.");
+  }
+  const coord = locOf(player);
+  const planet = planetAt(seed, coord);
+  if (planet.isGas) {
+    return errorFrame(`${planet.name} is a gas giant — no surface, so no base to raid.`);
+  }
+  const region = regionAt(seed, coord, player.region);
+  const rKey = regionKey(region.coord);
+
+  const here = await world.basesInRegion(rKey);
+  const enemies = here.filter((b) => b.ownerId !== player.id);
+  if (enemies.length === 0) {
+    return errorFrame("No enemy base to raid here — `scan` shows the bases in this region.");
+  }
+
+  // Select the target: by handle when given (exact or unique prefix), else the
+  // sole enemy base; ambiguous when several and no handle.
+  let target = enemies[0]!;
+  const wanted = args[0]?.toLowerCase();
+  if (wanted) {
+    const matches = enemies.filter((b) => b.handle.toLowerCase().startsWith(wanted));
+    const exact = enemies.find((b) => b.handle.toLowerCase() === wanted);
+    if (exact) target = exact;
+    else if (matches.length === 1) target = matches[0]!;
+    else if (matches.length === 0) return errorFrame(`No base owned by "${args[0]}" here.`);
+    else return errorFrame(`Several bases match "${args[0]}" — \`raid <handle>\` (${matches.map((b) => b.handle).join(", ")}).`);
+  } else if (enemies.length > 1) {
+    return errorFrame(`Several bases here — \`raid <handle>\` (${enemies.map((b) => b.handle).join(", ")}).`);
+  }
+
+  // Cooldown: a recently-raided base is protected (its defenses are recharging),
+  // so an offline owner can't be camped.
+  const raidedAtMs = target.raidedAt ? Date.parse(target.raidedAt) : null;
+  if (raidOnCooldown(Number.isNaN(raidedAtMs ?? NaN) ? null : raidedAtMs, Date.now(), RAID_COOLDOWN_MS)) {
+    return errorFrame(`${target.handle}'s base was raided recently — its defenses are still recharging. Try later.`);
+  }
+
+  // Build the enemy = the base's defense profile; snapshot the raider's loadout
+  // (scaled by ship condition, like `hunt`).
+  const enemy = await baseDefenseProfile(target.baseId, target.tier, region, planet);
+  const playerStats = loadoutStats(player.loadout, player.shipId, player.shipCondition ?? MAX_SHIP_CONDITION);
+  const baseLabel = target.name ? `${target.name} (${target.handle})` : `${target.handle}'s base`;
+  const combat: ShipCombat = {
+    bountyKey: "",
+    enemyName: baseLabel,
+    raid: { baseId: target.baseId, regionKey: rKey, ownerHandle: target.handle },
+    player: playerStats,
+    enemy,
+    playerHull: playerStats.hullMax,
+    playerShield: playerStats.shield,
+    enemyHull: enemy.hullMax,
+    enemyShield: enemy.shield,
+    range: null,
+    phase: "approach",
+    rewardCredits: 0,
+    rewardRep: 0,
+  };
+  await world.setShipCombat(player.id, combat);
+  return shipCombatFrame(
+    combat,
+    [
+      `You open a raid on ${baseLabel}.`,
+      enemy.weapons.burst + enemy.weapons.sustained + enemy.weapons.missile === 0
+        ? "Its defenses read cold — the base is unpowered. Easy pickings."
+        : "Its turrets track you. Close to brawl (`close`), hold (`hold`), or open the range (`evade`).",
+    ],
+    APPROACH_CHOICES,
+  );
+}
+
+/**
+ * Raid WIN (the base's hull reached 0): transfer a capped share of its silo
+ * (`raidLoot`) into your cargo (bounded by free space — overflow is left), set
+ * the base's cooldown (`setBaseRaidedAt`), log the raid (`recordRaid`), and raise
+ * your notoriety (`addNotoriety` — the first heat-gain source). NO permanent
+ * destruction: buildings/tier are untouched, only silo goods + the cooldown move.
+ */
+async function raidVictory(player: Player, combat: ShipCombat, log: string[]): Promise<RenderFrame> {
+  const raid = combat.raid!;
+  await world.setShipCombat(player.id, null);
+
+  // Capped silo share, restricted to resource ids (the only loot cargo holds),
+  // then bounded by the raider's free cargo (un-transferable overflow is left).
+  const stored = await world.getBaseStorage(raid.baseId);
+  const share = raidLoot(stored, RAID_LOOT_FRACTION).filter((s) => RAIDABLE_RESOURCE_IDS.has(s.itemId));
+  const used = await world.getCargoUsed(player.id);
+  let free = Math.max(0, player.cargoCap - used);
+  const taken: { itemId: string; qty: number }[] = [];
+  for (const s of share) {
+    if (free <= 0) break;
+    const qty = Math.min(s.qty, free);
+    if (qty <= 0) continue;
+    await world.addBaseStorage(raid.baseId, s.itemId, -qty);
+    await world.addInventory(player.id, s.itemId, qty);
+    taken.push({ itemId: s.itemId, qty });
+    free -= qty;
+  }
+
+  // Cooldown + aftermath log + heat. The cooldown protects the (offline) owner;
+  // the log is what they see on their next `storage`/`scan`.
+  const nowIso = new Date(Date.now()).toISOString();
+  await world.setBaseRaidedAt(raid.baseId, nowIso);
+  await world.recordRaid(raid.baseId, player.handle, taken);
+  const newHeat = await world.addNotoriety(player.id, RAID_NOTORIETY_GAIN);
+  const tierTitle = NOTORIETY_TIERS[notorietyTier(newHeat)]?.title ?? "Clean";
+
+  const haul =
+    taken.length > 0
+      ? taken.map((t) => `${t.qty} ${storageItemName(t.itemId)}`).join(", ")
+      : "nothing your hold could carry";
+  const lines: RenderLine[] = [
+    ...log.map((l) => line(text(l, "default"))),
+    line(text(`You breach ${combat.enemyName} — its defenses go dark.`, "success")),
+    line([text("Looted: ", "muted"), text(haul, "accent"), text(". Its defenses are now on cooldown.", "muted")]),
+    line([
+      text(`Notoriety +${RAID_NOTORIETY_GAIN} `, "danger"),
+      text(`(${tierTitle}, heat ${newHeat}). `, "muted"),
+      action("wanted", "wanted", { style: "link", title: "your heat + the law's response" }),
+    ]),
+  ];
+  if (free <= 0 && share.length > taken.length) {
+    lines.push(line(text("Your hold filled — some loot was left behind.", "muted")));
+  }
+  return frame(lines);
 }
 
 // ---------------------------------------------------------------------------
@@ -4501,12 +4762,12 @@ async function handleBuild(
   if (here.isGas) return gasGiantError(here);
   const structure = args[0]?.toLowerCase();
   if (!structure) {
-    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace|crop_farm|livestock_pen> [name]");
+    return errorFrame("Usage: build <base|silo|excavator|production_line|thermal_plant|solar_array|blast_furnace|crop_farm|livestock_pen|turret|shield_generator> [name]");
   }
   if (structure === "base") return handleBuildBase(player, seed, args);
   if (isStructureKind(structure)) return handleBuildStructure(player, seed, structure);
   return errorFrame(
-    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\`, \`blast_furnace\`, \`crop_farm\` or \`livestock_pen\`.`,
+    `Can't build "${structure}" — try \`base\`, \`silo\`, \`excavator\`, \`production_line\`, \`thermal_plant\`, \`solar_array\`, \`blast_furnace\`, \`crop_farm\`, \`livestock_pen\`, \`turret\` or \`shield_generator\`.`,
   );
 }
 
@@ -4713,6 +4974,8 @@ async function handleBuildStructure(
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
   const livestockPens = buildings.filter((b) => b.kind === "livestock_pen").length;
+  const turrets = buildings.filter((b) => b.kind === "turret").length;
+  const shieldGenerators = buildings.filter((b) => b.kind === "shield_generator").length;
   // Recompute the base's power so the player learns immediately whether the new
   // consumer is powered (or the new plant fixed an underpowered base).
   const power = basePower({
@@ -4721,6 +4984,8 @@ async function handleBuildStructure(
     excavators,
     productionLines: lines,
     blastFurnaces,
+    turrets,
+    shieldGenerators,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
     tier: base.tier,
@@ -4760,6 +5025,12 @@ async function handleBuildStructure(
       detail = `${livestockPens} livestock pen${livestockPens === 1 ? "" : "s"} — room for ${heads} head. \`ranch <animal>\` a biome-appropriate animal (no power needed).`;
       break;
     }
+    case "turret":
+      detail = `${turrets} turret${turrets === 1 ? "" : "s"} defending this base against raiders. ${powerNote} Unpowered defenses are offline — a raidable base.`;
+      break;
+    case "shield_generator":
+      detail = `${shieldGenerators} shield generator${shieldGenerators === 1 ? "" : "s"} shielding this base against raiders. ${powerNote} Unpowered shields are offline.`;
+      break;
   }
   return frame([
     line([
@@ -4969,7 +5240,7 @@ function ranchHints(biome: Biome, penFull: boolean): RanchHint[] {
 async function baseHere(
   player: Player,
   seed: string,
-): Promise<{ id: string; name: string | null; rKey: string; tier: number } | null> {
+): Promise<{ id: string; name: string | null; rKey: string; tier: number; raidedAt: string | null } | null> {
   // No base/region at the orbital outpost — there is no surface here.
   if (atOutpost(player)) return null;
   // A gas giant has no surface region, so no base can exist there.
@@ -4977,7 +5248,7 @@ async function baseHere(
   const region = regionAt(seed, locOf(player), player.region);
   const rKey = regionKey(region.coord);
   const base = await world.getBaseInRegion(player.id, rKey);
-  return base ? { id: base.id, name: base.name, rKey, tier: base.tier } : null;
+  return base ? { id: base.id, name: base.name, rKey, tier: base.tier, raidedAt: base.raidedAt } : null;
 }
 
 /**
@@ -5023,6 +5294,8 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
   const solarArrays = buildings.filter((b) => b.kind === "solar_array").length;
   const cropFarms = buildings.filter((b) => b.kind === "crop_farm").length;
   const livestockPens = buildings.filter((b) => b.kind === "livestock_pen").length;
+  const turrets = buildings.filter((b) => b.kind === "turret").length;
+  const shieldGenerators = buildings.filter((b) => b.kind === "shield_generator").length;
   const capacity = baseCapacity(silos, base.tier);
   // Crop plots (crop-farming): summary + capacity + clickable plant hints (red
   // when no free plot — P9b). Only surfaced once a crop farm exists.
@@ -5046,6 +5319,8 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     excavators,
     productionLines,
     blastFurnaces,
+    turrets,
+    shieldGenerators,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
     tier: base.tier,
@@ -5079,6 +5354,14 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
         })()
       : undefined;
 
+  // Defense + raid aftermath (Combat-2a): the owner sees their base's defense
+  // posture (turret/shield counts, up or recharging) and the recent raids against
+  // it. Defenses recharge while the base is on its post-raid cooldown.
+  const now = Date.now();
+  const raidedAtMs = base.raidedAt ? Date.parse(base.raidedAt) : null;
+  const onCooldown = raidOnCooldown(Number.isNaN(raidedAtMs ?? NaN) ? null : raidedAtMs, now, RAID_COOLDOWN_MS);
+  const recentRaids = await world.recentRaidsOn(base.id);
+
   return renderStorage({
     name: base.name,
     location: describeRegionKey(base.rKey),
@@ -5092,6 +5375,17 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
     solarArrays,
     cropFarms,
     livestockPens,
+    turrets,
+    shieldGenerators,
+    // Defenses are up only when the base is powered AND not recharging from a
+    // recent raid. Surfaced so the owner knows whether their base is protected.
+    defensesUp: power.powered && !onCooldown,
+    defensesRecharging: onCooldown,
+    raids: recentRaids.map((r) => ({
+      raiderHandle: r.raiderHandle,
+      loot: r.loot.map((l) => `${l.qty} ${storageItemName(l.itemId)}`).join(", "),
+      ago: agoLabel(now - Date.parse(r.raidedAt)),
+    })),
     power: {
       supply: power.supply,
       demand: power.demand,
@@ -5171,8 +5465,21 @@ async function handleStorage(player: Player, seed: string): Promise<RenderFrame>
       blast_furnace: canAffordBase(have, buildingCost("blast_furnace")),
       crop_farm: canAffordBase(have, buildingCost("crop_farm")),
       livestock_pen: canAffordBase(have, buildingCost("livestock_pen")),
+      turret: canAffordBase(have, buildingCost("turret")),
+      shield_generator: canAffordBase(have, buildingCost("shield_generator")),
     },
   });
+}
+
+/** A terse "Nh ago" / "Nm ago" / "just now" label for an elapsed-ms duration. */
+function agoLabel(elapsedMs: number): string {
+  const s = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 /**
@@ -5376,6 +5683,8 @@ async function accrueExcavators(
     excavators: excavators.length,
     productionLines: buildings.filter((b) => b.kind === "production_line").length,
     blastFurnaces: buildings.filter((b) => b.kind === "blast_furnace").length,
+    turrets: buildings.filter((b) => b.kind === "turret").length,
+    shieldGenerators: buildings.filter((b) => b.kind === "shield_generator").length,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
     tier,
@@ -5520,6 +5829,8 @@ async function handleProduce(
     excavators: buildings.filter((b) => b.kind === "excavator").length,
     productionLines,
     blastFurnaces,
+    turrets: buildings.filter((b) => b.kind === "turret").length,
+    shieldGenerators: buildings.filter((b) => b.kind === "shield_generator").length,
     temperature: region.temperature,
     atmosphere: planet.atmosphere,
     tier: base.tier,

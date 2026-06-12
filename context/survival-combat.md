@@ -344,3 +344,77 @@ Load-bearing decisions extracted from `CLAUDE.md`, in build order.
   marque on top. Out of scope here: repair at OWNED bases (trade locations only),
   per-module damage, condition decay over time/use (only combat reduces it), towing
   fee, actual ship destruction.
+
+### Load-bearing decisions from `base-raids` (Combat-2a — base defenses + async raiding)
+
+- **The first PvP loop: build DEFENSES on your base, `raid` another player's base
+  in the same region — resolved ASYNCHRONOUSLY against the base's installed
+  buildings (the owner need not be online; the buildings ARE the snapshot).** A
+  WIN loots a capped silo share + knocks defenses offline for a cooldown + raises
+  the raider's notoriety + logs the raid; a LOSS tows the raider via `ship-repair`.
+  **NO permanent destruction** (owner-signed-off) — only silo goods move and the
+  defenses recharge. A base on cooldown is PROTECTED (can't be re-raided), so an
+  offline owner can't be camped. Reuses bases/build/power + the `engage`/combat
+  resolver + `notoriety` + `ship-repair` wholesale — no fork.
+- **Defense buildings** (`bases.ts`): `turret` + `shield_generator` join
+  `STRUCTURE_KINDS` (the `base-buildings-cost.test.ts` exact-match assertion was
+  updated, per the production-line/base-power/blast-furnace precedent), with
+  tunable `BUILDING_BUILD_COST` entries (metals + credits). Both are **power-gated
+  consumers**: `TURRET_POWER_DEMAND = 3` / `SHIELD_POWER_DEMAND = 3` (`rules.ts`)
+  add to `basePower`'s demand (the args gained optional `turrets`/`shieldGenerators`,
+  default 0 so pre-raid call sites read unchanged; EVERY `basePower` call site —
+  build echo, storage, excavator accrual, produce gate, the per-base scan profile —
+  passes the counts). Built via the existing `build` path (DISEMBARKED + own base
+  in-region + atomic cost); `build`'s arg-0 domain + usage gained both.
+- **Defense profile** is PURE in `combat.ts`: `baseDefenseStats({turrets,
+  shieldGenerators, tier, powered}) → ShipCombatStats`. Turrets → a weapon mix
+  (`TURRET_WEAPONS` per turret) + targeting `lock`; shield generators → `shield`
+  (`SHIELD_PER_GENERATOR`); base `tier` → `hullMax` (`BASE_DEFENSE_HULL_PER_TIER`,
+  always > 0, monotonic in tier). **CRUCIAL: `!powered` ⇒ near-zero (weapons + shield
+  read 0, only the inert tier-hull remains)** — ties power to defense, so an
+  unpowered base is easy pickings. A base never evades/jams. This is the "enemy"
+  the raider's `loadoutStats` fights through the SAME `resolveApproach`/
+  `resolveExchange` engine + `players.combat` `engage` session. Seeded contract:
+  `base-raids.test.ts`.
+- **Pure raid rules** (`rules.ts`, same seeded contract): `raidLoot(siloStacks,
+  fraction) → stacks[]` (per-stack `floor(qty × RAID_LOOT_FRACTION=0.25)`, drops
+  0-floored stacks, never the whole stack — empty silo ⇒ `[]`); `raidOnCooldown(
+  raidedAt, now, cooldownMs) → boolean` (`now − raidedAt < cooldownMs`; null/NaN
+  raidedAt ⇒ never on cooldown). Constants `RAID_LOOT_FRACTION`,
+  `RAID_COOLDOWN_MS` (6h), `RAID_NOTORIETY_GAIN` (150). `now`/`raidedAt`(ms)
+  injected — no `Date` in rules.
+- **Persistence** (migration `20260612070642_base-raids.sql`, forward-only/
+  idempotent, **purely ADDITIVE** — prod-safe like notoriety/ship-repair):
+  `bases.raided_at timestamptz` (nullable; set on a WIN, drives the cooldown AND
+  the "defenses recharging" window) + `public.base_raids` (`id, base_id → bases on
+  delete cascade, raider_handle text, loot jsonb, raided_at timestamptz default
+  now()`, index on `base_id`) — the aftermath log. **PUBLIC READ** (a shared-world
+  event, like `bases`); service-role writes only. `world.ts`: `RegionBase`/
+  `OwnedBaseRow` gained `baseId`/`tier`/`raidedAt`; `setBaseRaidedAt`/`recordRaid`/
+  `recentRaidsOn`. Region-keyed ⇒ manifold-partitioned automatically.
+- **`raid [handle]`** (NEW verb, `commands.ts`): applicable when on a SURFACE
+  region (`state.landed`, aboard or on foot — its own applicability bucket
+  `SURFACE_COMBAT`, not orbit/outpost) and out of any combat; the handler validates
+  an enemy base is here (`basesInRegion`, excluding your own), not on cooldown
+  (`raidOnCooldown` → "defenses still recharging"), and selects by handle when
+  several. Starts a `players.combat` session marked `raid: {baseId, regionKey,
+  ownerHandle}` (`bountyKey:""`, rewards 0) whose enemy is the target's
+  `baseDefenseStats`; the existing `engage` plays it out. `ShipCombat` gained the
+  optional `raid` marker (jsonb — no migration); `handleEngage`'s outcome branch
+  reads it: **WIN → `raidVictory`** (transfer `raidLoot` of resource ids into cargo
+  bounded by free space, `add_base_storage(-)`+`addInventory(+)`; `setBaseRaidedAt(now)`;
+  `recordRaid(baseId, yourHandle, taken)`; `addNotoriety(RAID_NOTORIETY_GAIN)` +
+  report the new tier); **LOSS → the SHARED `shipCombatDefeat`** (ship-repair tow;
+  base unharmed — no loot, no cooldown). `raid`'s arg-0 domain = enemy base handles
+  here. Registered `VERBS`/`USAGE`/`applicability`; help-parity held.
+- **Display**: `storage`/`base` view shows turret/shield counts + defenses
+  up/recharging/offline + the owner's recent-raid aftermath (`recentRaidsOn`, "⚠
+  raided by <handle> <ago> — lost <items>"), plus red-marked `build turret`/`build
+  shield_generator` hints (P9b affordability). Base `scan` shows each base's defense
+  posture + a clickable **`raid <handle>`** action on OTHERS' bases (red/advisory
+  when on cooldown, still clickable — P9b).
+- **Combat-2b** (ship piracy) adds ship-snapshot PvP + letters of marque (lawful
+  targets) + NPC bounty-hunters reading the notoriety tier. Out of scope here:
+  permanent base/structure destruction, razing/claiming a base, raiding non-base
+  targets, defenses beyond turret/shield, auto-retaliation/alarms beyond the log,
+  live co-located raids (Combat-3).
