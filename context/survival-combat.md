@@ -500,3 +500,80 @@ Load-bearing decisions extracted from `CLAUDE.md`, in build order.
   claimable bounty for now) build on this. Out of scope here: stealing credits/
   modules/ship, permanent ship loss, formal letters-of-marque issuance (Wanted-status
   IS the lawful-target signal), faction-war/military ops (Combat-4).
+
+### Load-bearing decisions from `live-duels` (Combat-3 — live co-located PvP duels + combat-logging)
+
+- **COMPLETES the two-mode combat vision: `pirate <handle>` now branches on whether
+  the co-located target is ONLINE.** ONLINE ⇒ a **LIVE duel** (this phase): a shared,
+  server-authoritative, TURN-SYNCHRONIZED fight both players steer over the 3b
+  Realtime channel. OFFLINE ⇒ the existing 2b async-snapshot piracy (unchanged). It's
+  an EXTENSION of `handlePirate` (the real 2b co-located-player-attack verb — the
+  spec's "attack `<handle>`" is this; wildlife `attack` stays creature-only +
+  untouched), so no new verb ⇒ help-parity/applicability are untouched. "Online" =
+  seen within `PLAYER_ONLINE_WINDOW_MS` via a new `players.last_seen_at` heartbeat
+  (`world.touchLastSeen`, stamped once per command in `dispatch`); CONSERVATIVE — a
+  stale target falls back to the safe async path (`playerOnline(lastSeen, now)` is
+  false for null). Mandatory engagement — starting a duel sets BOTH players' combat
+  immediately; **`flee` is the only out.**
+- **Shared session = `public.live_duels`** (migration `20260612090000_live-duels.sql`,
+  forward-only/idempotent/ADDITIVE): the turn-synced state — `phase`, `turn` (the LOCK),
+  `range`, both `*_stats` (immutable `ShipCombatStats` jsonb snapshots), `*_hull`/
+  `*_shield`, `*_debuffs` (pending next-round modifiers jsonb), `*_choice`,
+  `turn_deadline`, `status`, `winner_id`, denormalized `*_handle`, `channel`. **RLS
+  read-PARTICIPANT** (attacker/defender resolve to the viewer); service-role writes.
+  BOTH players' `players.combat` carries a `DuelRef` `{kind:"duel", duelId, role,
+  opponentHandle, channel}` (jsonb — NO schema change; `isDuelRef` narrows the
+  `ShipCombat | DuelRef | null` union; defensive on stale ⇒ clears a dangling ref).
+  Also adds `players.last_seen_at` (nullable, additive). `Player` gained `lastSeenAt`;
+  `combat` widened to the union.
+- **Concurrency = the `turn`-CAS (exactly-once).** `submit_duel_choice(p_duel, p_role,
+  p_choice, p_turn)` RPC records a role's choice ONLY for the current `turn`
+  (compare-on-turn guard — a stale-turn write no-ops) and returns whether BOTH choices
+  are present. Resolution runs in NODE (reuses the already-tested
+  `resolveApproach`/`resolveExchange` with BOTH HUMAN choices, ALWAYS mapped
+  attacker→`player`/defender→`enemy` so it's deterministic whoever triggers), then
+  PERSISTS via `world.casUpdateDuel(duelId, expectedTurn, patch)` — an
+  `update … where turn = expectedTurn and status='active'` that bumps `turn` + clears
+  both choices, returning whether THIS call won. So of two concurrent `engage`
+  requests, exactly ONE resolves a turn; the loser re-reads + re-renders.
+- **Turn flow (`engage <choice>` when `combat.kind==="duel"` → `handleDuelTurn`):**
+  record my choice (RPC) → re-read → if BOTH present, `resolveDuelRound`; broadcast the
+  round (`world.broadcastDuel` = `broadcastChat`'s sibling, event `"duel"`, payload =
+  pre-rendered `RenderLine[]`) so the opponent's client renders it (the actor gets the
+  return frame; `self:false` avoids a double). A **bare `engage`** (no choice) is a
+  timer/refresh PING. **Turn timer** (`DUEL_TURN_MS`, `turn_deadline`): if I've
+  committed and the opponent's deadline passed with no choice → `duelTurnExpired` →
+  AUTO-PASS them with `DUEL_DEFAULT_CHOICE` (`hold`, valid in both phases) and resolve
+  (the fight continues — a slow player is NOT penalized).
+- **Combat-logging = verified disconnect ⇒ penalty.** Distinguished from a slow turn:
+  a forfeit fires only when the opponent is silent past `turn_deadline +
+  DUEL_DISCONNECT_GRACE_MS` AND their `last_seen_at` is stale (`!playerOnline(…,
+  grace)`) — server-verified, never a bare client claim. The present player
+  re-issues `engage` (their own committed choice + a re-`engage` is the "ping";
+  a bare `engage` is a pure refresh-ping); the server's time + heartbeat check is
+  the sole guard, so it can't be gamed against a present opponent. (A client-side
+  auto-timer that pings on its own is a noted future nicety — the server already
+  supports it.) On forfeit: the disconnector takes `combatLogPenalty(credits)` (a significant,
+  bounded fraction — pure `rules.ts`) + the standard tow, and the present player WINS.
+  So: **slow ⇒ auto-pass; gone ⇒ penalty.**
+- **Outcomes REUSE 2b piracy wholesale (`finishDuel`):** WIN loots the loser's cargo
+  (`raidLoot` RESOURCES-only, credits safe, bounded by free hold) + the Mercenary
+  Charter (`isWantedPlayer`/`playerBounty`/`piracyNotorietyGain`/`recordPiracy`/
+  `setPiratedAt` — Wanted loser ⇒ winner claims bounty + cuts their heat; clean ⇒
+  winner takes zone heat). LOSE = `conditionAfterDefeat` + TOW (`setDistressLocation`
+  — a co-located, online loser IS relocated, unlike 2b's in-place disable of an
+  offline victim). Both `players.combat` cleared + `live_duels.status='done'` (+
+  `winner_id`). `flee` (`handleDuelFlee`) reliably ends the duel for both (CAS-claimed),
+  no loot/penalty — the legitimate out.
+- **Client (`Terminal.tsx`):** the existing 3b presence subscription gained a
+  `ch.on("broadcast", {event:"duel"})` handler that appends the server's `RenderLine[]`
+  verbatim (action spans wire to `run` → the `engage <choice>` buttons submit like any
+  command). Thin renderer — never resolves combat. Realtime is FAIL-SOFT +
+  config-guarded throughout (`broadcastDuel`/`touchLastSeen` no-op without secrets), so
+  build/vitest are green WITHOUT Supabase env; the two-sided sync is **manual two-
+  session QA** (the automated surface is only the pure `combatLogPenalty`/
+  `duelTurnExpired`/`playerOnline` bits + the reused resolver).
+- **This COMPLETES the two-mode Combat vision.** Remaining: **Combat-4** (faction
+  war / military ops) and active NPC law patrols. Out of scope here: spectators,
+  multi-player melees (1v1 only), ranked/matchmaking, reconnection beyond resuming an
+  active duel.

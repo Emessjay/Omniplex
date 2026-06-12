@@ -144,6 +144,12 @@ import {
   PIRACY_LOOT_FRACTION,
   PIRACY_WANTED_HEAT_CUT,
   PIRACY_BOUNTY_REP,
+  combatLogPenalty,
+  duelTurnExpired,
+  playerOnline,
+  DUEL_TURN_MS,
+  DUEL_DISCONNECT_GRACE_MS,
+  DUEL_DEFAULT_CHOICE,
 } from "./rules";
 import {
   UPGRADES,
@@ -227,7 +233,8 @@ import {
   type ShipCombatState,
   type ShipCombatStats,
 } from "./combat";
-import type { ShipCombat } from "@/lib/players/types";
+import type { ShipCombat, DuelRef } from "@/lib/players/types";
+import { isDuelRef } from "@/lib/players/types";
 import { getSpecies, minorSpeciesAt, type Species as SapientSpecies } from "./species";
 import { blurbOf } from "./blurbs";
 import {
@@ -1085,15 +1092,20 @@ async function loadArgDomainContext(
     return { ...EMPTY_ARG_CONTEXT, unequipCandidates: [...new Set(player.loadout)] };
   }
   if (verb === "engage") {
-    // The valid maneuvers depend on the CURRENT ship-combat phase (read off the
-    // session that rides on the player row): approach choices before the range is
-    // set, exchange choices once fighting. No session ⇒ no candidates (the
-    // applicability gate rejects `engage` out of a fight anyway).
-    const choices = player.combat
-      ? player.combat.phase === "approach"
-        ? [...APPROACH_CHOICES]
-        : [...EXCHANGE_CHOICES]
-      : [];
+    // The valid maneuvers depend on the CURRENT phase: approach choices before
+    // the range is set, exchange choices once fighting. For an async fight the
+    // phase rides on `players.combat`; for a LIVE duel (Combat-3) it lives on the
+    // shared `live_duels` row, so resolve it through the duel pointer. No session
+    // ⇒ no candidates (the applicability gate rejects `engage` out of a fight).
+    let choices: string[] = [];
+    if (isDuelRef(player.combat)) {
+      const duel = await world.getLiveDuel(player.combat.duelId);
+      if (duel && duel.status === "active") {
+        choices = duel.phase === "approach" ? [...APPROACH_CHOICES] : [...EXCHANGE_CHOICES];
+      }
+    } else if (player.combat) {
+      choices = player.combat.phase === "approach" ? [...APPROACH_CHOICES] : [...EXCHANGE_CHOICES];
+    }
     return { ...EMPTY_ARG_CONTEXT, engageCandidates: choices };
   }
   if (verb === "raid") {
@@ -1196,6 +1208,11 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
 
 export async function dispatch(player: Player, input: string): Promise<RenderFrame> {
   const seed = getWorldSeed();
+  // Heartbeat (Combat-3): stamp `last_seen_at` so co-located opponents can read
+  // this player as ONLINE (⇒ a live duel vs the async snapshot) and a duel can
+  // tell a slow turn from a disconnect. FAIL-SOFT (a no-op without secrets), so
+  // it never blocks a command.
+  await world.touchLastSeen(player.id);
   const { verb: rawVerb } = parseCommand(input);
   if (rawVerb === "") {
     return {
@@ -3771,6 +3788,9 @@ async function handleAttack(player: Player): Promise<RenderFrame> {
  * wildlife break-off. Errors helpfully when you're not in any combat.
  */
 async function handleFlee(player: Player, seed: string): Promise<RenderFrame> {
+  // A LIVE duel (Combat-3) flees through the shared session; an async fight uses
+  // the existing ship-combat disengage; otherwise the on-foot wildlife break-off.
+  if (isDuelRef(player.combat)) return handleDuelFlee(player, seed, player.combat);
   if (player.combat) return handleShipFlee(player, seed);
   const enc = player.encounter;
   if (!enc) {
@@ -3939,6 +3959,11 @@ async function handleEngage(player: Player, seed: string, args: string[]): Promi
   if (!combat) {
     return errorFrame("You're not in a ship fight — `hunt` a bounty at a trade hub first.");
   }
+  // A LIVE duel (Combat-3) takes its turn against the shared, turn-synced session;
+  // an async fight (1b/2a/2b) resolves immediately against the NPC/snapshot below.
+  if (isDuelRef(combat)) {
+    return handleDuelTurn(player, seed, combat, args[0]);
+  }
   const choice = args[0];
 
   if (combat.phase === "approach") {
@@ -4073,7 +4098,9 @@ async function shipCombatDefeat(
  * disable you → recovery). Distinct from the future combat-logging penalty.
  */
 async function handleShipFlee(player: Player, seed: string): Promise<RenderFrame> {
-  const combat = player.combat!;
+  // Only reached for an ASYNC ship fight (a live duel routes to `handleDuelFlee`
+  // upstream), so the session is a full `ShipCombat`, never a `DuelRef`.
+  const combat = player.combat as ShipCombat;
   // Escape odds: a base chance, improved by your evade and a longer range.
   const rangeBonus = combat.range === "long" ? 0.3 : combat.range === "mid" ? 0.15 : 0;
   const evadeBonus = Math.min(0.3, combat.player.evade * 0.01);
@@ -4367,6 +4394,15 @@ async function handlePirate(player: Player, args: string[]): Promise<RenderFrame
     return errorFrame(`${target.handle}'s ship was hit recently — it's still limping. Leave them be for now.`);
   }
 
+  // ONLINE ⇒ a LIVE duel (Combat-3): a shared, turn-synchronized fight both
+  // players steer over the Realtime channel. OFFLINE ⇒ the async snapshot path
+  // (2b, below). "Online" = seen within `PLAYER_ONLINE_WINDOW_MS` (the per-command
+  // heartbeat); conservative — a stale target falls back to the safe async fight.
+  const targetLastSeen = target.lastSeenAt ? Date.parse(target.lastSeenAt) : null;
+  if (playerOnline(Number.isNaN(targetLastSeen ?? NaN) ? null : targetLastSeen, Date.now())) {
+    return startLiveDuel(player, target);
+  }
+
   // The enemy = the victim's STORED snapshot (loadout + ship + condition), so the
   // fight works whether they're online or not. Snapshot the attacker too (scaled
   // by ship condition, like `hunt`/`raid`).
@@ -4518,6 +4554,530 @@ async function piracyVictory(
     }
   }
   return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Live duels (Combat-3) — LIVE co-located PvP + combat-logging. When `pirate`
+// (above) targets an ONLINE co-located player, it opens a LIVE duel here instead
+// of the async snapshot: a shared, server-authoritative, TURN-SYNCHRONIZED fight
+// both players steer over the 3b Realtime channel. Each turn BOTH pick a maneuver
+// within a turn timer; once both commit (or one misses + is auto-passed), the
+// server resolves the round with the SAME tested `resolveApproach`/
+// `resolveExchange` (now two HUMAN choices), guarded by a `turn`-CAS so two
+// concurrent `engage` requests resolve EXACTLY ONCE. Engagement is mandatory —
+// `flee` is the only out. A missed turn auto-passes defensively (fight continues,
+// not penalized); a verified disconnect (silent past the grace) is combat-logging
+// (a credit penalty + tow; opponent wins). Win/lose outcomes REUSE the 2b piracy
+// resolution (loot/disable/heat/bounty/tow). The client (`Terminal.tsx`) renders
+// the broadcast round frames — it never resolves combat.
+// ---------------------------------------------------------------------------
+
+/** The clickable `engage <choice>` action line for a duel phase (both clients render it). */
+function duelChoiceLine(phase: "approach" | "exchange"): RenderLine {
+  const choices = phase === "approach" ? APPROACH_CHOICES : EXCHANGE_CHOICES;
+  const spans: RenderSpan[] = [text("Your move: ", "muted")];
+  choices.forEach((c, i) => {
+    if (i > 0) spans.push(text("  ", "muted"));
+    spans.push(action(c, `engage ${c}`, { style: "link", title: `engage ${c}` }));
+  });
+  return spans;
+}
+
+/** The neutral, by-handle hull/range readout for a duel (perspective-independent). */
+function duelReadoutLines(duel: world.LiveDuel): RenderLine[] {
+  const lines: RenderLine[] = [
+    [
+      text(
+        `${duel.attackerHandle} hull ${duel.attackerHull}/${duel.attackerStats.hullMax}`,
+        duel.attackerHull <= duel.attackerStats.hullMax * 0.3 ? "danger" : "default",
+      ),
+      text("   vs   ", "muted"),
+      text(
+        `${duel.defenderHandle} hull ${duel.defenderHull}/${duel.defenderStats.hullMax}`,
+        duel.defenderHull <= duel.defenderStats.hullMax * 0.3 ? "danger" : "default",
+      ),
+    ],
+  ];
+  if (duel.range) lines.push([text(`Range: ${duel.range}.`, "muted")]);
+  return lines;
+}
+
+/** Log + readout + the choice prompt — the standard live round frame (neutral). */
+function duelStateLines(duel: world.LiveDuel, log: string[]): RenderLine[] {
+  return [
+    ...log.map((l) => line(text(l, "default"))),
+    ...duelReadoutLines(duel),
+    duelChoiceLine(duel.phase),
+  ];
+}
+
+/**
+ * Open a LIVE duel against an online, co-located target (the `pirate` ONLINE
+ * branch). Snapshots both ships, inserts the shared `live_duels` session, points
+ * BOTH players' `players.combat` at it (mandatory — the target is in the fight
+ * immediately; `flee` is the only out), notifies the defender over the Realtime
+ * channel, and returns the attacker's approach prompt.
+ */
+async function startLiveDuel(attacker: Player, target: Player): Promise<RenderFrame> {
+  // Co-located ⇒ the SAME presence channel (manifold-scoped), so the duel
+  // broadcasts where both already are.
+  const channel = presenceChannelFor(attacker);
+  const attackerStats = loadoutStats(attacker.loadout, attacker.shipId, attacker.shipCondition ?? MAX_SHIP_CONDITION);
+  const defenderStats = loadoutStats(target.loadout, target.shipId, target.shipCondition ?? MAX_SHIP_CONDITION);
+  const deadline = new Date(Date.now() + DUEL_TURN_MS).toISOString();
+  const duelId = await world.createLiveDuel({
+    channel,
+    attackerId: attacker.id,
+    defenderId: target.id,
+    attackerHandle: attacker.handle,
+    defenderHandle: target.handle,
+    attackerStats,
+    defenderStats,
+    attackerHull: attackerStats.hullMax,
+    attackerShield: attackerStats.shield,
+    defenderHull: defenderStats.hullMax,
+    defenderShield: defenderStats.shield,
+    turnDeadline: deadline,
+  });
+  if (!duelId) return errorFrame("The duel failed to start — try again.");
+
+  // Mandatory engagement: BOTH players are in the fight from this instant.
+  const channelRef = (role: "attacker" | "defender", opponentHandle: string): DuelRef => ({
+    kind: "duel",
+    duelId,
+    role,
+    opponentHandle,
+    channel,
+  });
+  await world.setShipCombat(attacker.id, channelRef("attacker", target.handle));
+  await world.setShipCombat(target.id, channelRef("defender", attacker.handle));
+
+  const duel = await world.getLiveDuel(duelId);
+  // Notify the defender over the channel (their client renders the prompt). The
+  // attacker gets the direct frame below.
+  if (duel) {
+    await world.broadcastDuel(channel, [
+      line(text(`⚔ ${attacker.handle} pulls you into a LIVE duel — choose your approach. \`flee\` is the only way out.`, "danger")),
+      ...duelStateLines(duel, []),
+    ]);
+  }
+  return frame([
+    line(text(`You pull ${target.handle} into a LIVE duel — both ships are committed.`, "success")),
+    ...(duel ? duelReadoutLines(duel) : []),
+    line(text("Each turn you both pick a maneuver; the round resolves when both commit (or a turn times out).", "muted")),
+    duelChoiceLine("approach"),
+    line([text("Close (`close`), hold (`hold`), open the range (`evade`) — or ", "muted"), action("flee", "flee", { style: "link", title: "break off the duel" }), text(" to break off.", "muted")]),
+  ]);
+}
+
+/**
+ * Take this player's turn in a live duel (`engage <choice>` when
+ * `combat.kind==="duel"`). Records the choice for the current `turn` (atomic
+ * RPC), re-reads, and: resolves the round when BOTH choices are in; auto-passes a
+ * timed-out opponent (or grants a forfeit if they've disconnected past the
+ * grace); else returns a "your move" / "waiting" frame and pings the opponent. A
+ * bare `engage` (no choice) is a timer/refresh PING — it advances an expired
+ * opponent (auto-pass / forfeit) using this player's already-recorded choice, or
+ * just re-renders the current state.
+ */
+async function handleDuelTurn(
+  player: Player,
+  seed: string,
+  ref: DuelRef,
+  choice: string | undefined,
+): Promise<RenderFrame> {
+  const duel = await world.getLiveDuel(ref.duelId);
+  if (!duel || duel.status !== "active") {
+    // Defensive on stale: the duel is gone/ended — clear the dangling pointer.
+    await world.setShipCombat(player.id, null);
+    return frame([line(text("The duel is over.", "muted"))]);
+  }
+  const role = ref.role;
+  const oppRole = role === "attacker" ? "defender" : "attacker";
+  const oppHandle = role === "attacker" ? duel.defenderHandle : duel.attackerHandle;
+  const phaseChoices = duel.phase === "approach" ? APPROACH_CHOICES : EXCHANGE_CHOICES;
+
+  // 1. Record this player's choice for the CURRENT turn (compare-on-turn guarded).
+  if (choice !== undefined) {
+    if (!(phaseChoices as readonly string[]).includes(choice)) {
+      return errorFrame(`Choose your ${duel.phase === "approach" ? "approach" : "maneuver"}: ${phaseChoices.join(" / ")}.`);
+    }
+    await world.submitDuelChoice(ref.duelId, role, choice, duel.turn);
+  }
+
+  // 2. Re-read the shared session after the (possible) write.
+  const d = (await world.getLiveDuel(ref.duelId)) ?? duel;
+  if (d.status !== "active") {
+    await world.setShipCombat(player.id, null);
+    return frame([line(text("The duel just ended.", "muted"))]);
+  }
+  const myChoice = role === "attacker" ? d.attackerChoice : d.defenderChoice;
+  const oppChoice = role === "attacker" ? d.defenderChoice : d.attackerChoice;
+  const now = Date.now();
+  const deadlineMs = d.turnDeadline ? Date.parse(d.turnDeadline) : null;
+
+  // 3. Both committed → RESOLVE this round (turn-CAS → exactly once).
+  if (myChoice && oppChoice) {
+    return resolveDuelRound(player, seed, d, d.attackerChoice!, d.defenderChoice!);
+  }
+
+  // 4. I've committed but the opponent hasn't, and their turn deadline passed:
+  if (myChoice && !oppChoice && duelTurnExpired(deadlineMs, now)) {
+    // Verified DISCONNECT (combat-logging) ⇒ forfeit: silent past deadline + the
+    // disconnect grace AND not seen recently (server-verified, not a bare claim).
+    const opp = await world.getPlayerById(oppRole === "attacker" ? d.attackerId : d.defenderId);
+    const oppSeenMs = opp?.lastSeenAt ? Date.parse(opp.lastSeenAt) : null;
+    const graceExpired = duelTurnExpired((deadlineMs ?? now) + DUEL_DISCONNECT_GRACE_MS, now);
+    const oppGone = !playerOnline(
+      Number.isNaN(oppSeenMs ?? NaN) ? null : oppSeenMs,
+      now,
+      DUEL_DISCONNECT_GRACE_MS,
+    );
+    if (graceExpired && oppGone) {
+      return resolveDuelForfeit(player, seed, d, role);
+    }
+    // Slow-but-present (or still within grace) ⇒ auto-pass defensively + resolve.
+    const attackerChoice = role === "attacker" ? myChoice : DUEL_DEFAULT_CHOICE;
+    const defenderChoice = role === "attacker" ? DUEL_DEFAULT_CHOICE : myChoice;
+    return resolveDuelRound(player, seed, d, attackerChoice, defenderChoice, `${oppHandle} missed the turn — auto-passing (defensive).`);
+  }
+
+  // 5a. I haven't committed → it's my move.
+  if (!myChoice) {
+    return frame([
+      line(text(`Live duel vs ${oppHandle}.`, "accent")),
+      ...duelStateLines(d, []),
+    ]);
+  }
+  // 5b. Committed, waiting for the opponent — ping their client to prompt them.
+  await world.broadcastDuel(d.channel, [
+    line(text(`${player.handle} has committed — your move.`, "muted")),
+    ...duelReadoutLines(d),
+    duelChoiceLine(d.phase),
+  ]);
+  return frame([
+    line(text(`Locked in. Waiting for ${oppHandle} to commit…`, "muted")),
+    ...duelReadoutLines(d),
+  ]);
+}
+
+/**
+ * Resolve ONE duel round from the ATTACKER's perspective (so resolution is
+ * deterministic whoever triggers it): map the shared session into a
+ * `ShipCombatState`, run `resolveApproach` (phase 0) / `resolveExchange` (both
+ * HUMAN choices), then PERSIST through the turn-CAS (`casUpdateDuel`) — which
+ * bumps `turn` + clears choices only if `turn` is unchanged, so exactly ONE of
+ * two concurrent requests resolves. The CAS winner broadcasts the round (or
+ * finishes the duel on an outcome); the loser just re-renders the new state.
+ */
+async function resolveDuelRound(
+  player: Player,
+  seed: string,
+  duel: world.LiveDuel,
+  attackerChoice: string,
+  defenderChoice: string,
+  note?: string,
+): Promise<RenderFrame> {
+  const expectedTurn = duel.turn;
+  const nextDeadline = new Date(Date.now() + DUEL_TURN_MS).toISOString();
+  let log: string[];
+  let outcome: "victory" | "defeat" | undefined;
+  let patch: world.DuelResolvePatch;
+
+  if (duel.phase === "approach") {
+    const r = resolveApproach(attackerChoice as ApproachChoice, defenderChoice as ApproachChoice, [Math.random()]);
+    log = r.log;
+    patch = {
+      phase: "exchange",
+      range: r.range,
+      attackerHull: duel.attackerHull,
+      attackerShield: duel.attackerShield,
+      defenderHull: duel.defenderHull,
+      defenderShield: duel.defenderShield,
+      attackerDebuffs: {},
+      defenderDebuffs: {},
+      turnDeadline: nextDeadline,
+      status: "active",
+      winnerId: null,
+    };
+  } else {
+    const state: ShipCombatState = {
+      player: duel.attackerStats,
+      enemy: duel.defenderStats,
+      playerHull: duel.attackerHull,
+      playerShield: duel.attackerShield,
+      enemyHull: duel.defenderHull,
+      enemyShield: duel.defenderShield,
+      range: duel.range,
+      phase: "exchange",
+      playerWeaponDebuff: duel.attackerDebuffs.weapon ?? 0,
+      playerEvadeDebuff: duel.attackerDebuffs.evade ?? 0,
+      enemyWeaponDebuff: duel.defenderDebuffs.weapon ?? 0,
+      enemyEvadeDebuff: duel.defenderDebuffs.evade ?? 0,
+    };
+    const r = resolveExchange(state, attackerChoice as ExchangeChoice, defenderChoice as ExchangeChoice, [Math.random(), Math.random()]);
+    log = r.log;
+    outcome = r.outcome;
+    patch = {
+      phase: "exchange",
+      range: state.range ?? "mid",
+      attackerHull: r.state.playerHull,
+      attackerShield: r.state.playerShield,
+      defenderHull: r.state.enemyHull,
+      defenderShield: r.state.enemyShield,
+      attackerDebuffs: { weapon: r.state.playerWeaponDebuff ?? 0, evade: r.state.playerEvadeDebuff ?? 0 },
+      defenderDebuffs: { weapon: r.state.enemyWeaponDebuff ?? 0, evade: r.state.enemyEvadeDebuff ?? 0 },
+      turnDeadline: outcome ? null : nextDeadline,
+      status: outcome ? "done" : "active",
+      winnerId: outcome ? (outcome === "victory" ? duel.attackerId : duel.defenderId) : null,
+    };
+  }
+
+  const won = await world.casUpdateDuel(duel.id, expectedTurn, patch);
+  if (!won) {
+    // The opponent's concurrent request already resolved this turn — no double-
+    // resolve. Re-read + render the current state.
+    const fresh = await world.getLiveDuel(duel.id);
+    if (!fresh || fresh.status !== "active") {
+      await world.setShipCombat(player.id, null);
+      return frame([line(text("The round resolved — the duel is over.", "muted"))]);
+    }
+    return frame([line(text("Round resolved.", "muted")), ...duelStateLines(fresh, [])]);
+  }
+
+  // CAS won — assemble the resolved view.
+  const resolved: world.LiveDuel = {
+    ...duel,
+    turn: expectedTurn + 1,
+    phase: patch.phase,
+    range: patch.range,
+    attackerHull: patch.attackerHull,
+    attackerShield: patch.attackerShield,
+    defenderHull: patch.defenderHull,
+    defenderShield: patch.defenderShield,
+    attackerDebuffs: patch.attackerDebuffs,
+    defenderDebuffs: patch.defenderDebuffs,
+    attackerChoice: null,
+    defenderChoice: null,
+    turnDeadline: patch.turnDeadline,
+    status: patch.status,
+    winnerId: patch.winnerId,
+  };
+  const prefix = note ? [note] : [];
+
+  if (outcome) {
+    const winnerRole: "attacker" | "defender" = outcome === "victory" ? "attacker" : "defender";
+    return finishDuel(player, seed, resolved, winnerRole, [...prefix, ...log], false);
+  }
+
+  // Round resolved, fight continues — broadcast to both, return to the actor.
+  const body = duelStateLines(resolved, [...prefix, ...log]);
+  await world.broadcastDuel(resolved.channel, body);
+  return frame(body);
+}
+
+/**
+ * Claim a verified-forfeit win (the opponent combat-logged: gone past the turn
+ * deadline + disconnect grace). CAS-claims the duel (turn-guarded) so a
+ * simultaneous resolve can't double-fire, then finishes it as a win for the
+ * present player WITH the combat-logging penalty applied to the disconnector.
+ */
+async function resolveDuelForfeit(
+  player: Player,
+  seed: string,
+  duel: world.LiveDuel,
+  role: "attacker" | "defender",
+): Promise<RenderFrame> {
+  const patch: world.DuelResolvePatch = {
+    phase: duel.phase,
+    range: duel.range,
+    attackerHull: duel.attackerHull,
+    attackerShield: duel.attackerShield,
+    defenderHull: duel.defenderHull,
+    defenderShield: duel.defenderShield,
+    attackerDebuffs: duel.attackerDebuffs,
+    defenderDebuffs: duel.defenderDebuffs,
+    turnDeadline: null,
+    status: "done",
+    winnerId: role === "attacker" ? duel.attackerId : duel.defenderId,
+  };
+  const won = await world.casUpdateDuel(duel.id, duel.turn, patch);
+  if (!won) {
+    const fresh = await world.getLiveDuel(duel.id);
+    if (!fresh || fresh.status !== "active") {
+      await world.setShipCombat(player.id, null);
+      return frame([line(text("The duel resolved.", "muted"))]);
+    }
+    return frame([line(text("Your opponent acted just in time — the duel continues.", "muted")), ...duelStateLines(fresh, [])]);
+  }
+  const resolved: world.LiveDuel = { ...duel, turn: duel.turn + 1, status: "done", winnerId: patch.winnerId, turnDeadline: null, attackerChoice: null, defenderChoice: null };
+  const goneHandle = role === "attacker" ? duel.defenderHandle : duel.attackerHandle;
+  return finishDuel(player, seed, resolved, role, [`${goneHandle} dropped out of the duel — combat-logging!`], true);
+}
+
+/**
+ * Finish a duel: apply the win/lose outcomes (REUSING the 2b piracy resolution —
+ * loot the loser's cargo, disable + tow their ship, the Mercenary Charter for
+ * Wanted/clean, plus the combat-logging credit penalty on a forfeit), clear BOTH
+ * players' `players.combat`, and broadcast the loser's result to the channel
+ * (the actor gets their own side as the return frame). The duel row was already
+ * marked `done` by the winning CAS, so the side effects run exactly once.
+ */
+async function finishDuel(
+  actor: Player,
+  seed: string,
+  duel: world.LiveDuel,
+  winnerRole: "attacker" | "defender",
+  roundLog: string[],
+  forfeit: boolean,
+): Promise<RenderFrame> {
+  const winnerId = winnerRole === "attacker" ? duel.attackerId : duel.defenderId;
+  const loserId = winnerRole === "attacker" ? duel.defenderId : duel.attackerId;
+  const winnerHandle = winnerRole === "attacker" ? duel.attackerHandle : duel.defenderHandle;
+  const loserHandle = winnerRole === "attacker" ? duel.defenderHandle : duel.attackerHandle;
+
+  // Clear both pointers (the live_duels row is already status='done').
+  await world.setShipCombat(duel.attackerId, null);
+  await world.setShipCombat(duel.defenderId, null);
+
+  const winner = await world.getPlayerById(winnerId);
+  const loser = await world.getPlayerById(loserId);
+
+  const winnerLines: RenderLine[] = roundLog.map((l) => line(text(l, "default")));
+  const loserLines: RenderLine[] = roundLog.map((l) => line(text(l, "default")));
+  winnerLines.push(line(text(`You defeat ${loserHandle} in the duel!`, "success")));
+  loserLines.push(line(text(`${winnerHandle} defeats you in the duel.`, "danger")));
+
+  if (winner && loser) {
+    // --- Loot the loser's cargo (RESOURCES only; credits SAFE) → winner. (2b) ---
+    const loserCargo = await world.getInventory(loser.id);
+    const share = raidLoot(
+      loserCargo.map((s) => ({ itemId: s.resourceId, qty: s.qty })),
+      PIRACY_LOOT_FRACTION,
+    ).filter((s) => RAIDABLE_RESOURCE_IDS.has(s.itemId));
+    const used = await world.getCargoUsed(winner.id);
+    let free = Math.max(0, winner.cargoCap - used);
+    const taken: { itemId: string; qty: number }[] = [];
+    for (const s of share) {
+      if (free <= 0) break;
+      const qty = Math.min(s.qty, free);
+      if (qty <= 0) continue;
+      await world.removeInventory(loser.id, s.itemId, qty);
+      await world.addInventory(winner.id, s.itemId, qty);
+      taken.push({ itemId: s.itemId, qty });
+      free -= qty;
+    }
+
+    // --- Disable + TOW the loser (ship-repair). Unlike async piracy's in-place
+    //     disable of an OFFLINE victim, a live-duel loser is online + co-located,
+    //     so they're towed to the nearest station (per spec: "Lose → towed"). ---
+    await world.setShipCondition(loser.id, conditionAfterDefeat(loser.shipCondition ?? MAX_SHIP_CONDITION));
+    const dest = nearestSystemOutpost(loser, seed);
+    if (dest !== null) await world.setDistressLocation(loser.id, dest, MAX_HEALTH);
+    else await world.setHealthAndEmbarked(loser.id, MAX_HEALTH, true);
+
+    // --- Aftermath log + per-victim cooldown (reuse `piracy_log`). ---
+    await world.setPiratedAt(loser.id, new Date(Date.now()).toISOString());
+    await world.recordPiracy(loser.id, winnerHandle, taken);
+
+    const haul =
+      taken.length > 0
+        ? taken.map((t) => `${t.qty} ${storageItemName(t.itemId)}`).join(", ")
+        : "nothing their hold could spare";
+    winnerLines.push(line([text("Looted: ", "muted"), text(haul, "accent"), text(". Their credits stayed locked in the vault.", "muted")]));
+    loserLines.push(line([text("Your ship is disabled and towed to a station — ", "danger"), action("repair", "repair", { style: "link", title: "repair your hull" }), text(" it before you fight again. HP restored.", "muted")]));
+
+    // --- Mercenary Charter (2b): Wanted loser ⇒ winner claims bounty + cuts the
+    //     loser's heat (lawful); clean loser ⇒ winner takes zone-scaled heat. ---
+    const loserHeat = await world.getNotoriety(loser.id);
+    if (isWantedPlayer(loserHeat)) {
+      const bounty = playerBounty(loserHeat);
+      const newBalance = await world.addPlayerCredits(winner.id, bounty);
+      const factionId = factionAt(seed, hubKeyOf(winner));
+      const newRep = await world.addReputation(winner.id, factionId, PIRACY_BOUNTY_REP);
+      await world.addNotoriety(loser.id, -PIRACY_WANTED_HEAT_CUT);
+      winnerLines.push(
+        line([
+          text(`Bounty claimed: +${bounty} cr `, "accent"),
+          text(`(balance ${newBalance} cr).  `, "muted"),
+          text(`+${PIRACY_BOUNTY_REP} rep `, "success"),
+          text(`(${getFaction(factionId).name}: ${newRep}).`, "muted"),
+        ]),
+        line(text(`${loserHandle} was WANTED — a lawful kill under the Mercenary Charter. No heat for you.`, "muted")),
+      );
+    } else {
+      const isHub = atTradeLocation(winner, seed);
+      const lawfulness = lawfulnessScore(galacticRadiation(winner.cluster), isHub);
+      const gain = piracyNotorietyGain(PIRACY_NOTORIETY_BASE, lawfulness);
+      const newHeat = await world.addNotoriety(winner.id, gain);
+      const tierTitle = NOTORIETY_TIERS[notorietyTier(newHeat)]?.title ?? "Clean";
+      const zone = isHub ? "a policed hub" : lawfulness > 0.5 ? "the patrolled rim" : "lawless coreward space";
+      winnerLines.push(
+        line([
+          text(`Notoriety +${gain} `, "danger"),
+          text(`(${tierTitle}, heat ${newHeat}) — you won in ${zone}. `, "muted"),
+          action("wanted", "wanted", { style: "link", title: "your heat + the law's response" }),
+        ]),
+      );
+    }
+
+    // --- Combat-logging penalty: a forfeit (disconnect) ALSO bites the loser's
+    //     wallet — bailing costs MORE than taking the loss (a significant, bounded
+    //     credit hit, ≤ what they have). ---
+    if (forfeit) {
+      const penalty = combatLogPenalty(loser.credits);
+      if (penalty > 0) await world.addPlayerCredits(loser.id, -penalty);
+      loserLines.push(line(text(`Combat-logging penalty: −${penalty} cr for bailing mid-duel.`, "danger")));
+      winnerLines.push(line(text(`${loserHandle} combat-logged — the win is yours by forfeit.`, "muted")));
+    }
+  }
+
+  // Broadcast the opponent's side to the channel (the actor gets theirs as the
+  // return frame; `self:false` keeps them from double-seeing it).
+  const actorIsWinner = actor.id === winnerId;
+  await world.broadcastDuel(duel.channel, actorIsWinner ? loserLines : winnerLines, true);
+  return frame(actorIsWinner ? winnerLines : loserLines);
+}
+
+/**
+ * `flee` in a live duel — the only out from mandatory engagement. Reliably breaks
+ * off (CAS-claimed so a simultaneous resolve can't double-fire): ends the duel
+ * for BOTH, clears both pointers, and notifies the opponent over the channel. No
+ * loot, no penalty (a legitimate disengage, not a loss).
+ */
+async function handleDuelFlee(player: Player, seed: string, ref: DuelRef): Promise<RenderFrame> {
+  void seed;
+  const duel = await world.getLiveDuel(ref.duelId);
+  if (!duel || duel.status !== "active") {
+    await world.setShipCombat(player.id, null);
+    return frame([line(text("The duel is already over.", "muted"))]);
+  }
+  const patch: world.DuelResolvePatch = {
+    phase: duel.phase,
+    range: duel.range,
+    attackerHull: duel.attackerHull,
+    attackerShield: duel.attackerShield,
+    defenderHull: duel.defenderHull,
+    defenderShield: duel.defenderShield,
+    attackerDebuffs: duel.attackerDebuffs,
+    defenderDebuffs: duel.defenderDebuffs,
+    turnDeadline: null,
+    status: "done",
+    winnerId: null,
+  };
+  const won = await world.casUpdateDuel(duel.id, duel.turn, patch);
+  if (!won) {
+    const fresh = await world.getLiveDuel(duel.id);
+    if (fresh && fresh.status === "active") {
+      return frame([line(text("The round resolved as you tried to break off — `flee` again or take your turn.", "muted")), ...duelStateLines(fresh, [])]);
+    }
+    await world.setShipCombat(player.id, null);
+    return frame([line(text("The duel ended.", "muted"))]);
+  }
+  await world.setShipCombat(duel.attackerId, null);
+  await world.setShipCombat(duel.defenderId, null);
+  await world.broadcastDuel(duel.channel, [line(text(`${player.handle} broke off and fled the duel.`, "muted"))], true);
+  return frame([line([text(`You burn hard and break contact with ${ref.opponentHandle}. The duel is over.`, "success")])]);
 }
 
 // ---------------------------------------------------------------------------

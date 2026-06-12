@@ -108,13 +108,18 @@ export interface Player {
    */
   loadout: string[];
   /**
-   * Active SHIP-combat session (Combat-1b): `null` when not in a ship fight,
-   * otherwise the full `ShipCombat` snapshot (the engaged bounty + both ships'
-   * profiles + live hull/shield + phase). Distinct from `encounter` (the on-foot
-   * wildlife fight). Persists across reconnects so a fight resumes where it left
-   * off; cleared on victory / defeat / a successful `flee`.
+   * Active SHIP-combat session: `null` when not in a ship fight. Either the full
+   * `ShipCombat` snapshot of an ASYNC fight (Combat-1b PvE bounty / 2a base raid /
+   * 2b co-located piracy — the engaged target + both ships' profiles + live
+   * hull/shield + phase), OR a `DuelRef` pointer `{kind:"duel", duelId, role}` for
+   * a LIVE co-located duel (Combat-3), whose authoritative shared state lives in
+   * `public.live_duels` (this row only carries the pointer). Both make
+   * `inShipCombat` true, so `engage`/`flee` are the only applicable verbs in
+   * either. Distinct from `encounter` (the on-foot wildlife fight). Persists
+   * across reconnects so a fight (or duel) resumes; cleared on victory / defeat /
+   * a successful `flee` / a duel's end.
    */
-  combat: ShipCombat | null;
+  combat: ShipCombat | DuelRef | null;
   /**
    * Notoriety / heat — the SHARED Combat ⇄ Trade axis (pillars §iv + §ii). 0 =
    * clean. Raised by illicit acts (piracy, attacking the unwanted, base raids —
@@ -137,8 +142,48 @@ export interface Player {
    * Additive (old rows / fixtures read `null`).
    */
   piratedAt: string | null;
+  /**
+   * When this player last issued a command, as an ISO timestamp, or `null` if
+   * never (old rows / fixtures). A per-command heartbeat (`world.touchLastSeen`)
+   * — the conservative ONLINE signal Combat-3 reads: a co-located target is
+   * "online" (⇒ a LIVE duel) only when recently seen (`PLAYER_ONLINE_WINDOW_MS`);
+   * stale ⇒ treated as offline (the safe async-snapshot path). Also corroborates a
+   * duel disconnect (a silent opponent past the grace ⇒ combat-logging forfeit).
+   */
+  lastSeenAt: string | null;
   /** ISO timestamp the row was created. */
   createdAt: string;
+}
+
+/**
+ * A pointer to a LIVE co-located duel (Combat-3), stored in `players.combat` for
+ * BOTH participants (jsonb — no schema change; the column is untyped at the DB
+ * level). The authoritative, turn-synchronized fight state is the shared
+ * `public.live_duels` row keyed by `duelId`; this is only the per-player handle
+ * onto it. `role` tells the handler which side of the duel this player is, so it
+ * reads/writes the right hull/choice columns. Defensive on stale: if the
+ * referenced duel is gone or no longer `active`, the handler clears the ref.
+ */
+export interface DuelRef {
+  /** Discriminant separating a live-duel pointer from an async `ShipCombat`. */
+  kind: "duel";
+  /** The `public.live_duels` row id this player is fighting in. */
+  duelId: string;
+  /** Which side of the duel this player holds. */
+  role: "attacker" | "defender";
+  /** The opponent's public handle (for prompts/broadcasts; convenience only). */
+  opponentHandle: string;
+  /** The co-location Realtime channel the duel broadcasts on (manifold-scoped). */
+  channel: string;
+}
+
+/**
+ * Whether a `players.combat` value is a live-duel pointer (`DuelRef`) rather than
+ * an async `ShipCombat` session. Pure type guard — narrows the union so the
+ * async ship-combat code keeps reading `ShipCombat` fields safely.
+ */
+export function isDuelRef(combat: ShipCombat | DuelRef | null | undefined): combat is DuelRef {
+  return !!combat && (combat as DuelRef).kind === "duel";
 }
 
 /**
@@ -251,13 +296,19 @@ export interface PlayerRow {
   charted: number;
   /** Fitted module-id list (jsonb array). Defaults to `[]`. */
   loadout: string[] | null;
-  /** Active ship-combat session (jsonb). `null` when not in a ship fight. */
-  combat: ShipCombat | null;
+  /**
+   * Active ship-combat session (jsonb). `null` when not in a ship fight; an async
+   * `ShipCombat` snapshot, or a live-duel `DuelRef` pointer (Combat-3). Untyped at
+   * the DB layer, so the migration adds no schema change for the duel pointer.
+   */
+  combat: ShipCombat | DuelRef | null;
   /** Heat/notoriety (the shared Combat ⇄ Trade axis); 0 = clean. */
   notoriety: number;
   /** Decay clock for notoriety (timestamptz). */
   notoriety_updated_at: string;
   /** When last pirated (Combat-2b); null = never. Drives the piracy cooldown. */
   pirated_at: string | null;
+  /** Per-command heartbeat (Combat-3 online signal); null = never seen. */
+  last_seen_at: string | null;
   created_at: string;
 }

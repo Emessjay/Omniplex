@@ -308,6 +308,21 @@ export function Terminal({
       appendLine([text(`${handle}: `, "accent"), text(body, "default")]);
     });
 
+    // Live duels (Combat-3): the server pushes pre-rendered round frames over
+    // this same co-location channel — opening notices, round results + "your
+    // move" prompts (with clickable `engage <choice>` actions), committed/fled/
+    // forfeit notices, and the final outcome. The client stays a THIN renderer:
+    // it appends the server's `RenderLine`s verbatim (the action spans wire to
+    // `run`, so the choice buttons submit `engage <choice>` like any other) — it
+    // never resolves combat. Defensive on the (uncontrolled) payload shape.
+    ch.on("broadcast", { event: "duel" }, ({ payload }) => {
+      const p = (payload ?? {}) as Record<string, unknown>;
+      const lines = Array.isArray(p.lines) ? (p.lines as RenderLine[]) : [];
+      for (const l of lines) {
+        if (Array.isArray(l)) appendLine(l);
+      }
+    });
+
     ch.subscribe((s) => {
       if (s === "SUBSCRIBED") void ch.track(self);
     });

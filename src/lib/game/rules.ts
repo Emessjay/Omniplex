@@ -826,6 +826,107 @@ export function piracyOnCooldown(
 }
 
 // ---------------------------------------------------------------------------
+// Live duels (Combat-3) — co-located PvP + combat-logging. When two players are
+// both ONLINE and co-located, a fight is LIVE: a server-authoritative, turn-
+// synchronized duel over the 3b Realtime channel (vs the async snapshot of 2b for
+// offline targets). Each turn both players pick a maneuver within a turn timer;
+// once both commit, the server resolves the round (reusing the already-tested
+// `resolveApproach`/`resolveExchange` with TWO human choices). Engagement is
+// mandatory — `flee` is the only out. A MISSED turn auto-passes defensively (the
+// fight continues — a slow player isn't penalized), but an actual DISCONNECT
+// (server-verified past a grace) is COMBAT-LOGGING: a significant credit penalty
+// + a tow, and the opponent wins. These are the PURE bits: the disconnect penalty
+// and the turn-expiry predicate. No `Date`/`Math.random`/IO — the handler injects
+// `now`/the deadline; the round math reuses the resolver. Win/lose/flee outcomes
+// reuse the 2b piracy resolution (loot/disable/heat/bounty/tow).
+// ---------------------------------------------------------------------------
+
+/**
+ * Fraction of a disconnector's credits forfeited for combat-logging mid-duel
+ * (bailing on a live fight by closing the tab / dropping offline). A SIGNIFICANT
+ * bite — half your balance — so logging off to dodge a loss costs more than just
+ * taking the loss. Applied via `combatLogPenalty`. In (0, 1).
+ */
+export const COMBAT_LOG_PENALTY_FRACTION = 0.5;
+
+/**
+ * The credit penalty for combat-logging (disconnecting mid-duel): a significant
+ * fraction of the disconnector's `credits`, floored to a whole credit. Pure and
+ * bounded — always `≥ 0` and `≤ credits` (it can never drive the balance negative
+ * or take more than you have) and monotonically NON-DECREASING in credits (the
+ * rich forfeit more). 0 at 0 credits. The remaining player WINS and the
+ * disconnector is also towed (ship-repair); this is just the financial sting.
+ */
+export function combatLogPenalty(
+  credits: number,
+  fraction: number = COMBAT_LOG_PENALTY_FRACTION,
+): number {
+  const have = Math.max(0, credits);
+  const f = Math.max(0, Math.min(1, fraction));
+  return Math.floor(have * f);
+}
+
+/**
+ * The per-turn timer for a live duel — how long each player has to pick a
+ * maneuver before the turn auto-passes (`duelTurnExpired`). Generous enough for a
+ * deliberate choice over a terminal, short enough to keep a duel moving. The
+ * handler stamps `turn_deadline = now + this` each turn. Tunable. > 0.
+ */
+export const DUEL_TURN_MS = 30 * 1000;
+
+/**
+ * Additional grace, BEYOND the turn deadline, before a silent opponent's absence
+ * counts as a verified disconnect (combat-logging) rather than just a slow turn.
+ * Within `turn_deadline + this` a missing choice is auto-passed (the fight
+ * continues); only past it can the present player claim a forfeit. > 0; the
+ * handler injects `now`. Keeps a brief network blip from being punished as a log.
+ */
+export const DUEL_DISCONNECT_GRACE_MS = 60 * 1000;
+
+/**
+ * The default maneuver applied for a player who misses their turn — a DEFENSIVE
+ * pass. `hold` is valid in BOTH phases (an `ApproachChoice` for the approach phase
+ * and resolved as a no-special-effect token in the exchange phase, where the
+ * resolver treats any unknown exchange token as "no special effect" — see
+ * `resolveExchange`). A timed-out player thus turtles rather than being punished.
+ */
+export const DUEL_DEFAULT_CHOICE = "hold";
+
+/**
+ * How recently a player must have issued a command (`players.last_seen_at`) to
+ * count as ONLINE for live-duel initiation. A co-located target seen within this
+ * window ⇒ a LIVE duel; staler ⇒ treated as offline (the safe async-snapshot
+ * path of 2b). Conservative (a generous-but-finite window) so a brief idle reads
+ * online but a closed tab falls back to async. The handler injects `now`. > 0.
+ */
+export const PLAYER_ONLINE_WINDOW_MS = 90 * 1000;
+
+/**
+ * Whether a player last seen at `lastSeenMs` is ONLINE at `nowMs` — seen within
+ * `PLAYER_ONLINE_WINDOW_MS`. `false` for a null/absent `lastSeenMs` (never seen ⇒
+ * treated as offline, the conservative default). Pure; both args epoch ms.
+ */
+export function playerOnline(
+  lastSeenMs: number | null,
+  nowMs: number,
+  windowMs: number = PLAYER_ONLINE_WINDOW_MS,
+): boolean {
+  if (lastSeenMs === null || lastSeenMs === undefined || Number.isNaN(lastSeenMs)) return false;
+  return nowMs - lastSeenMs < windowMs;
+}
+
+/**
+ * Whether a duel turn's `deadlineMs` has passed at `nowMs` — `true` strictly
+ * AFTER the deadline, `false` at or before it, and `false` for a null/absent
+ * deadline (no timer set yet → never expired). Pure; both args are epoch ms
+ * injected by the handler (no `Date` here). Drives the auto-pass / forfeit logic.
+ */
+export function duelTurnExpired(deadlineMs: number | null, nowMs: number): boolean {
+  if (deadlineMs === null || deadlineMs === undefined || Number.isNaN(deadlineMs)) return false;
+  return nowMs > deadlineMs;
+}
+
+// ---------------------------------------------------------------------------
 // Wildlife — exploring, and on-foot combat with fauna (P5).
 //
 // Exploring a region (on foot) rolls one of three outcomes; encountering a

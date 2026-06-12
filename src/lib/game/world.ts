@@ -19,7 +19,7 @@ import "server-only";
 
 import { getServerClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import type { Player, PlayerRow, PlayerEncounter, ShipCombat } from "@/lib/players/types";
+import type { Player, PlayerRow, PlayerEncounter, ShipCombat, DuelRef } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
 import { getResource, RESOURCES } from "@/lib/universe";
 import {
@@ -34,6 +34,8 @@ import {
 } from "./rules";
 import { isPartId } from "./parts";
 import { presentPlayerView, type PresentPlayer } from "./presence";
+import type { ShipCombatStats } from "./combat";
+import type { RenderLine } from "@/lib/terminal/types";
 
 /** Re-read the authoritative player row by id (post-mutation refresh). */
 export async function getPlayerById(id: string): Promise<Player | null> {
@@ -1218,13 +1220,14 @@ export async function setEncounter(
 
 /**
  * Set (or clear) the player's active SHIP-combat session (`players.combat`
- * jsonb). Mirror of `setEncounter`: pass a `ShipCombat` to start/advance a
- * fight, or `null` to clear it (victory / defeat / flee). The handler computes
- * the new session with the pure resolver before calling.
+ * jsonb). Mirror of `setEncounter`: pass a `ShipCombat` to start/advance an
+ * ASYNC fight, a `DuelRef` pointer to put the player into a LIVE duel (Combat-3),
+ * or `null` to clear it (victory / defeat / flee / duel end). The handler
+ * computes the new session/pointer before calling.
  */
 export async function setShipCombat(
   playerId: string,
-  combat: ShipCombat | null,
+  combat: ShipCombat | DuelRef | null,
 ): Promise<void> {
   const db = getServerClient();
   const { error } = await db
@@ -1897,6 +1900,280 @@ export async function broadcastChat(
     await db.removeChannel(ch);
   } catch {
     // Best-effort: never fail the command on a broadcast error.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live duels (Combat-3) — the shared, server-authoritative live PvP session.
+// The async fights (1b/2a/2b) ride on `players.combat` jsonb; a LIVE duel keeps
+// its turn-synchronized state in `public.live_duels` (this row is the lock: the
+// `turn` column gates resolution via a CAS). These adapters are the only place
+// that touch the table; the handler computes rounds with the pure resolver and
+// persists through `casUpdateDuel` (the exactly-once turn-CAS). The Realtime
+// push (`broadcastDuel`) + the heartbeat (`touchLastSeen`) are FAIL-SOFT +
+// config-guarded, so a duel never hangs a command and build/CI stay green
+// without secrets.
+// ---------------------------------------------------------------------------
+
+/** Pending next-round subsystem debuffs for one side of a duel (fractions [0,1)). */
+export interface DuelDebuffs {
+  weapon?: number;
+  evade?: number;
+}
+
+/** A live-duel session (camelCase view of a `public.live_duels` row). */
+export interface LiveDuel {
+  id: string;
+  channel: string;
+  attackerId: string;
+  defenderId: string;
+  attackerHandle: string;
+  defenderHandle: string;
+  phase: "approach" | "exchange";
+  turn: number;
+  range: "close" | "mid" | "long" | null;
+  attackerStats: ShipCombatStats;
+  defenderStats: ShipCombatStats;
+  attackerHull: number;
+  attackerShield: number;
+  defenderHull: number;
+  defenderShield: number;
+  attackerDebuffs: DuelDebuffs;
+  defenderDebuffs: DuelDebuffs;
+  attackerChoice: string | null;
+  defenderChoice: string | null;
+  turnDeadline: string | null;
+  status: "active" | "done";
+  winnerId: string | null;
+}
+
+interface LiveDuelRow {
+  id: string;
+  channel: string;
+  attacker_id: string;
+  defender_id: string;
+  attacker_handle: string;
+  defender_handle: string;
+  phase: string;
+  turn: number;
+  range: string | null;
+  attacker_stats: ShipCombatStats;
+  defender_stats: ShipCombatStats;
+  attacker_hull: number;
+  attacker_shield: number;
+  defender_hull: number;
+  defender_shield: number;
+  attacker_debuffs: DuelDebuffs | null;
+  defender_debuffs: DuelDebuffs | null;
+  attacker_choice: string | null;
+  defender_choice: string | null;
+  turn_deadline: string | null;
+  status: string;
+  winner_id: string | null;
+}
+
+function rowToDuel(r: LiveDuelRow): LiveDuel {
+  return {
+    id: r.id,
+    channel: r.channel,
+    attackerId: r.attacker_id,
+    defenderId: r.defender_id,
+    attackerHandle: r.attacker_handle,
+    defenderHandle: r.defender_handle,
+    phase: r.phase === "exchange" ? "exchange" : "approach",
+    turn: r.turn,
+    range: r.range === "close" || r.range === "mid" || r.range === "long" ? r.range : null,
+    attackerStats: r.attacker_stats,
+    defenderStats: r.defender_stats,
+    attackerHull: r.attacker_hull,
+    attackerShield: r.attacker_shield,
+    defenderHull: r.defender_hull,
+    defenderShield: r.defender_shield,
+    attackerDebuffs: r.attacker_debuffs ?? {},
+    defenderDebuffs: r.defender_debuffs ?? {},
+    attackerChoice: r.attacker_choice,
+    defenderChoice: r.defender_choice,
+    turnDeadline: r.turn_deadline,
+    status: r.status === "done" ? "done" : "active",
+    winnerId: r.winner_id,
+  };
+}
+
+/**
+ * Open a live duel: insert the shared session row (both sides' snapshots + the
+ * starting hulls/shields + the approach phase + the first turn deadline) and
+ * return its id. The handler then points both players' `players.combat` at it.
+ */
+export async function createLiveDuel(args: {
+  channel: string;
+  attackerId: string;
+  defenderId: string;
+  attackerHandle: string;
+  defenderHandle: string;
+  attackerStats: ShipCombatStats;
+  defenderStats: ShipCombatStats;
+  attackerHull: number;
+  attackerShield: number;
+  defenderHull: number;
+  defenderShield: number;
+  turnDeadline: string;
+}): Promise<string | null> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("live_duels")
+    .insert({
+      channel: args.channel,
+      attacker_id: args.attackerId,
+      defender_id: args.defenderId,
+      attacker_handle: args.attackerHandle,
+      defender_handle: args.defenderHandle,
+      phase: "approach",
+      turn: 0,
+      range: null,
+      attacker_stats: args.attackerStats,
+      defender_stats: args.defenderStats,
+      attacker_hull: args.attackerHull,
+      attacker_shield: args.attackerShield,
+      defender_hull: args.defenderHull,
+      defender_shield: args.defenderShield,
+      attacker_debuffs: {},
+      defender_debuffs: {},
+      turn_deadline: args.turnDeadline,
+      status: "active",
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data ? (data as { id: string }).id : null;
+}
+
+/** Read a live duel by id (service-role; the authoritative shared state). */
+export async function getLiveDuel(duelId: string): Promise<LiveDuel | null> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("live_duels")
+    .select("*")
+    .eq("id", duelId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToDuel(data as LiveDuelRow) : null;
+}
+
+/**
+ * Atomically record a role's maneuver for the CURRENT turn (the RPC's
+ * compare-on-turn guard no-ops a stale-turn write) and return whether BOTH
+ * choices are now present. The round resolution + turn-CAS bump happen in Node
+ * (`casUpdateDuel`); this only writes the choice.
+ */
+export async function submitDuelChoice(
+  duelId: string,
+  role: "attacker" | "defender",
+  choice: string,
+  turn: number,
+): Promise<boolean> {
+  const db = getServerClient();
+  const { data, error } = await db.rpc("submit_duel_choice", {
+    p_duel: duelId,
+    p_role: role,
+    p_choice: choice,
+    p_turn: turn,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
+/** The mutable per-round state a turn-CAS resolve writes (computed in Node). */
+export interface DuelResolvePatch {
+  phase: "approach" | "exchange";
+  range: "close" | "mid" | "long" | null;
+  attackerHull: number;
+  attackerShield: number;
+  defenderHull: number;
+  defenderShield: number;
+  attackerDebuffs: DuelDebuffs;
+  defenderDebuffs: DuelDebuffs;
+  turnDeadline: string | null;
+  status: "active" | "done";
+  winnerId: string | null;
+}
+
+/**
+ * The turn-CAS resolve write: persist a resolved round ONLY if the duel's `turn`
+ * still equals `expectedTurn` and it is still `active` — bumping `turn` and
+ * clearing both choices in the same statement. Returns `true` iff THIS call won
+ * the CAS (a row was updated), so exactly ONE of two concurrent `engage`
+ * requests resolves the turn; the loser sees `false` and just re-reads + renders.
+ */
+export async function casUpdateDuel(
+  duelId: string,
+  expectedTurn: number,
+  patch: DuelResolvePatch,
+): Promise<boolean> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("live_duels")
+    .update({
+      turn: expectedTurn + 1,
+      phase: patch.phase,
+      range: patch.range,
+      attacker_hull: patch.attackerHull,
+      attacker_shield: patch.attackerShield,
+      defender_hull: patch.defenderHull,
+      defender_shield: patch.defenderShield,
+      attacker_debuffs: patch.attackerDebuffs,
+      defender_debuffs: patch.defenderDebuffs,
+      attacker_choice: null,
+      defender_choice: null,
+      turn_deadline: patch.turnDeadline,
+      status: patch.status,
+      winner_id: patch.winnerId,
+      updated_at: new Date(Date.now()).toISOString(),
+    })
+    .eq("id", duelId)
+    .eq("turn", expectedTurn)
+    .eq("status", "active")
+    .select("id");
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
+ * Foundation 3b reuse — publish a live-duel event to the co-location Realtime
+ * channel (round results, "your move" prompts, committed/fled/forfeit notices).
+ * The payload carries pre-rendered `RenderLine`s (the client stays a thin
+ * renderer — it never resolves combat) plus an optional `ended` flag. FAIL-SOFT
+ * + config-guarded exactly like `broadcastChat`: a no-op without secrets, and a
+ * broadcast error never fails the command.
+ */
+export async function broadcastDuel(
+  channel: string,
+  lines: RenderLine[],
+  ended = false,
+): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  try {
+    const db = getServerClient();
+    const ch = db.channel(channel);
+    await ch.send({ type: "broadcast", event: "duel", payload: { lines, ended } });
+    await db.removeChannel(ch);
+  } catch {
+    // Best-effort: never fail the command on a broadcast error.
+  }
+}
+
+/**
+ * Stamp the player's `last_seen_at` heartbeat (the conservative ONLINE signal
+ * Combat-3 reads). Called once per command from `dispatch`. FAIL-SOFT: a no-op
+ * without secrets and errors are swallowed — a missed heartbeat must never fail
+ * the command (worst case a player reads briefly as offline → the safe async path).
+ */
+export async function touchLastSeen(playerId: string): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  try {
+    const db = getServerClient();
+    await db.from("players").update({ last_seen_at: new Date(Date.now()).toISOString() }).eq("id", playerId);
+  } catch {
+    // Best-effort: a missed heartbeat is harmless (degrades to "offline").
   }
 }
 
