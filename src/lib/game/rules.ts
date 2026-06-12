@@ -151,6 +151,113 @@ export function priceTowardBase(
   return Math.max(PRICE_FLOOR, next);
 }
 
+// ---------------------------------------------------------------------------
+// Notoriety / heat — the SHARED Combat ⇄ Trade axis (pillars §iv + §ii). A
+// single player "heat" stat that piracy/attacking-the-unwanted/base-raids
+// (Combat-2) and illicit trade/smuggling (a later Trade phase) both feed, and
+// that drives the law's response. PURE here (no `Date`/IO; `elapsedMs` injected
+// — the `priceTowardBase` pattern); decay-on-read / stamp-on-write lives in the
+// `world.ts` adapters. This phase ships the mechanic + display; the acts that
+// raise it (and enforcement) are Combat-2 / Trade.
+// ---------------------------------------------------------------------------
+
+/**
+ * Heat cooled off per millisecond toward 0 (lawful lying-low reduces it). Tuned
+ * so a moderate heat (~a few hundred) fully cools over ~real days: at this rate
+ * 300 heat cools in 300 / 1.157e-3 ≈ 2.6e5 s ≈ 3 days. A rate per ms, like the
+ * other living-economy reversion knobs (`PRICE_REVERT_PER_MS`).
+ */
+export const NOTORIETY_DECAY_PER_MS = 1.157e-3 / 1000; // ≈ 1.157e-6 per ms
+
+/**
+ * Heat remaining after decay toward 0 over `elapsedMs`. Moves `stored` toward 0
+ * by `perMs * elapsedMs`, NEVER overshooting (floored at 0), rounded to an
+ * integer. Monotonically non-increasing in `elapsedMs`; `elapsedMs <= 0` leaves
+ * it unchanged. The decay mirror of `priceTowardBase` with a fixed 0 target.
+ */
+export function notorietyDecayed(
+  stored: number,
+  elapsedMs: number,
+  perMs: number = NOTORIETY_DECAY_PER_MS,
+): number {
+  if (!(stored > 0)) return Math.max(0, Math.round(stored));
+  const cooled = Math.max(0, perMs * elapsedMs);
+  return Math.max(0, Math.round(stored - cooled));
+}
+
+/** A notoriety tier: an ordered title + law response earned at a heat threshold. */
+export interface NotorietyTier {
+  /** 0-based ladder position; `NOTORIETY_TIERS[i].tier === i`. */
+  tier: number;
+  /** Flavor title shown to the player (e.g. "Clean", "Wanted"). */
+  title: string;
+  /** The minimum heat to hold this tier (the ladder's lower bound). */
+  minNotoriety: number;
+}
+
+/**
+ * The heat ladder — five tiers from a clean record to galaxy-wide infamy.
+ * Ordered ascending by `minNotoriety` (and by `tier`, which equals the array
+ * index). Tier 0 starts at 0 so every player has a tier. Thresholds + titles are
+ * tunable; the structural contract (ascending, `tier === index`, Clean at 0) is
+ * what `notoriety.test.ts` locks. Mirror of `RANKS`/`CARTO_RANKS`.
+ */
+export const NOTORIETY_TIERS: readonly NotorietyTier[] = [
+  { tier: 0, title: "Clean", minNotoriety: 0 },
+  { tier: 1, title: "Watched", minNotoriety: 100 },
+  { tier: 2, title: "Wanted", minNotoriety: 400 },
+  { tier: 3, title: "Hunted", minNotoriety: 1200 },
+  { tier: 4, title: "Notorious", minNotoriety: 3000 },
+] as const;
+
+/** The highest notoriety tier on the ladder. */
+export const MAX_NOTORIETY_TIER: number = NOTORIETY_TIERS[NOTORIETY_TIERS.length - 1]!.tier;
+
+/**
+ * The notoriety tier index a player holds at `n` heat: the highest tier whose
+ * `minNotoriety <= n`. Clamps to tier 0 below the first threshold (incl. negative
+ * inputs, which never occur — `players.notoriety` is `>= 0`) and to the top tier
+ * above the final threshold. Monotonic non-decreasing in `n`. Mirror of
+ * `rankFor`/`cartographyRank`.
+ */
+export function notorietyTier(n: number): number {
+  let tier = 0;
+  for (const t of NOTORIETY_TIERS) {
+    if (n >= t.minNotoriety) tier = t.tier;
+    else break;
+  }
+  return tier;
+}
+
+/**
+ * Heat the player must reach for the NEXT tier (the lowest `minNotoriety` strictly
+ * above `n`), or `null` when already at the top tier. For the `wanted` display.
+ */
+export function nextNotorietyThreshold(n: number): number | null {
+  for (const t of NOTORIETY_TIERS) {
+    if (t.minNotoriety > n) return t.minNotoriety;
+  }
+  return null;
+}
+
+/**
+ * Human-readable meaning of a notoriety `tier` — what the law DOES about you at
+ * that heat. Informational copy this phase (the ACTUAL enforcement — patrols,
+ * a bounty posted on the player — is Combat-2, which reads the tier to act). Out
+ * of range (shouldn't happen) clamps to the nearest end.
+ */
+export function lawResponseFor(tier: number): string {
+  const RESPONSES = [
+    "ignored — you're a model citizen",
+    "flagged at hubs — security keeps an eye on you",
+    "patrols may engage you on sight",
+    "a bounty rides on your head — hunters are coming",
+    "shoot-on-sight across the lawful galaxy",
+  ];
+  const i = Math.max(0, Math.min(RESPONSES.length - 1, tier));
+  return RESPONSES[i]!;
+}
+
 /** Per-unit buy cost: ceil(price * BUY_MARKUP). Always ≥ price (for price ≥ 0). */
 export function buyUnitCost(price: number): number {
   return Math.ceil(Math.max(0, price) * BUY_MARKUP);

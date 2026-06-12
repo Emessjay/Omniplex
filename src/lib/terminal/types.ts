@@ -91,6 +91,13 @@ export interface StatusBar {
   maxHealth: number;
   /** Current ship's display name. */
   ship: string;
+  /**
+   * Heat/notoriety readout — the tier title (e.g. "WANTED"), present ONLY when
+   * not clean (tier > 0); omitted when clean. Rendered in the `danger` style
+   * (color-only, P9b — no geometry change). Additive; the shared Combat ⇄ Trade
+   * heat axis surfaces here so it's always visible.
+   */
+  heat?: string;
 }
 
 /**

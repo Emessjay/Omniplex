@@ -162,6 +162,12 @@ function StatusHeader({ status }: { status?: StatusBar }) {
       </span>
       <span className={STYLE_CLASS.muted}>·</span>
       <span className={STYLE_CLASS.default}>{status.ship}</span>
+      {status.heat ? (
+        <>
+          <span className={STYLE_CLASS.muted}>·</span>
+          <span className={STYLE_CLASS.danger}>{status.heat}</span>
+        </>
+      ) : null}
     </div>
   );
 }

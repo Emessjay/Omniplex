@@ -2167,6 +2167,66 @@ export function renderCartography(view: CartographyView): RenderFrame {
 }
 
 // ---------------------------------------------------------------------------
+// Notoriety / heat — the `wanted` screen (shared Combat ⇄ Trade axis).
+// ---------------------------------------------------------------------------
+
+export interface WantedView {
+  /** Current heat (decay-aware), 0 = clean. */
+  heat: number;
+  /** Current tier index. */
+  tier: number;
+  /** The top tier on the ladder. */
+  maxTier: number;
+  /** Current tier title (e.g. "Clean", "Wanted"). */
+  title: string;
+  /** What the law does at this tier (human-readable meaning). */
+  lawResponse: string;
+  /** Heat threshold for the next tier, or null at the top. */
+  nextThreshold: number | null;
+  /** Heat still to gain to reach the next tier, or null at the top. */
+  toNext: number | null;
+}
+
+/**
+ * `wanted` — your heat, tier/title + the law's response, and how much more heat
+ * reaches the next tier (the outlaw's analogue of `standing`). Clean reads
+ * plainly. Heat is color-coded danger when not clean (P9b, color-only).
+ */
+export function renderWanted(view: WantedView): RenderFrame {
+  const clean = view.tier === 0;
+  const lines: RenderLine[] = [line(text("Wanted status", "heading"))];
+  if (clean) {
+    lines.push(line(text("Your record is clean. The law has no quarrel with you.", "success")));
+  } else {
+    lines.push(
+      line([
+        text("Heat ", "muted"),
+        text(`${view.heat}`, "danger"),
+        text(`  — ${view.title} (tier ${view.tier}/${view.maxTier})`, "danger"),
+      ]),
+    );
+  }
+  lines.push(
+    line([
+      text("The law: ", "muted"),
+      text(view.lawResponse, clean ? "muted" : "danger"),
+    ]),
+  );
+  if (view.nextThreshold === null || view.toNext === null) {
+    lines.push(line(text("You've reached the most-wanted tier.", "muted")));
+  } else {
+    lines.push(
+      line([
+        text(`${view.toNext} more heat to the next tier `, "muted"),
+        text(`(at ${view.nextThreshold})`, "muted"),
+      ]),
+    );
+  }
+  lines.push(line(text("Heat cools over time when you lie low.", "muted")));
+  return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
 // Factions — standing + contracts (Keystone 1a).
 // ---------------------------------------------------------------------------
 

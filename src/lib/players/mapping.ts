@@ -30,6 +30,8 @@ export function rowToPlayer(row: PlayerRow): Player {
     charted: row.charted,
     loadout: Array.isArray(row.loadout) ? row.loadout : [],
     combat: row.combat ?? null,
+    notoriety: row.notoriety,
+    notorietyUpdatedAt: row.notoriety_updated_at,
     createdAt: row.created_at,
   };
 }

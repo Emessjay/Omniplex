@@ -116,6 +116,11 @@ import {
   WARP_FUEL_PRICE_PER_UNIT,
   UPGRADE_SUPPLY_BASELINE,
   PART_SUPPLY_BASELINE,
+  notorietyTier,
+  nextNotorietyThreshold,
+  lawResponseFor,
+  NOTORIETY_TIERS,
+  MAX_NOTORIETY_TIER,
 } from "./rules";
 import {
   UPGRADES,
@@ -256,6 +261,7 @@ import {
   renderBounties,
   renderShipCombat,
   renderCartography,
+  renderWanted,
   renderGuide,
   renderPresence,
   presenceLines,
@@ -554,6 +560,12 @@ function locationLabel(player: Player, seed: string): string {
  * and the dispatch path can attach it to the outgoing frame in ONE place.
  */
 export function buildStatusBar(player: Player, seed: string): StatusBar {
+  // Heat/notoriety readout (the shared Combat ⇄ Trade axis): surfaced ONLY when
+  // not clean (tier > 0), in the danger style (P9b color-only). Read off the
+  // stored value (defensive `?? 0` for fixtures/old rows) — `buildStatusBar`
+  // stays pure (no `Date`), so decay is realized by `getNotoriety`/the next
+  // mutation; with no gain sources this phase the tier is 0 in practice.
+  const tier = notorietyTier(player.notoriety ?? 0);
   return {
     credits: player.credits,
     location: locationLabel(player, seed),
@@ -562,6 +574,7 @@ export function buildStatusBar(player: Player, seed: string): StatusBar {
     health: player.health,
     maxHealth: MAX_HEALTH,
     ship: getShip(player.shipId).name,
+    ...(tier > 0 ? { heat: NOTORIETY_TIERS[tier]!.title.toUpperCase() } : {}),
   };
 }
 
@@ -1286,6 +1299,8 @@ async function dispatchResolved(
       return handleFulfill(player, seed, args);
     case "cartography":
       return handleCartography(player);
+    case "wanted":
+      return handleWanted(player);
     case "who":
       return handleWho(player);
     case "here":
@@ -6833,6 +6848,32 @@ async function handleCartography(player: Player): Promise<RenderFrame> {
     maxTier: MAX_CARTO_TIER,
     nextThreshold,
     toNext: nextThreshold === null ? null : nextThreshold - charted,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// wanted  (your heat/notoriety — the shared Combat ⇄ Trade axis)
+// ---------------------------------------------------------------------------
+
+/**
+ * `wanted` — your current heat, its tier title + law-response meaning, and the
+ * threshold to the next tier (the outlaw's analogue of `standing`/`cartography`).
+ * Decay-aware: reads `world.getNotoriety` so the heat shown reflects cooling
+ * since your last illicit act. Clean (tier 0) reads plainly. No acts raise heat
+ * this phase (Combat-2 / Trade do).
+ */
+async function handleWanted(player: Player): Promise<RenderFrame> {
+  const heat = await world.getNotoriety(player.id);
+  const tier = notorietyTier(heat);
+  const next = nextNotorietyThreshold(heat);
+  return renderWanted({
+    heat,
+    tier,
+    maxTier: MAX_NOTORIETY_TIER,
+    title: NOTORIETY_TIERS[tier]!.title,
+    lawResponse: lawResponseFor(tier),
+    nextThreshold: next,
+    toNext: next === null ? null : next - heat,
   });
 }
 

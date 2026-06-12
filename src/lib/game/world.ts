@@ -25,6 +25,7 @@ import { getResource, RESOURCES } from "@/lib/universe";
 import {
   regeneratedDepletion,
   priceTowardBase,
+  notorietyDecayed,
   supplyTowardBaseline,
   UPGRADE_SUPPLY_BASELINE,
   PART_SUPPLY_BASELINE,
@@ -611,6 +612,73 @@ export async function addReputation(
     p_player: playerId,
     p_faction: factionId,
     p_delta: delta,
+  });
+  if (error) throw error;
+  return typeof data === "number" ? data : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Notoriety / heat (the shared Combat ⇄ Trade axis). Decay-on-read /
+// stamp-on-write, mirroring the market price drift: `Date.now()` lives ONLY
+// here (the pure `notorietyDecayed` takes `elapsedMs`). No callers raise heat
+// this phase — Combat-2 / Trade call `addNotoriety` on an illicit act.
+// ---------------------------------------------------------------------------
+
+/**
+ * The player's CURRENT heat — the stored `notoriety` decayed toward 0 by the time
+ * since `notoriety_updated_at`, rounded to an integer. Mirror of
+ * `getMarketPrice`'s drift-on-read: the row is only rewritten on a change
+ * (`add_notoriety` stamps the clock), so cooling accrues forward from the last
+ * change. Returns 0 for a missing player (clean).
+ */
+export async function getNotoriety(playerId: string): Promise<number> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("players")
+    .select("notoriety, notoriety_updated_at")
+    .eq("id", playerId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return 0;
+  const r = data as { notoriety: number; notoriety_updated_at: string };
+  const t = Date.parse(r.notoriety_updated_at);
+  const elapsed = Number.isNaN(t) ? 0 : Math.max(0, Date.now() - t);
+  return notorietyDecayed(r.notoriety, elapsed);
+}
+
+/**
+ * Adjust heat by `delta` (positive on an illicit act; negative is allowed and
+ * clamps at 0). REALIZES decay first — reads the currently-decayed value, then
+ * `add_notoriety` sets `decayed + delta` and re-stamps the clock — so cooling
+ * since the last change is banked before the add (otherwise a long-cooled stored
+ * value would jump back up). Returns the new value. This is the hook Combat-2 /
+ * Trade call; no callers this phase.
+ */
+export async function addNotoriety(
+  playerId: string,
+  delta: number,
+): Promise<number> {
+  const db = getServerClient();
+  // Read the realized (decayed) heat AND the raw stored value together. The
+  // `add_notoriety` RPC adds its delta to the STORED row and stamps now(); to
+  // land at `decayed + delta` (decay banked first, then the act's delta) we pass
+  // the gap `target - stored`. Re-stamping resets the decay clock so future reads
+  // cool from now.
+  const { data: row, error: readErr } = await db
+    .from("players")
+    .select("notoriety, notoriety_updated_at")
+    .eq("id", playerId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const stored = row ? (row as { notoriety: number }).notoriety : 0;
+  const updatedAt = row ? (row as { notoriety_updated_at: string }).notoriety_updated_at : null;
+  const t = updatedAt ? Date.parse(updatedAt) : NaN;
+  const elapsed = Number.isNaN(t) ? 0 : Math.max(0, Date.now() - t);
+  const decayed = notorietyDecayed(stored, elapsed);
+  const target = Math.max(0, decayed + delta);
+  const { data, error } = await db.rpc("add_notoriety", {
+    p_player: playerId,
+    p_delta: target - stored,
   });
   if (error) throw error;
   return typeof data === "number" ? data : 0;

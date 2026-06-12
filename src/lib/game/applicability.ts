@@ -76,6 +76,10 @@ const INFORMATIONAL = new Set([
   // cartography (Keystone 3b) — your exploration progression (worlds charted +
   // rank). Read-only, usable in every state like the other info commands.
   "cartography",
+  // notoriety — `wanted` shows your heat/tier + the law's response. Read-only,
+  // usable in every state like the other info commands (the shared Combat ⇄
+  // Trade heat axis; acts that raise it are Combat-2 / Trade).
+  "wanted",
   // Combat-1b — the PvE bounty board. Read-only (browse the wanted ships posted
   // at a hub); usable in every state, and shows the off-hub note itself when
   // you're not at a trade hub (the actual fight is the hub-gated `hunt`).

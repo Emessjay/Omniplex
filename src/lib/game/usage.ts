@@ -71,6 +71,7 @@ export const VERBS: string[] = [
   "contracts",
   "fulfill",
   "cartography",
+  "wanted",
   "who",
   "here",
   "say",
@@ -329,6 +330,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
   },
   cartography: {
     desc: "show your worlds charted + cartography rank (rises as you discover new worlds)",
+    slots: [],
+  },
+  wanted: {
+    desc: "show your heat/notoriety, wanted tier, and what the law does about you",
     slots: [],
   },
   who: { desc: "see the shared-world leaderboards", slots: [] },

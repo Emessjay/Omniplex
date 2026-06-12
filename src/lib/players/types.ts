@@ -106,6 +106,21 @@ export interface Player {
    * off; cleared on victory / defeat / a successful `flee`.
    */
   combat: ShipCombat | null;
+  /**
+   * Notoriety / heat — the SHARED Combat ⇄ Trade axis (pillars §iv + §ii). 0 =
+   * clean. Raised by illicit acts (piracy, attacking the unwanted, base raids —
+   * Combat-2; smuggling/illicit trade — a later Trade phase) and DECAYS toward 0
+   * over time (realized on read off `notorietyUpdatedAt`, see
+   * `world.getNotoriety`). Maps purely to a tier/title (`rules.notorietyTier`)
+   * that drives the law's response. NOT public (not on the `leaderboard` view).
+   */
+  notoriety: number;
+  /**
+   * The decay clock for `notoriety` (ISO timestamp). Heat cools from this
+   * timestamp on read; any change re-stamps it (`add_notoriety`). Mirror of
+   * `markets.updated_at` — the apply-on-read / stamp-on-write discipline.
+   */
+  notorietyUpdatedAt: string;
   /** ISO timestamp the row was created. */
   createdAt: string;
 }
@@ -189,5 +204,9 @@ export interface PlayerRow {
   loadout: string[] | null;
   /** Active ship-combat session (jsonb). `null` when not in a ship fight. */
   combat: ShipCombat | null;
+  /** Heat/notoriety (the shared Combat ⇄ Trade axis); 0 = clean. */
+  notoriety: number;
+  /** Decay clock for notoriety (timestamptz). */
+  notoriety_updated_at: string;
   created_at: string;
 }

@@ -25,6 +25,8 @@ describe("rowToPlayer", () => {
     charted: 0,
     loadout: [],
     combat: null,
+    notoriety: 0,
+    notoriety_updated_at: "2026-06-07T00:00:00.000Z",
     created_at: "2026-06-07T00:00:00.000Z",
   };
 
@@ -51,6 +53,8 @@ describe("rowToPlayer", () => {
       charted: 0,
       loadout: [],
       combat: null,
+      notoriety: 0,
+      notorietyUpdatedAt: "2026-06-07T00:00:00.000Z",
       createdAt: "2026-06-07T00:00:00.000Z",
     });
   });
