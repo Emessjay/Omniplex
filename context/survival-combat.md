@@ -278,3 +278,69 @@ Load-bearing decisions extracted from `CLAUDE.md`, in build order.
   piracy, raids) + READS `notorietyTier` for enforcement (patrols, a bounty on the
   player) + the ship-loss insurance; the Trade business layer reuses the SAME stat
   for corporate notoriety.
+
+### Load-bearing decisions from `ship-repair` (Combat-2 stakes primitive)
+
+- **Combat losses never DESTROY a ship** — the SHARED stakes layer the PvE bounty
+  fights (Combat-1b) and the upcoming raids (2a) / ship piracy (2b) all route their
+  loss outcome through. A defeated ship is **towed to the nearest station at a low
+  "disabled" condition** where the player **`repair`s** it; a disabled ship is
+  still **flyable** (anti-softlock — the ship is never taken away, you're never
+  stranded: a broke pilot can limp out, mine metal, and repair). This SUPERSEDES
+  1b's "disabled & recovered, full heal, **credit fine**" loss path (the credit
+  fine is GONE — the repair cost is the stake now) and the earlier
+  "destruction + free-shuttle insurance" idea.
+- **`players.ship_condition integer not null default 100 check (between 0 and
+  100)`** (migration `20260612020000_ship-repair.sql`, forward-only/idempotent,
+  **purely ADDITIVE** — one defaulted column, prod-safe like notoriety/manifold;
+  no RLS change, NOT on the public `leaderboard` — condition isn't public). 0 =
+  wreck, 100 = pristine. Carried on `Player.shipCondition`/`PlayerRow`/`rowToPlayer`
+  (defensive `?? 100` for old rows/fixtures). World adapter `setShipCondition`
+  (read-compute-write, no atomic RPC — sequential per-player like fuel/health).
+- **Pure rules** (`rules.ts`, seeded `ship-repair.test.ts`; no `Date`/`Math.random`/
+  IO): constants `MAX_SHIP_CONDITION=100`, `DISABLED_CONDITION=15` (the tow floor —
+  low but >0 = flyable), `MIN_HULL_FRACTION=0.25` (combat-hull floor),
+  `REPAIR_CREDITS_PER_POINT=5`, `REPAIR_METAL_PER_POINT=0.5`. Functions:
+  `effectiveHull(baseHull, condition) = round(baseHull × max(MIN_HULL_FRACTION,
+  condition/MAX))` (combat hull scales with condition, monotonic, =baseHull at
+  full, floored >0 at 0); `conditionAfterDefeat(prev) = min(prev,
+  DISABLED_CONDITION)` (drops to the floor, never raises);
+  `repairCreditsFor(missing)`/`repairMetalFor(missing)` = `ceil(missing × per-point)`
+  (0 at 0); `pointsAffordable(have, perPoint) = floor(have/perPoint)` (0 if either
+  ≤0); `conditionAfterRepair(condition, points) = min(MAX, condition + max(0,
+  points))` (partial, capped, never overshoots/reduces).
+- **Combat hook**: `loadoutStats(loadout, shipId, condition=MAX_SHIP_CONDITION)`
+  gained an OPTIONAL `condition` arg that scales `hullMax` via `effectiveHull` —
+  stays PURE (condition passed in at the engage-start boundary). `handleHunt`
+  snapshots `loadoutStats(loadout, shipId, player.shipCondition)` so a damaged ship
+  enters the fight with less hull. **NPC/bounty enemy profiles are UNAFFECTED**
+  (generated directly; the default arg keeps them unchanged).
+- **Defeat path rewired** (`shipCombatDefeat`): clear the session →
+  `setShipCondition(conditionAfterDefeat(current))` → tow to nearest outpost +
+  full HP via the existing `setDistressLocation` (reused, not forked). **NO credit
+  fine** (the `distressCost` charge removed from THIS path; `distressCost` is still
+  used by the on-foot `distress` command). The defeat frame surfaces the disabled
+  condition + a `repair` hint.
+- **`setShip` (buyship / `produce <ship>`) resets `ship_condition = 100`** in the
+  SAME write that swaps `ship_id`+`cargo_cap` — a newly-acquired ship is pristine,
+  never inherits the old hull's battle damage.
+- **`repair [amount|metal] [n]`** (NEW verb, ECONOMY applicability bucket —
+  `atTradeLocation && !inCombat`, like buy/sell/buyship; arg slot OPAQUE/free-form
+  so `metal` + numbers pass through, handler-parsed): `repair` = as much as CREDITS
+  afford toward full; `repair <n>` = n points in credits; `repair metal [n]` = pay
+  in mined **`iron`** (`REPAIR_METAL_ID`, a cheap broadly-mineable ore — anti-
+  softlock) from cargo. Validate funds → charge (`addPlayerCredits(-)` /
+  `removeInventory(iron,-)`) → `setShipCondition(+)`. Partial allowed; no-op-with-
+  message at full or zero funds (ship stays flyable). Registered `VERBS`/`USAGE`/
+  `applicability`; help-parity held.
+- **Display**: ship condition as `hull N%` (RED when `<50`, P9b color-only) in the
+  **status bar** (additive REQUIRED `StatusBar.condition` field — survives `clear`),
+  in `scan` (surface frame via `ScanView.shipCondition`/`repairAvailable`; orbital/
+  outpost frames via the shared `conditionLine(player, repairable)` helper), with a
+  clickable `repair` hint at trade locations (else a muted "repair at a settlement/
+  outpost" nudge — the ship still flies). Seeded contract: `ship-repair.test.ts`.
+- **For Combat-2a/2b**: base raids + ship piracy route their loss outcomes through
+  this primitive (`conditionAfterDefeat` + tow + `repair`); 2b adds notoriety +
+  marque on top. Out of scope here: repair at OWNED bases (trade locations only),
+  per-module damage, condition decay over time/use (only combat reduces it), towing
+  fee, actual ship destruction.
