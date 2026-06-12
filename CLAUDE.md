@@ -2259,3 +2259,50 @@ gotchas) accrete here as workers surface things worth persisting. See
   worker's presence-display tests).
 - **3b** adds Supabase Realtime (live arrive/leave + `say` local chat); co-located
   COMBAT (the pillars two-mode model) + trade build on this presence layer.
+
+### Load-bearing decisions from `live-presence` (foundation 3b — live presence + local chat)
+
+- **Co-location is now LIVE via Supabase Realtime** (3a was polled). NO migration,
+  NO chat persistence (ephemeral by decision), NO co-located combat (a later
+  Combat phase). The first Realtime code in the repo (the browser anon client was
+  already Realtime-ready).
+- **The server names the channel; the client just joins it.** Additive
+  **`RenderFrame.presence?: PresenceHint`** (`terminal/types.ts`, type-only import
+  of `PresenceHint` from `game/presence` — erased at runtime, no cycle), attached
+  at the SAME central dispatch spot as `buildStatusBar`, built from the FRESH
+  post-command player so the channel reflects movement. `presenceHintOf(player)`
+  returns `undefined` when `!isSupabaseConfigured()` (build/CI green without
+  secrets). `submitCommand` signature unchanged.
+- **Pure helpers extend `src/lib/game/presence.ts`** (3a's module — not forked):
+  `presenceChannelFor(loc)` = `"loc:g:a:c:s:p:r"` with the **load-bearing
+  invariant `presenceChannelFor(a) === presenceChannelFor(b)` iff
+  `sameLocation(a,b)`** (co-location ⇔ same channel); `presenceHintFor(player)`
+  composes the channel + `presentPlayerView` (privacy in ONE place — never
+  user_id/email); `sanitizeChatBody(raw)` strips control chars (U+0000–U+001F,
+  U+007F → space), collapses whitespace, trims, caps at `CHAT_MAX_LEN`(240),
+  empty→`null`; `presenceRoster(presenceState, selfKey)` flattens the Realtime
+  presence-state, excludes self by handle, dedupes, stable-sorts (DEFENSIVE —
+  tolerates garbage/missing fields). Seeded: `live-presence.test.ts`.
+- **`say <message>` is server-authoritative + UNSPOOFABLE** (`handleSay`, `ALWAYS`
+  applicability — talk in any state incl. combat; opaque free-text tail): sanitize
+  → null⇒error; broadcast via `world.broadcastChat(presenceChannelFor(player),
+  player.handle, body)` where the handle is taken from the SERVER record (never
+  the client); echo `You say: …` to the sender. **`world.broadcastChat`**
+  (`server-only`, service-role) is FAIL-SOFT: a NO-OP when unconfigured, and any
+  Realtime error is swallowed (a failed publish never fails the command). Ephemeral
+  broadcast (`event:"chat"`, payload `{handle, body}`) — no table, no history.
+- **Client (`Terminal.tsx`)** keeps the latest `frame.presence` in state and a
+  `useEffect` (re)subscribes when `channel`/`self.handle` changes (movement),
+  tearing down the old channel (`untrack`+`removeChannel`): presence `sync`→a
+  "Here now: …" line via `presenceRoster`, `join`/`leave`→live arrive/left lines,
+  `broadcast:chat`→a `handle: body` line — all appended as ordinary log lines
+  (never touch the status bar). Channel opened with `presence.key = self.handle`
+  + **`broadcast.self = false`** (sender doesn't see a dup — they get the
+  `You say:` echo). Guarded by `isSupabaseConfigured()` + a try/caught
+  `getBrowserClient()` (SSR-safe, never crashes the renderer). The polled 3a
+  `scan`/`here` snapshot is unchanged — live deltas layer on top.
+- **Known minor**: self's tracked ship/state can go briefly stale to others if it
+  changes WITHOUT a channel change (rare: buyship-in-place; embark/disembark keeps
+  the same `presenceState` label) — cosmetic, acceptable for ephemeral presence.
+- **Next**: co-located COMBAT (the two-mode model) builds on this presence channel
+  (Combat-3, after the Combat-1/2 ship-combat core).
