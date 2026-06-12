@@ -2509,3 +2509,38 @@ gotchas) accrete here as workers surface things worth persisting. See
   in manifold −1, promoted to main = manifold 0). **Deferred & noted**: the
   manifold-CROSSING mechanic + manifold-in-RNG generation MODIFIERS (true alternate
   universes). DEPLOY.md §7 documents the one-Supabase staging model.
+
+### Load-bearing decisions from `notoriety` (the shared Combat ⇄ Trade heat axis)
+
+- **A single player "heat" stat that Combat (piracy/attacking the unwanted/raids —
+  Combat-2) and Trade (illicit businesses — later) both feed, driving the law's
+  response.** Built ONCE here as a shared primitive. **This phase = the MECHANIC +
+  display only**: the stat, time-decay, tiers, `wanted` display. NO gain sources /
+  NO enforcement yet (Combat-2/Trade call `addNotoriety` + read the tier). Inert on
+  prod until then (everyone reads "clean") — additive + safe to ship ahead.
+- **Pure rules** (`rules.ts`, seeded `notoriety.test.ts`; `elapsedMs` injected, no
+  `Date`): `notorietyDecayed(stored, elapsedMs, perMs?)` cools toward 0 (floored,
+  monotonic non-increasing, integer — the `priceTowardBase`-toward-0 mirror);
+  `NOTORIETY_TIERS` ascending `{tier,title,minNotoriety}` ladder (Clean at 0,
+  clamps) + `notorietyTier(n)` (mirror `rankFor`); `lawResponseFor(tier)` (copy:
+  the law's response per tier — actual enforcement is Combat-2); constants
+  `NOTORIETY_DECAY_PER_MS`/`MAX_NOTORIETY_TIER`.
+- **Persistence** (migration `20260612010000_notoriety.sql`, forward-only/
+  idempotent, **purely ADDITIVE** — prod-safe): `players.notoriety integer default
+  0 check(>=0)` + `players.notoriety_updated_at timestamptz default now()` on
+  `Player`/`PlayerRow`/`rowToPlayer`; atomic `add_notoriety(p_player, p_delta)` RPC
+  (clamped ≥0, **stamps notoriety_updated_at = now()**). No RLS change (rides the
+  players row; NOT on the public leaderboard — heat isn't public).
+- **Adapters** (`world.ts`, the only `Date.now()` site): `getNotoriety(playerId)`
+  decays on read (`notorietyDecayed(stored, now − updated_at)`, int);
+  `addNotoriety(playerId, delta)` realizes decay THEN applies the delta + stamps —
+  the hook Combat-2/Trade call on an illicit act.
+- **Display**: `wanted` (NEW verb, INFORMATIONAL/anywhere — `VERBS`/`USAGE`/
+  `applicability`, help-parity held): heat + tier title + `lawResponseFor` meaning
+  + next-tier threshold (clean message at 0). Status bar surfaces a heat readout in
+  the `danger` style when `tier > 0` (additive `StatusBar` field; color-only, P9b).
+  `renderWanted` in `render.ts`.
+- **Next**: Combat-2 calls `addNotoriety` on illicit acts (attacking the unwanted,
+  piracy, raids) + READS `notorietyTier` for enforcement (patrols, a bounty on the
+  player) + the ship-loss insurance; the Trade business layer reuses the SAME stat
+  for corporate notoriety.
