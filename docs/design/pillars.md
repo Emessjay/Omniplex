@@ -249,6 +249,45 @@ borrows the combat resolver to fight hostile anomalies.
 (you pick maneuvers and watch) or instant-with-a-log? How much PvP is opt-in vs
 ambient-risk? Insurance/death-stakes for ships?
 
+**Resolved (2026-06, build plan).** Ship combat is a **distinct system from
+on-foot wildlife `attack`** (which stays the on-foot melee layer); they may share
+death/notoriety plumbing but not the resolver. Decisions:
+- **Resolver style = interactive turn-by-turn.** A fight is a *stateful,
+  multi-command* exchange: each phase you choose a maneuver (approach: close /
+  hold range / evade → exchange: target a subsystem / alpha strike → …), an NPC
+  AI picks its maneuver, the phase resolves, and you choose again until an
+  outcome. Persisted as a ship-combat **session** on the player (a richer sibling
+  of the wildlife `encounter`). Driven by ONE phase-contextual verb whose valid
+  choices come from the session's current phase (reuses the arg-domain/abbrev/
+  applicability machinery — no verb explosion), with the choices rendered as
+  clickable actions. The pure resolver core takes
+  `(phase, loadouts+state, playerChoice, npcChoice, rolls) → (nextState, log)`
+  (rolls + NPC choice injected at the handler boundary — testable/seeded).
+- **Modules = shallow archetypal.** ~5 slot types — weapon / shield / evasion /
+  ECM / targeting — 2–3 modules each with legible rock-paper-scissors counters
+  (targeting↔evasion, ECM↔targeting, shields↔burst, missiles↔evasion), slot
+  COUNT scaling by ship class (shuttle 2 → hauler 5). A code catalog like
+  `parts`/`upgrades`; obtained via the existing buy/`produce` economy. Deep
+  fitting (power budgets, stacking penalties) is a later deepening, not now.
+- **First proving ground = a PvE bounty board** (the Mercenary Charter org):
+  hunt deterministically-generated NPC *wanted* ships posted at hubs
+  (contracts-style) — accept → intercept → fight → reward + rep. Exercises
+  modules + resolver with **no PvP/consent/notoriety** surface yet.
+- **Async-before-live; coreward = the consent gradient.** The async/snapshot
+  modes (piracy/base-raid/bounty vs a committed loadout/defense snapshot) come
+  before live co-located duels (which build on the §Foundation 3b Realtime
+  presence channel). The existing radiation/coreward axis (richer + deadlier) IS
+  the lawless-danger-zone-vs-protected-rim-hub gradient — no new geography.
+
+**Build order.** **Combat-1** — ship combat core (modules/loadouts + the
+interactive phase resolver + the PvE bounty board). **Combat-2** — async PvP +
+the Mercenary Charter (piracy, base raids vs defense buildings, notoriety/wanted,
+insurance/escape). **Combat-3** — live co-located duels (on 3b presence).
+**Combat-4** — military / faction war (take-and-hold contested systems; ties to
+Politics). Combat-1 is independent of 3b but shares hot files (`commands.ts`/
+`applicability.ts`/`usage.ts`/`render.ts`/`Player`), so it lands *after*
+live-presence merges.
+
 ---
 
 ## v. Science
