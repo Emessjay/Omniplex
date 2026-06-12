@@ -302,35 +302,48 @@ promote in one merge.
 ### Branch model
 
 ```
-staging branch ──auto-deploy──► STAGING env + staging Supabase   (all WIP lands here)
-       │ when solid + playtested
-       ▼ git checkout main && git merge staging && git push
-  main ─────────auto-deploy──► PRODUCTION env + prod Supabase     (frozen until promote)
+staging branch ──auto-deploy──► STAGING env  ┐
+       │ when solid + playtested              ├─ SAME Supabase project; data is
+       ▼ git checkout main && merge && push   │  isolated by MANIFOLD (test = −1,
+  main ─────────auto-deploy──► PRODUCTION env ┘  prod = 0). No 2nd DB needed.
 ```
 
 The auditor/worker flow merges feature branches into whatever integration branch
 is checked out; while on `staging`, set `NIMBUS_BASE_BRANCH=staging` so
 `merge-worker.sh` targets it (it defaults to `main`).
 
-### One-time setup (Railway + Supabase dashboards)
+### Isolation without a second Supabase: manifolds
 
-1. **Second Supabase project** — create a fresh project (e.g. `omniplex-staging`).
-   Grab the same four credentials as §1 (`NEXT_PUBLIC_SUPABASE_URL`,
-   `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and the pooler
-   `DATABASE_URL`). Do the §3 Auth redirect-allowlist step for the **staging
-   domain** too (magic-link/OAuth break otherwise).
-2. **Railway staging environment** — in the Railway project, add an environment
+The `manifolds` phase added a top coordinate tier (`manifold → galaxy → … →
+region`). It's a **pure data partition**: generation is manifold-invariant
+(manifold −1 worlds are byte-identical to manifold 0), every stored row keys by
+manifold, and **no travel crosses manifolds** — so a test account in manifold −1
+can never reach prod data even in the **same** Supabase project. New players spawn
+in the manifold named by `OMNIPLEX_SPAWN_MANIFOLD` (default `0` = prod); set it to
+`-1` on staging. Presence + the leaderboard are manifold-scoped, so test and prod
+players never see each other. (A free Supabase project has only 2 slots, so this
+is the supported way to run an isolated test universe on one project.)
+
+### One-time setup (Railway dashboard — one Supabase project)
+
+1. **Railway staging environment** — in the Railway project, add an environment
    named `staging` and point its deploy trigger at the **`staging` git branch**
-   (Settings → Source → branch). Set its variables to the staging Supabase values
-   above + a `WORLD_SEED` (use the **same seed as prod** for universe parity, or a
-   distinct one if you want an isolated test universe) + `OMNIPLEX_DEV_LOGIN=1`
-   (staging only — makes two-session playtests frictionless; NEVER set this in
-   production). Enable **"Wait for CI"** (Settings → Deploy) so a red run can't
-   deploy.
-3. Migrations run automatically on every staging deploy (the same
-   `node scripts/migrate.mjs` start command), against the **staging** DB — so a
-   big migration stack is proven on a throwaway database before it ever touches
-   prod.
+   (Settings → Source → branch). It uses the **same** Supabase credentials as
+   production (§1) — there is no second project. Set its variables to those
+   credentials + the **same `WORLD_SEED` as prod** (generation is
+   manifold-invariant, so the test universe mirrors prod) + **`OMNIPLEX_SPAWN_MANIFOLD=-1`**
+   (test accounts are born in the isolated manifold −1) + `OMNIPLEX_DEV_LOGIN=1`
+   (staging only — frictionless two-session playtests; NEVER in production).
+   Enable **"Wait for CI"** (Settings → Deploy) so a red run can't deploy.
+2. Migrations run automatically on every staging deploy (the same
+   `node scripts/migrate.mjs` start command). They apply to the shared DB, but
+   the project's forward-only/**additive** migration rule keeps prod's code
+   working against the extended schema, and the CI migrations gate proves the
+   whole stack applies + is idempotent before any deploy. A genuinely
+   **destructive** migration is the one case that would need a separate DB — flag
+   it if it ever comes up.
+3. ⚠️ Because staging shares the prod Supabase, `OMNIPLEX_SPAWN_MANIFOLD=-1` is
+   what keeps test play off prod data. Leave it unset (→ 0) in production.
 
 ### Promoting to production
 

@@ -2453,3 +2453,59 @@ gotchas) accrete here as workers surface things worth persisting. See
   exploration sites, sapient species, planets — each a new key namespace authored
   by `compose-batch`, never a runtime API call. See Nimbus `COMPOSE.md`
   §"Batching a component LIBRARY".
+
+### Load-bearing decisions from `manifolds` (a top coordinate tier above galaxy — isolated parallel data layers)
+
+- **`manifold` is the NEW top tier of the spatial hierarchy**: `manifold → galaxy
+  → arm → cluster → system → planet → region`. A manifold is a **parallel DATA
+  LAYER** — a pure partition: generation is manifold-INVARIANT (manifold −1
+  produces byte-identical worlds/flora/fauna to manifold 0 — same seed, same
+  content), but every stored row keys by manifold and **there is NO travel between
+  manifolds**, so a manifold is an airtight isolated slice of the universe inside
+  the SAME Supabase project. **Prod = manifold 0; the staging/test universe = −1.**
+  Mirrors `addressing-overhaul` (the coord-tier-addition + key-migration template).
+- **Coords**: `manifold: number` is the FIRST field of `ClusterCoord`/
+  `SystemCoord`/`PlanetCoord`/`RegionCoord` (`types.ts`). 0 = prime/prod, −1 =
+  test; any integer valid (future manifolds positive).
+- **Keys gain a leading manifold segment** (`gen.ts`): `systemKey` →
+  `"<manifold>:<galaxy>:<arm>:<cluster>:<system>"` (5 seg), `planetKey` +`:planet`
+  (6), `regionKey` +`:region` (7). `parseLocationKey` now parses 5/6/7-seg only
+  (old 4/5/6 were migrated to the `0:`-prefixed form). These remain the
+  `world_deltas`/`discoveries`/`bases`/`salvaged_sites`/`markets`/`system_supply`
+  keys → all shared-world state partitions by manifold automatically.
+- **Generation is manifold-INVARIANT — `manifold` NEVER seeds an RNG** (`makeRng`
+  calls are UNCHANGED). Gen functions only PROPAGATE the input coord's `manifold`
+  onto returned coords (e.g. `genome.ts` `manifold: coord.manifold`) so keys land
+  in the right partition. ⇒ identical worlds across manifolds (the approved "pure
+  partition"; folding manifold into the seed for true alternate-universe content
+  is a DEFERRED future enhancement). **`warpDistance` returns `Infinity` across
+  manifolds** (like cross-galaxy) — uncrossable.
+- **`players.manifold integer not null default 0`** (migration
+  `20260612000000_manifolds.sql`) on `Player`/`PlayerRow`/`rowToPlayer`. **Travel
+  NEVER changes manifold** (`warp`/`hyperwarp`/`orbit`/`land`/`jump`/`move` build
+  targets with the player's current manifold; no command crosses manifolds — the
+  crossing "unique mechanic" is DEFERRED). Isolation by construction.
+- **Spawn config**: `spawnManifold(env?)` in `src/lib/game/config.ts` parses
+  **`OMNIPLEX_SPAWN_MANIFOLD`** (server-only, integer, **default 0**, non-int →
+  0, never read at import). `getOrCreatePlayer` stamps it on insert via
+  `randomStartingWorld(seed, rand, manifold)` (+ `startingWorld(seed, manifold=0)`
+  gained the param). Prod unset → 0; **staging sets `-1`** → test accounts born in
+  the isolated test universe.
+- **Presence + leaderboard are manifold-scoped**: `presence.ts` `LocationView`/
+  `sameLocation` include `manifold` (and `presenceChannelFor` → `loc:<manifold>:…`,
+  so live presence/chat is per-manifold); `world.playersHere` filters
+  `.eq("manifold", …)`; the public `leaderboard` view EXPOSES `manifold`
+  (appended LAST — the `CREATE OR REPLACE VIEW` append-only constraint, same as
+  cartography) and `topByCredits(limit, manifold)`/`who` filter by the viewer's
+  manifold. So −1 and 0 players are mutually invisible; test accounts never appear
+  on prod's board.
+- **Migration** (forward-only/idempotent, runner-tracked → runs once): adds
+  `manifold`; prefixes existing `world_deltas`/`discoveries`/`bases`/
+  `salvaged_sites`/`system_supply` keys + non-`'global'` `markets` keys with `0:`;
+  **resets `completed_contracts`/`completed_bounties`** (their keys embed a hub
+  systemKey — a non-destructive double-fulfill-guard reset, players just re-see the
+  current rotation); recreates the leaderboard view with `manifold`.
+- **This is the test-isolation foundation** for the pillars push (built + played
+  in manifold −1, promoted to main = manifold 0). **Deferred & noted**: the
+  manifold-CROSSING mechanic + manifold-in-RNG generation MODIFIERS (true alternate
+  universes). DEPLOY.md §7 documents the one-Supabase staging model.
