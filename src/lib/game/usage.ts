@@ -66,6 +66,7 @@ export const VERBS: string[] = [
   "cartography",
   "who",
   "here",
+  "say",
   "rename",
   "distress",
   "guide",
@@ -298,6 +299,12 @@ export const USAGE: Record<string, UsageDescriptor> = {
   here: {
     desc: "see which other players are here with you (same region, orbit or outpost)",
     slots: [],
+  },
+  say: {
+    desc: "say something to the other players here with you (live local chat)",
+    slots: [
+      { name: "message", hint: "what to say — heard only by players in the same place" },
+    ],
   },
   rename: {
     desc: "set your public handle (shown on leaderboards, `who` and bases)",

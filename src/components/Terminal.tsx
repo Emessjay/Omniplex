@@ -23,9 +23,13 @@ import type {
   SpanStyle,
   StatusBar,
 } from "@/lib/terminal/types";
+import type { PresenceHint } from "@/lib/game/presence";
 import { action, actionStyle, frame, line, text } from "@/lib/terminal/helpers";
 import { submitCommand } from "@/lib/terminal/pipeline";
 import { completeCommand } from "@/lib/terminal/completion";
+import { presenceRoster } from "@/lib/game/presence";
+import { getBrowserClient } from "@/lib/supabase/client";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import type { Player } from "@/lib/players/types";
 import { cn } from "@/lib/utils";
 
@@ -205,6 +209,10 @@ export function Terminal({
   const [status, setStatus] = useState<StatusBar | undefined>(
     () => initialStatus ?? statusFromPlayer(player),
   );
+  // The latest live-presence hint the server stamped on a frame (3b): which
+  // Realtime channel to be on + our public-safe self to track. Kept as state so
+  // a movement (which changes the channel) re-runs the subscription effect.
+  const [presence, setPresence] = useState<PresenceHint | undefined>(undefined);
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   // null = "editing a fresh line"; otherwise an index into `history`.
@@ -221,6 +229,81 @@ export function Terminal({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
+
+  // Live presence + local chat (foundation 3b). The server tells us which
+  // Realtime channel to be on via `frame.presence`; we (re)subscribe whenever
+  // the channel changes (i.e. the player moved), tearing down the old one.
+  // Live arrive/leave/chat lines are appended as ordinary log lines — they
+  // interleave with command output and never touch the persistent status bar.
+  // SSR-safe: runs only in this client effect, guarded by config; getBrowserClient
+  // is wrapped so a missing/partial config can never crash the renderer.
+  useEffect(() => {
+    if (!presence || !isSupabaseConfigured()) return;
+    const { channel, self } = presence;
+
+    let client;
+    try {
+      client = getBrowserClient();
+    } catch {
+      return; // unconfigured at runtime — no live presence, no crash.
+    }
+
+    const appendLine = (l: RenderLine) => setLines((prev) => [...prev, l]);
+
+    const ch = client.channel(channel, {
+      config: { presence: { key: self.handle }, broadcast: { self: false } },
+    });
+
+    ch.on("presence", { event: "sync" }, () => {
+      const roster = presenceRoster(
+        ch.presenceState() as Record<string, unknown>,
+        self.handle,
+      );
+      if (roster.length > 0) {
+        appendLine([
+          text("Here now: ", "muted"),
+          text(roster.map((r) => r.handle).join(", "), "accent"),
+        ]);
+      }
+    });
+
+    ch.on("presence", { event: "join" }, ({ newPresences }) => {
+      for (const p of (newPresences ?? []) as Array<Record<string, unknown>>) {
+        const handle = typeof p.handle === "string" ? p.handle : null;
+        if (!handle || handle === self.handle) continue;
+        const ship = typeof p.ship === "string" ? p.ship : "ship";
+        const state = typeof p.state === "string" ? p.state : "nearby";
+        appendLine([text(`→ ${handle} (${ship}, ${state}) arrived.`, "success")]);
+      }
+    });
+
+    ch.on("presence", { event: "leave" }, ({ leftPresences }) => {
+      for (const p of (leftPresences ?? []) as Array<Record<string, unknown>>) {
+        const handle = typeof p.handle === "string" ? p.handle : null;
+        if (!handle || handle === self.handle) continue;
+        appendLine([text(`← ${handle} left.`, "muted")]);
+      }
+    });
+
+    ch.on("broadcast", { event: "chat" }, ({ payload }) => {
+      const p = (payload ?? {}) as Record<string, unknown>;
+      const handle = typeof p.handle === "string" ? p.handle : null;
+      const body = typeof p.body === "string" ? p.body : null;
+      if (!handle || !body) return;
+      appendLine([text(`${handle}: `, "accent"), text(body, "default")]);
+    });
+
+    ch.subscribe((s) => {
+      if (s === "SUBSCRIBED") void ch.track(self);
+    });
+
+    return () => {
+      void ch.untrack();
+      void client.removeChannel(ch);
+    };
+    // Re-subscribe only when the channel or our tracked identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presence?.channel, presence?.self.handle]);
 
   async function run(raw: string) {
     const cmd = raw.trim();
@@ -245,6 +328,9 @@ export function Terminal({
       // Refresh the persistent header from the post-command snapshot the server
       // attached (additive — frames without `status` leave the header as-is).
       if (f.status) setStatus(f.status);
+      // Update the live-presence channel (3b): additive; absent (unconfigured)
+      // leaves any existing subscription as-is.
+      if (f.presence) setPresence(f.presence);
     } finally {
       setBusy(false);
       inputRef.current?.focus();

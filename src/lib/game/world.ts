@@ -18,6 +18,7 @@ import "server-only";
  */
 
 import { getServerClient } from "@/lib/supabase/server";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import type { Player, PlayerRow, PlayerEncounter } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
 import { getResource, RESOURCES } from "@/lib/universe";
@@ -1473,6 +1474,35 @@ export async function playersHere(loc: PresenceQuery): Promise<PresentPlayer[]> 
       landed: r.landed,
     });
   });
+}
+
+/**
+ * Foundation 3b — publish an EPHEMERAL local chat message to a co-location
+ * Realtime channel (the channel name comes from `presenceChannelFor`, server-
+ * side). Authoritative + service-role: the `handle` is taken from the server's
+ * player record by the caller, NEVER from the client, so a player can't spoof
+ * someone else's name. Best-effort and FAIL-SOFT:
+ *   - A NO-OP (not a throw) when Supabase is unconfigured, so `npm run build`,
+ *     CI, and the test suite stay green without secrets.
+ *   - Any broadcast error is swallowed — a failed publish must not fail the
+ *     `say` command (the sender still gets their `You say:` echo).
+ * No persistence (no table, no history): the message is delivered live to the
+ * currently-connected co-located clients only.
+ */
+export async function broadcastChat(
+  channel: string,
+  handle: string,
+  body: string,
+): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  try {
+    const db = getServerClient();
+    const ch = db.channel(channel);
+    await ch.send({ type: "broadcast", event: "chat", payload: { handle, body } });
+    await db.removeChannel(ch);
+  } catch {
+    // Best-effort: never fail the command on a broadcast error.
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -189,7 +189,7 @@ const ORBIT_OR_FOOT = new Set(["salvage"]);
  * `eat` is allowed in EVERY state (including combat) — you can always snack to
  * heal — so it joins the always-applicable set.
  */
-const ALWAYS = new Set<string>(["eat", ...INFORMATIONAL]);
+const ALWAYS = new Set<string>(["eat", "say", ...INFORMATIONAL]);
 
 /**
  * Whether `verb` is usable in `state`. The ONE predicate both `help` and

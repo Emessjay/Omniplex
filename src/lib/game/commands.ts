@@ -243,6 +243,12 @@ import {
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import { nextStep, type GuideSnapshot } from "./advisor";
+import {
+  presenceChannelFor,
+  presenceHintFor,
+  sanitizeChatBody,
+} from "./presence";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import * as world from "./world";
 
 /** Strict integer parse: returns null for missing/non-integer tokens. */
@@ -939,7 +945,11 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   const seed = getWorldSeed();
   const { verb: rawVerb } = parseCommand(input);
   if (rawVerb === "") {
-    return { ...frame([line(text("Type `help` for commands.", "muted"))]), status: buildStatusBar(player, seed) };
+    return {
+      ...frame([line(text("Type `help` for commands.", "muted"))]),
+      status: buildStatusBar(player, seed),
+      presence: presenceHintOf(player),
+    };
   }
 
   // Resolve the verb first so we know which contextual candidate sets to fetch
@@ -962,14 +972,32 @@ export async function dispatch(player: Player, input: string): Promise<RenderFra
   // read fails so the header still renders.
   const fresh = (await world.getPlayerById(player.id)) ?? player;
   const status = buildStatusBar(fresh, seed);
+  // Live-presence hint (3b): built from the FRESH player so the channel reflects
+  // any movement this command performed (warp/land/jump). Additive, absent when
+  // Supabase is unconfigured.
+  const presence = presenceHintOf(fresh);
 
   // Echo the expanded form when abbreviation changed what was typed, so the
   // player learns the canonical command.
   const normalized = input.trim().replace(/\s+/g, " ").toLowerCase();
   if (canonical !== normalized) {
-    return { ...frame([line(text(`» ${canonical}`, "muted")), ...result.lines]), status };
+    return {
+      ...frame([line(text(`» ${canonical}`, "muted")), ...result.lines]),
+      status,
+      presence,
+    };
   }
-  return { ...result, status };
+  return { ...result, status, presence };
+}
+
+/**
+ * The per-frame live-presence hint (3b): the Realtime channel for the player's
+ * current location + their public-safe self view to track. `undefined` when
+ * Supabase is unconfigured (the client then runs no subscription) so build/CI
+ * stay green without secrets. One central place, mirroring `buildStatusBar`.
+ */
+function presenceHintOf(player: Player) {
+  return isSupabaseConfigured() ? presenceHintFor(player) : undefined;
 }
 
 /** The minimal player-state slice the unified applicability model reads. */
@@ -1143,6 +1171,8 @@ async function dispatchResolved(
       return handleWho();
     case "here":
       return handleHere(player, seed);
+    case "say":
+      return handleSay(player, args);
     case "rename":
       return handleRename(player, args);
     case "distress":
@@ -6065,6 +6095,25 @@ async function handleHere(player: Player, seed: string): Promise<RenderFrame> {
     region: player.region,
   });
   return renderPresence({ location: locationLabel(player, seed), present });
+}
+
+/**
+ * `say <message>` — foundation 3b local chat. Broadcasts the message EPHEMERALLY
+ * to everyone currently in the same place (the `presenceChannelFor` co-location
+ * channel) and echoes it back to the sender. Server-authoritative + unspoofable:
+ * the broadcast `handle` is taken from the SERVER's player record, never the
+ * client, so you can't put words in another player's mouth. `ALWAYS` applicable
+ * (you can talk in any state, including combat). Empty / whitespace-only ⇒ an
+ * error frame; the broadcast is best-effort (a publish failure still echoes).
+ */
+async function handleSay(player: Player, args: string[]): Promise<RenderFrame> {
+  const body = sanitizeChatBody(args.join(" "));
+  if (body === null) {
+    return errorFrame("Say what? Usage: `say <message>`");
+  }
+  // Handle from the authoritative record (NOT the client) — unspoofable.
+  await world.broadcastChat(presenceChannelFor(player), player.handle, body);
+  return frame([line([text("You say: ", "muted"), text(body, "accent")])]);
 }
 
 // ---------------------------------------------------------------------------

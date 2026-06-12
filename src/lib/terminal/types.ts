@@ -14,6 +14,7 @@
  * This is what makes the terminal "hybrid": typed commands and clicked
  * actions are the same thing — a command string.
  */
+import type { PresenceHint } from "@/lib/game/presence";
 
 /**
  * Semantic style hint for a span. Maps to a COLOR class in the renderer —
@@ -100,9 +101,19 @@ export interface StatusBar {
  * without it render unchanged. When present, it carries the post-command HUD
  * snapshot so the persistent status header can update. `submitCommand`'s
  * `(input: string) => Promise<RenderFrame>` signature is unaffected.
+ *
+ * `presence` is ADDITIVE in the same way (foundation 3b): when present it names
+ * the Supabase Realtime channel the client should be subscribed to for the
+ * player's current location (live co-located arrive/leave + `say` chat), plus
+ * the player's own public-safe view to track. Absent when Supabase is
+ * unconfigured; frames without it leave the live subscription unchanged. The
+ * type is imported from the pure `game/presence` module (type-only — no runtime
+ * dependency from the wire format into game logic).
  */
 export interface RenderFrame {
   lines: RenderLine[];
   /** Optional post-command HUD snapshot for the persistent status header. */
   status?: StatusBar;
+  /** Optional live-presence hint (Realtime channel + public-safe self) — 3b. */
+  presence?: PresenceHint;
 }
