@@ -372,6 +372,12 @@ export interface RanchHint {
 /** The creature the player is currently facing, for the scan readout. */
 export interface EncounterView {
   name: string;
+  /**
+   * The assembled Omniplex-voice blurb describing the creature (creature-blurbs),
+   * or null/undefined when the static library can't voice it yet — in which case
+   * only the terse `name` is shown.
+   */
+  blurb?: string | null;
   /** The creature's current hit points. */
   hp: number;
   /** The creature's maximum hit points. */
@@ -580,6 +586,9 @@ export function renderScan(view: ScanView): RenderFrame {
         text(`  HP ${enc.hp}/${enc.maxHp}`, "default"),
       ]),
     );
+    if (enc.blurb) {
+      lines.push(line(text(`  ${enc.blurb}`, "muted")));
+    }
     lines.push(
       line([
         text("  ", "muted"),
