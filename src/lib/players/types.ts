@@ -36,6 +36,15 @@ export interface Player {
    */
   shipId: string;
   /**
+   * Ship condition (Combat-2 stakes primitive): 0 = wreck, 100 = pristine.
+   * Scales the ship's COMBAT hull at engage-start (`effectiveHull`) — a beat-up
+   * ship fights weaker. A combat DEFEAT tows the ship to the nearest station at
+   * the low `DISABLED_CONDITION` (no destruction); `repair` (credits or mined
+   * metal, at a trade location) restores it. A newly-acquired ship (buyship /
+   * `produce <ship>`) is pristine (100). Existing players default to 100.
+   */
+  shipCondition: number;
+  /**
    * Manifold — the top coordinate tier (a PURE DATA PARTITION above `galaxy`).
    * 0 = prime universe (prod); −1 = the isolated test universe. Set at spawn from
    * `OMNIPLEX_SPAWN_MANIFOLD` and NEVER changed by travel — a player is confined
@@ -188,6 +197,8 @@ export interface PlayerRow {
   warp_fuel: number;
   cargo_cap: number;
   ship_id: string;
+  /** Ship condition 0–100 (Combat-2); 100 = pristine. Defaults to 100. */
+  ship_condition: number;
   manifold: number;
   galaxy: number;
   arm: number;

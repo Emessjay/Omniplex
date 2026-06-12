@@ -537,6 +537,91 @@ export function healValue(
 }
 
 // ---------------------------------------------------------------------------
+// Ship condition + repair (Combat-2 stakes primitive).
+//
+// Combat losses never DESTROY a ship — a defeated ship is towed to the nearest
+// station at a low "disabled" condition, where the player `repair`s it. This is
+// the SHARED stakes layer the PvE bounty fights (Combat-1b) and the upcoming
+// raids/piracy (2a/2b) all route their loss outcome through: your ship is never
+// taken away and you're never stranded (a disabled ship is still flyable, so a
+// broke player can limp out, mine metal, and repair). PURE here — no `Date`/
+// `Math.random`/IO; the impure handlers persist the condition + charge funds.
+// ---------------------------------------------------------------------------
+
+/** Pristine ship condition; 0 = wreck, 100 = perfect. The `players.ship_condition` ceiling. */
+export const MAX_SHIP_CONDITION = 100;
+
+/**
+ * The condition a defeated ship is towed at — LOW but strictly > 0, so it is
+ * still flyable (the anti-softlock guarantee). A defeat drops you to here (or
+ * leaves you lower if you were already below it).
+ */
+export const DISABLED_CONDITION = 15;
+
+/**
+ * Floor on the combat-hull scaling (`effectiveHull`): even at condition 0 a ship
+ * fights with at least this fraction of its base hull, so a disabled ship still
+ * fights FEEBLY rather than being instantly destroyed. In (0, 1].
+ */
+export const MIN_HULL_FRACTION = 0.25;
+
+/** Credits charged per condition point repaired (`repair`). */
+export const REPAIR_CREDITS_PER_POINT = 5;
+/** Units of the repair metal (mined ore — see `REPAIR_METAL_ID`) per condition point. */
+export const REPAIR_METAL_PER_POINT = 0.5;
+
+/**
+ * The combat `hullMax` of a ship whose base hull is `baseHull` at the given
+ * `condition`: `round(baseHull × max(MIN_HULL_FRACTION, condition / MAX))`. A
+ * beat-up ship enters a fight with less hull (monotonically non-decreasing in
+ * condition); at full condition it is exactly `baseHull`; at 0 it is floored at
+ * `MIN_HULL_FRACTION × baseHull` (still > 0). Pure.
+ */
+export function effectiveHull(baseHull: number, condition: number): number {
+  const frac = Math.max(MIN_HULL_FRACTION, Math.max(0, condition) / MAX_SHIP_CONDITION);
+  return Math.round(Math.max(0, baseHull) * frac);
+}
+
+/**
+ * Condition after a combat DEFEAT: dropped to the disabled floor
+ * (`DISABLED_CONDITION`), or left unchanged if it was already lower — i.e.
+ * `min(prev, DISABLED_CONDITION)`. Never RAISES the condition. Pure.
+ */
+export function conditionAfterDefeat(prev: number): number {
+  return Math.min(prev, DISABLED_CONDITION);
+}
+
+/** Credits to repair `missing` condition points: `ceil(missing × per-point)`; 0 at 0. */
+export function repairCreditsFor(missing: number): number {
+  return Math.ceil(Math.max(0, missing) * REPAIR_CREDITS_PER_POINT);
+}
+
+/** Units of repair metal to repair `missing` condition points: `ceil(missing × per-point)`; 0 at 0. */
+export function repairMetalFor(missing: number): number {
+  return Math.ceil(Math.max(0, missing) * REPAIR_METAL_PER_POINT);
+}
+
+/**
+ * How many condition points `have` funds buy at `perPoint` each:
+ * `floor(have / perPoint)`. 0 when `have` or `perPoint` is non-positive. Pure —
+ * lets a player repair as much as their credits/metal allow (partial repair).
+ */
+export function pointsAffordable(have: number, perPoint: number): number {
+  if (!(perPoint > 0) || !(have > 0)) return 0;
+  return Math.floor(have / perPoint);
+}
+
+/**
+ * Condition after repairing `points` from `condition`, capped at
+ * `MAX_SHIP_CONDITION` and never overshooting / never reducing: `min(MAX,
+ * condition + max(0, points))`. A non-positive `points` leaves it unchanged
+ * (zero funds ⇒ stays at the current, flyable condition). Pure.
+ */
+export function conditionAfterRepair(condition: number, points: number): number {
+  return Math.min(MAX_SHIP_CONDITION, condition + Math.max(0, points));
+}
+
+// ---------------------------------------------------------------------------
 // Wildlife — exploring, and on-foot combat with fauna (P5).
 //
 // Exploring a region (on foot) rolls one of three outcomes; encountering a

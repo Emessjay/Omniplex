@@ -123,7 +123,7 @@ const HUB_COMBAT = new Set(["hunt"]);
  * warpfuel` are covered by `buy`.) `fulfill` (Keystone 1a — deliver goods to the
  * hub's faction for a contract) joins them: you fulfill at the hub.
  */
-const ECONOMY = new Set(["buy", "sell", "fulfill", "buyship"]);
+const ECONOMY = new Set(["buy", "sell", "fulfill", "buyship", "repair"]);
 
 /**
  * In-system travel usable ABOARD in EITHER orbit/surface state (out of combat).

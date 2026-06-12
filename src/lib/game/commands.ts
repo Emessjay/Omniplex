@@ -63,7 +63,7 @@ import {
   type Site,
   type Species,
 } from "@/lib/universe";
-import type { RenderFrame, RenderLine, StatusBar } from "@/lib/terminal/types";
+import type { RenderFrame, RenderLine, RenderSpan, StatusBar } from "@/lib/terminal/types";
 import { action, frame, line, text } from "@/lib/terminal/helpers";
 import { parseCommand } from "./parse";
 import { resolveCommandLine, resolveToken, type ResolveLineSpec } from "./resolve";
@@ -121,6 +121,14 @@ import {
   lawResponseFor,
   NOTORIETY_TIERS,
   MAX_NOTORIETY_TIER,
+  MAX_SHIP_CONDITION,
+  conditionAfterDefeat,
+  conditionAfterRepair,
+  repairCreditsFor,
+  repairMetalFor,
+  pointsAffordable,
+  REPAIR_CREDITS_PER_POINT,
+  REPAIR_METAL_PER_POINT,
 } from "./rules";
 import {
   UPGRADES,
@@ -405,6 +413,9 @@ async function orbitalScanFrame(
       text("   warp fuel ", "muted"),
       text(`${player.warpFuel}`, "default"),
     ]),
+    // Ship hull condition (Combat-2). Orbit isn't a trade location, so no repair
+    // here — the line tells you to limp to a station; the ship still flies.
+    conditionLine(player, false),
     line([
       text("size ", "muted"),
       text(`${SIZE_CLASS_LABELS[planet.sizeClass]}${planet.isGas ? " (gas giant)" : ""}`, "accent"),
@@ -517,6 +528,28 @@ async function orbitalScanFrame(
   return frame(lines);
 }
 
+/**
+ * A `hull N%` status line for the inline orbital/outpost scan frames (Combat-2).
+ * Red when low; a clickable `repair` when at a trade location (`repairable`),
+ * else a muted "repair at a settlement/outpost" nudge (the ship still flies).
+ */
+function conditionLine(player: Player, repairable: boolean): RenderLine {
+  const cond = player.shipCondition ?? MAX_SHIP_CONDITION;
+  const spans: RenderSpan[] = [
+    text("hull ", "muted"),
+    text(`${cond}%`, cond < 50 ? "danger" : "default"),
+  ];
+  if (cond < MAX_SHIP_CONDITION) {
+    spans.push(text("   ", "muted"));
+    if (repairable) {
+      spans.push(action("repair", "repair", { style: "link", title: "repair your hull here (credits or mined Iron Ore)" }));
+    } else {
+      spans.push(text("(repair at a settlement/outpost)", "muted"));
+    }
+  }
+  return line(spans);
+}
+
 function locOf(player: Player): PlanetCoord {
   return {
     manifold: player.manifold,
@@ -574,6 +607,8 @@ export function buildStatusBar(player: Player, seed: string): StatusBar {
     health: player.health,
     maxHealth: MAX_HEALTH,
     ship: getShip(player.shipId).name,
+    // Ship hull condition (Combat-2) — defensive `?? MAX` for fixtures/old rows.
+    condition: player.shipCondition ?? MAX_SHIP_CONDITION,
     ...(tier > 0 ? { heat: NOTORIETY_TIERS[tier]!.title.toUpperCase() } : {}),
   };
 }
@@ -713,6 +748,9 @@ async function regionScanFrame(
     landed: player.landed,
     fuel: player.fuel,
     warpFuel: player.warpFuel,
+    shipCondition: player.shipCondition ?? MAX_SHIP_CONDITION,
+    // At a settlement region you can repair too (the surface trade-location case).
+    repairAvailable: hasSettlement(seed, region.coord),
     encounter: encounterView(player, region),
     // Shared-world presence: bases here, yours marked, others shown by handle.
     bases: regionBases.map((b): ScanBase => ({
@@ -1143,6 +1181,9 @@ function inapplicableReason(verb: string, state: PlayerStateView): string {
   if (verb === "attack" || verb === "flee") {
     return "Nothing to fight here — `explore` to find creatures.";
   }
+  if (verb === "repair") {
+    return "You can only repair at a settlement or orbital outpost — find a station and `jump O` to dock, or `jump`/`land` to a settlement region.";
+  }
   if (isEconomyVerb(verb)) {
     return "You can only trade at a settlement or orbital outpost — find one and `jump O` to dock, or `jump`/`land` to a settlement region.";
   }
@@ -1284,6 +1325,8 @@ async function dispatchResolved(
       return handleShipyard(player, seed);
     case "buyship":
       return handleBuyship(player, args);
+    case "repair":
+      return handleRepair(player, args);
     case "loadout":
     case "fit":
       return handleLoadout(player);
@@ -1596,6 +1639,9 @@ async function outpostScanFrame(player: Player, seed: string): Promise<RenderFra
       text("   warp fuel ", "muted"),
       text(`${player.warpFuel}`, "default"),
     ]),
+    // Ship hull condition (Combat-2): the outpost is a trade location, so a
+    // damaged ship can `repair` here (where a combat defeat tows you in disabled).
+    conditionLine(player, true),
     line(text("A station hangs in orbit of the planet — a trade hub.", "default")),
     line([
       text("⌂ ", "success"),
@@ -3739,8 +3785,11 @@ async function handleHunt(player: Player, seed: string, args: string[]): Promise
     return errorFrame("You've already collected that bounty — check back after it rotates.");
   }
 
-  // Snapshot the player's combat profile from their fitted loadout + ship hull.
-  const playerStats = loadoutStats(player.loadout, player.shipId);
+  // Snapshot the player's combat profile from their fitted loadout + ship hull,
+  // scaled by ship CONDITION (Combat-2): a damaged ship enters the fight with
+  // less hull (`effectiveHull` inside `loadoutStats`). Snapshotted once at
+  // engage-start so a mid-fight change can't drift it.
+  const playerStats = loadoutStats(player.loadout, player.shipId, player.shipCondition ?? MAX_SHIP_CONDITION);
   const combat: ShipCombat = {
     bountyKey: bounty.key,
     enemyName: bounty.name,
@@ -3853,10 +3902,12 @@ async function shipCombatVictory(
 
 /**
  * Ship-combat DEFEAT (PvE, NON-PERMANENT — NOT ship destruction): you're
- * "disabled and recovered". Clear the session, recover to the nearest outpost in
- * the current system, fully healed, with a financial penalty (reusing the
- * `distress` machinery — `distressCost` stings but never strands; ship intact).
- * Ship destruction + insurance is Combat-2.
+ * disabled and TOWED to the nearest station (Combat-2 stakes primitive). Clear
+ * the session, drop the ship to the `DISABLED_CONDITION` floor (still flyable),
+ * and recover to the nearest outpost in the current system, fully healed — but
+ * there is NO credit fine now: the REPAIR cost is the stake. A broke pilot's
+ * ship sits disabled-but-flyable, so they can limp out, mine metal, and `repair`.
+ * Ship destruction + insurance is a later Combat-2 piece.
  */
 async function shipCombatDefeat(
   player: Player,
@@ -3865,8 +3916,9 @@ async function shipCombatDefeat(
   log: string[],
 ): Promise<RenderFrame> {
   await world.setShipCombat(player.id, null);
-  const cost = distressCost(player.credits);
-  if (cost > 0) await world.addPlayerCredits(player.id, -cost);
+  // Tow the ship in disabled (no destruction, no credit fine — repair is the cost).
+  const newCondition = conditionAfterDefeat(player.shipCondition ?? MAX_SHIP_CONDITION);
+  await world.setShipCondition(player.id, newCondition);
   const dest = nearestSystemOutpost(player, seed);
   if (dest !== null) {
     await world.setDistressLocation(player.id, dest, MAX_HEALTH);
@@ -3874,19 +3926,19 @@ async function shipCombatDefeat(
     // Defensive fallback (no outpost in-system): heal aboard in place.
     await world.setHealthAndEmbarked(player.id, MAX_HEALTH, true);
   }
-  const remaining = Math.max(0, player.credits - cost);
   const destName = dest !== null ? planetAt(seed, { ...systemOf(player), planet: dest }).name : null;
   const lines: RenderLine[] = [
     ...log.map((l) => line(text(l, "default"))),
     line(text(`Your ship is disabled by the ${combat.enemyName}.`, "danger")),
     line(
       destName
-        ? text(`Emergency services tow you to the station above ${destName}, hull patched and crew revived.`, "default")
-        : text("Emergency services patch your hull and revive your crew.", "default"),
+        ? text(`Emergency services tow your crippled ship to the station above ${destName} and revive the crew.`, "default")
+        : text("Emergency services tow your crippled ship to safety and revive the crew.", "default"),
     ),
     line([
-      text(`Recovery cost you ${cost} cr. `, "muted"),
-      text(`Balance ${remaining} cr. `, "muted"),
+      text(`Hull condition ${newCondition}% — `, "danger"),
+      action("repair", "repair", { style: "link", title: "repair your hull at this station" }),
+      text(" it (credits or mined metal) before you fight again. ", "muted"),
       text(`HP restored to ${MAX_HEALTH}. `, "muted"),
       text("Your ship survives.", "success"),
     ]),
@@ -3944,6 +3996,117 @@ async function handleShipFlee(player: Player, seed: string): Promise<RenderFrame
     [`You fail to break away — the ${combat.enemyName} lands a parting hit.`, ...res.log],
     EXCHANGE_CHOICES,
   );
+}
+
+// ---------------------------------------------------------------------------
+// repair (Combat-2 stakes primitive) — restore ship condition at a trade hub,
+// paid in credits OR a mined metal, partial allowed. Gated to a trade location
+// (applicability `ECONOMY`); the handler does the funds/parsing.
+// ---------------------------------------------------------------------------
+
+/** The mined metal `repair metal` spends — a cheap, broadly-mineable ore (anti-softlock). */
+const REPAIR_METAL_ID = "iron";
+
+/**
+ * `repair [amount|metal] [n]` — restore ship condition toward `MAX_SHIP_CONDITION`
+ * at a trade location.
+ *   - `repair`            → repair as much as your CREDITS afford, toward full.
+ *   - `repair <n>`        → repair n condition points in credits (clamped to
+ *                           affordable + to MAX).
+ *   - `repair metal [n]`  → pay in the mined metal (`iron`) from cargo instead.
+ * Validate funds, then charge atomically (`addPlayerCredits(-)` /
+ * `removeInventory(metal, -)`) and `setShipCondition(+)`. No-op-with-message at
+ * full condition or with zero funds — a disabled ship stays FLYABLE, so a broke
+ * pilot can limp out, mine metal, and come back.
+ */
+async function handleRepair(player: Player, args: string[]): Promise<RenderFrame> {
+  const fresh = (await world.getPlayerById(player.id)) ?? player;
+  const condition = fresh.shipCondition ?? MAX_SHIP_CONDITION;
+  const missing = MAX_SHIP_CONDITION - condition;
+
+  if (missing <= 0) {
+    return frame([line(text("Your ship is in pristine condition (100%) — nothing to repair.", "success"))]);
+  }
+
+  // Mode: `repair metal …` (a prefix of "metal", non-numeric) pays in mined ore;
+  // otherwise credits. The optional point count is the next/first numeric arg.
+  const a0 = args[0]?.trim().toLowerCase();
+  const useMetal = !!a0 && a0.length > 0 && toInt(a0) === null && "metal".startsWith(a0);
+  const amountArg = useMetal ? args[1] : args[0];
+
+  let requested: number | null = null;
+  if (amountArg !== undefined) {
+    requested = toInt(amountArg);
+    if (requested === null || requested <= 0) {
+      return errorFrame("Usage: repair [n]  — n is a positive number of condition points, or `repair metal [n]` to pay in mined Iron Ore.");
+    }
+  }
+
+  // The full-repair cost in BOTH currencies (shown so the player can choose).
+  const fullCredits = repairCreditsFor(missing);
+  const fullMetal = repairMetalFor(missing);
+
+  // Funds on hand for the chosen currency, and the max points they buy.
+  let have: number;
+  if (useMetal) {
+    const stacks = await world.getInventory(player.id);
+    have = stacks.find((s) => s.resourceId === REPAIR_METAL_ID)?.qty ?? 0;
+  } else {
+    have = fresh.credits;
+  }
+  const perPointRate = useMetal ? REPAIR_METAL_PER_POINT : REPAIR_CREDITS_PER_POINT;
+  const maxByFunds = pointsAffordable(have, perPointRate);
+
+  const target = requested ?? missing;
+  const points = Math.min(missing, target, maxByFunds);
+
+  if (points <= 0) {
+    // Zero funds for the chosen currency: a clear, non-destructive message. The
+    // ship stays disabled-but-flyable, so go earn credits / mine metal.
+    if (useMetal) {
+      return errorFrame(
+        `Not enough Iron Ore to repair: a full repair needs ${fullMetal} (you have ${have}). `
+        + "Mine Iron Ore and try `repair metal` again — your ship still flies.",
+      );
+    }
+    return errorFrame(
+      `Not enough credits to repair: a full repair costs ${fullCredits} cr (you have ${have}). `
+      + "Earn credits or try `repair metal` (pay in mined Iron Ore) — your ship still flies.",
+    );
+  }
+
+  const cost = useMetal ? repairMetalFor(points) : repairCreditsFor(points);
+  const newCondition = conditionAfterRepair(condition, points);
+
+  // Atomic: charge, then bump the condition.
+  if (useMetal) {
+    await world.removeInventory(player.id, REPAIR_METAL_ID, cost);
+  } else {
+    await world.addPlayerCredits(player.id, -cost);
+  }
+  await world.setShipCondition(player.id, newCondition);
+
+  const lines: RenderLine[] = [
+    line([
+      text(`Repaired hull ${condition}% → `, "default"),
+      text(`${newCondition}%`, newCondition >= MAX_SHIP_CONDITION ? "success" : "accent"),
+      text(useMetal ? `  (−${cost} Iron Ore)` : `  (−${cost} cr)`, "muted"),
+    ]),
+  ];
+  if (newCondition < MAX_SHIP_CONDITION) {
+    const stillMissing = MAX_SHIP_CONDITION - newCondition;
+    lines.push(
+      line([
+        text(`Still ${stillMissing}% damaged — full repair: `, "muted"),
+        text(`${repairCreditsFor(stillMissing)} cr`, "default"),
+        text(" or ", "muted"),
+        text(`${repairMetalFor(stillMissing)} Iron Ore`, "default"),
+        text(". ", "muted"),
+        action("repair", "repair", { style: "link", title: "repair more" }),
+      ]),
+    );
+  }
+  return frame(lines);
 }
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@
  */
 import { getModule } from "./modules";
 import { shipHull } from "./ships";
+import { effectiveHull, MAX_SHIP_CONDITION } from "./rules";
 import type { WeaponProfile } from "./modules";
 import { factionAt } from "./factions";
 import { makeRng, pick, randInt } from "@/lib/universe/prng";
@@ -66,10 +67,20 @@ export interface ShipCombatStats {
  * field (weapon damage bucketed by `profile`; shield→Σabsorb; evasion→Σevade;
  * ecm→Σjam; targeting→Σlock). An EMPTY loadout yields just the hull (no weapons
  * or defenses — you can fly into a fight unarmed and lose). Pure.
+ *
+ * `condition` (Combat-2 stakes primitive) scales `hullMax` via `effectiveHull`:
+ * a beat-up ship enters a fight with less hull. Defaults to `MAX_SHIP_CONDITION`
+ * (pristine = the bare `shipHull`), so callers that don't track condition — and
+ * the NPC/bounty profiles, which are generated directly — read unchanged. Still
+ * pure (no IO/Date): the condition is passed in at the engage-start boundary.
  */
-export function loadoutStats(loadout: readonly string[], shipId: string): ShipCombatStats {
+export function loadoutStats(
+  loadout: readonly string[],
+  shipId: string,
+  condition: number = MAX_SHIP_CONDITION,
+): ShipCombatStats {
   const s: ShipCombatStats = {
-    hullMax: shipHull(shipId),
+    hullMax: effectiveHull(shipHull(shipId), condition),
     shield: 0,
     evade: 0,
     jam: 0,

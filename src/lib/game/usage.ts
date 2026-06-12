@@ -63,6 +63,7 @@ export const VERBS: string[] = [
   "buy",
   "shipyard",
   "buyship",
+  "repair",
   "loadout",
   "fit",
   "equip",
@@ -298,6 +299,16 @@ export const USAGE: Record<string, UsageDescriptor> = {
   buyship: {
     desc: "buy & swap to another ship at a settlement/outpost (net of your trade-in)",
     slots: [{ name: "id" }],
+  },
+  repair: {
+    desc: "repair your ship's hull condition at a settlement/outpost (pay in credits or mined Iron Ore)",
+    slots: [
+      {
+        name: "amount",
+        optional: true,
+        hint: "a number of condition points (default: as much as you can afford), or `metal` to pay in mined Iron Ore",
+      },
+    ],
   },
   loadout: {
     desc: "show your ship's module slots: what's fitted and what you can equip",
