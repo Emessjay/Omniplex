@@ -289,6 +289,16 @@ but can never permanently strand you (the same anti-softlock spirit as
 `distress`). This confirms async-vs-live keys off online presence, and pins the
 ship-loss safety net for Combat-2.
 
+**→ Answered (owner, 2026-06-11) — combat-logging.** **Disconnecting mid-combat**
+(pulling the plug to dodge a loss) **teleports the player to a safe place but
+levies a SIGNIFICANT financial penalty** — logging off is never a free escape.
+This is distinct from a deliberate in-game `flee` (a tactical disengage with its
+own rules). It bites in the **LIVE** mode (Combat-3, where an opponent is
+actually waiting and disconnection is detectable via the Realtime presence/
+heartbeat layer); in PvE turn-based combat (Combat-1b) the session simply
+persists and resumes on reconnect (no opponent, no exploit), but the session is
+shaped so the live penalty can attach later.
+
 **Resolved (2026-06, build plan).** Ship combat is a **distinct system from
 on-foot wildlife `attack`** (which stays the on-foot melee layer); they may share
 death/notoriety plumbing but not the resolver. Decisions:
