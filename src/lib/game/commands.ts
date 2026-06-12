@@ -55,6 +55,7 @@ import {
   speciesArticle,
   type SystemCoord,
   type PlanetCoord,
+  type RegionCoord,
   type StarPosition,
   type Region,
   type Planet,
@@ -199,6 +200,7 @@ import {
 } from "./combat";
 import type { ShipCombat } from "@/lib/players/types";
 import { getSpecies, minorSpeciesAt, type Species as SapientSpecies } from "./species";
+import { blurbOf } from "./blurbs";
 import {
   cartographyRank,
   nextCartoThreshold,
@@ -696,7 +698,7 @@ async function regionScanFrame(
     landed: player.landed,
     fuel: player.fuel,
     warpFuel: player.warpFuel,
-    encounter: encounterView(player),
+    encounter: encounterView(player, region),
     // Shared-world presence: bases here, yours marked, others shown by handle.
     bases: regionBases.map((b): ScanBase => ({
       handle: b.handle,
@@ -717,13 +719,29 @@ async function regionScanFrame(
  * not fighting). Derives the creature's descriptive label + combat stats from
  * its generated species (cascade tier 5b).
  */
-function encounterView(player: Player): EncounterView | null {
+function encounterView(player: Player, region: Region): EncounterView | null {
   if (!player.encounter) return null;
   const species = player.encounter.species;
   if (!species) return null; // defensive: stale pre-5b row shape
   const stats = speciesCombatStats(species);
+  // The terse label is the inline name; the assembled blurb (creature-blurbs) is
+  // shown as a flavour line below it — omitted (null) when the library falls back
+  // to the label, so nothing is duplicated. Seeded stably from the region coord.
+  const label = speciesLabel(species);
+  const blurb = blurbOf(
+    species,
+    region.biome,
+    region.coord.galaxy,
+    region.coord.arm,
+    region.coord.cluster,
+    region.coord.system,
+    region.coord.planet,
+    region.coord.region,
+    species.archetype,
+  );
   return {
-    name: speciesLabel(species),
+    name: label,
+    blurb: blurb === label ? null : blurb,
     hp: player.encounter.hp,
     maxHp: stats.maxHp,
     hostile: stats.hostile,
@@ -2717,10 +2735,31 @@ function pickSpecies(list: readonly Species[], roll: number): Species | null {
   return list[Math.floor(r * list.length)]!;
 }
 
-/** A descriptive creature label with its indefinite article — "a venomous stalker". */
-function labelWithArticle(species: Species): string {
-  const label = speciesLabel(species);
-  return `${speciesArticle(label)} ${label}`;
+/**
+ * Present a wild creature as a sentence for the surface display (creature-blurbs):
+ * the assembled Omniplex-voice blurb when the static component library can voice
+ * this species, otherwise a sentence-framed `speciesLabel` fallback. Seeded STABLY
+ * per occurrence (region coord + species identity) so re-rendering the same find
+ * or encounter reads byte-identically. The terse `speciesLabel` is still used for
+ * action titles and the mid-combat blow-by-blow (terse contexts).
+ */
+function creatureSentence(species: Species, biome: Biome, coord: RegionCoord): string {
+  const blurb = blurbOf(
+    species,
+    biome,
+    coord.galaxy,
+    coord.arm,
+    coord.cluster,
+    coord.system,
+    coord.planet,
+    coord.region,
+    species.archetype,
+  );
+  // A real assembled blurb is already a capitalized, period-terminated sentence.
+  if (blurb !== speciesLabel(species)) return blurb;
+  // Library can't voice this species yet — frame the terse label as a sentence.
+  const framed = `${speciesArticle(blurb)} ${blurb}.`;
+  return framed.charAt(0).toUpperCase() + framed.slice(1);
 }
 
 /**
@@ -2776,11 +2815,10 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
     const flora = pickSpecies(regionFlora(seed, region.coord), Math.random());
     if (flora) {
       const label = speciesLabel(flora);
+      lines.push(line(text(creatureSentence(flora, biome, region.coord), "accent")));
       lines.push(
         line([
-          text("You find ", "default"),
-          text(label, "accent"),
-          text(` growing across the ${biome}. `, "muted"),
+          text(`It grows across the ${biome}. `, "muted"),
           action("harvest", "harvest", { style: "link", title: `harvest the ${label}` }),
           text(" it.", "muted"),
         ]),
@@ -2797,19 +2835,16 @@ async function handleExplore(player: Player, seed: string): Promise<RenderFrame>
       // Storing the encounter for BOTH hostile and placid fauna gives `attack` a
       // target either way; only hostile creatures are framed as a forced fight.
       await world.setEncounter(player.id, { species: fauna, hp: stats.maxHp });
+      lines.push(
+        line(text(creatureSentence(fauna, biome, region.coord), stats.hostile ? "danger" : "default")),
+      );
       if (stats.hostile) {
         lines.push(
-          line([
-            text(`A hostile ${label}`, "danger"),
-            text(` lunges at you! (HP ${stats.maxHp}, attack ${stats.attack})`, "muted"),
-          ]),
+          line(text(`It lunges at you! (HP ${stats.maxHp}, attack ${stats.attack})`, "muted")),
         );
       } else {
         lines.push(
-          line([
-            text(`You come across ${labelWithArticle(fauna)}`, "default"),
-            text(`. It eyes you warily but doesn't attack. (HP ${stats.maxHp})`, "muted"),
-          ]),
+          line(text(`It eyes you warily but doesn't attack. (HP ${stats.maxHp})`, "muted")),
         );
       }
       lines.push(
@@ -3068,8 +3103,9 @@ async function handleHarvest(
   const mat = getMaterial(drop.materialId);
   await world.addPlayerMaterial(player.id, drop.materialId, drop.qty);
   return frame([
+    line(text(creatureSentence(flora, region.biome, region.coord), "accent")),
     line([
-      text(`You harvest the ${speciesLabel(flora)} — `, "success"),
+      text(`You harvest it — `, "success"),
       text(`+${drop.qty} ${mat.name}`, "accent"),
       text(`. \`embark\` then \`sell\` to cash it in.`, "muted"),
     ]),

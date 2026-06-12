@@ -10,8 +10,14 @@
  */
 
 import type { Atmosphere } from "@/lib/universe/types";
-import { atmosphereDensity, radiationHazardFloor, RAD_HAZARD_FLOOR_MAX } from "@/lib/universe";
+import { atmosphereDensity, radiationHazardFloor, RAD_HAZARD_FLOOR_MAX, speciesLabel } from "@/lib/universe";
 import type { Species } from "@/lib/universe";
+
+// `speciesLabel` is the terse creature label (defined in the universe genome
+// layer). Re-exported here because it is the FALLBACK the creature-blurbs
+// assembler degrades to, and tests/handlers read it alongside the rest of the
+// species/combat model that lives in this module (mirrors `atmosphereDensity`).
+export { speciesLabel };
 
 // `atmosphereDensity` is a physical property of an atmosphere type, so it lives
 // in the (pure) universe layer now. Re-exported here because the fuel/orbital
