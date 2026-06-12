@@ -10,7 +10,7 @@
  */
 
 import type { Atmosphere } from "@/lib/universe/types";
-import { atmosphereDensity, radiationHazardFloor, RAD_HAZARD_FLOOR_MAX, speciesLabel } from "@/lib/universe";
+import { atmosphereDensity, radiationHazardFloor, RAD_HAZARD_FLOOR_MAX, speciesLabel, RADIATION_MAX } from "@/lib/universe";
 import type { Species } from "@/lib/universe";
 
 // `speciesLabel` is the terse creature label (defined in the universe genome
@@ -685,6 +685,144 @@ export function raidOnCooldown(
 ): boolean {
   if (raidedAt === null || raidedAt === undefined || Number.isNaN(raidedAt)) return false;
   return now - raidedAt < cooldownMs;
+}
+
+// ---------------------------------------------------------------------------
+// Ship piracy (Combat-2b) — co-located PvP + the Mercenary Charter. A pirate
+// attacks ANOTHER player's ship (resolved ASYNCHRONOUSLY against their stored
+// snapshot through the same ship-combat resolver/`engage` session a bounty hunt
+// or base raid uses). A WIN loots a capped share of the victim's CARGO (credits
+// are SAFE), disables their ship (`conditionAfterDefeat` — they repair on
+// return), and either CLAIMS their bounty (if they're Wanted — a lawful kill, no
+// heat for you) or earns you ZONE-SCALED piracy notoriety (if they're clean). A
+// LOSS tows the attacker via the ship-repair primitive (`shipCombatDefeat`). A
+// per-victim cooldown stops re-camping. These are the PURE rules: the lawfulness
+// of a zone, the heat from pirating a clean target, the Wanted/bounty predicates,
+// and the cooldown — all deterministic (no `Date`/`Math.random`/IO; the handler
+// injects `now`, the radiation/settlement axis, and resolves the fight). Reuses
+// `raidLoot` for the loot share and `notorietyTier` for the Wanted threshold.
+// ---------------------------------------------------------------------------
+
+/**
+ * Heat a pirate gains for attacking a CLEAN player in a fully-policed zone (the
+ * `lawfulness = 1` ceiling of `piracyNotorietyGain`). Tuned a notch above a base
+ * raid (`RAID_NOTORIETY_GAIN`) — a hub robbery in front of the law is the
+ * loudest illicit act — so a hub pirate climbs the `NOTORIETY_TIERS` ladder
+ * fast, while a lawless-frontier pirate barely registers. Tunable.
+ */
+export const PIRACY_NOTORIETY_BASE = 200;
+
+/**
+ * How long a victim is protected from re-piracy after being robbed — the
+ * per-victim anti-camp cooldown (mirrors `RAID_COOLDOWN_MS`). Six hours. > 0.
+ * Tunable.
+ */
+export const PIRACY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The `NOTORIETY_TIERS` index at/above which a player is **Wanted** — a publicly
+ * claimable bounty anyone may collect lawfully (the Mercenary Charter). Set to
+ * the "Wanted" tier (index 2, `minNotoriety` 400): below it you're clean (no
+ * bounty), at/above it the law has put a price on your head. Tunable, but must
+ * be a valid tier index.
+ */
+export const WANTED_TIER = 2;
+
+/**
+ * Flat credits a Wanted bounty pays before the per-heat scaling — so claiming any
+ * Wanted player is worth the fight, even one just over the threshold. Tunable.
+ */
+export const PIRACY_BOUNTY_BASE = 500;
+
+/**
+ * Bounty credits earned per point of the target's heat (above the Wanted
+ * threshold the bounty rises with how infamous they are). Tunable; small so a
+ * mid-tier Wanted player is a few thousand credits and a galaxy-infamous one is a
+ * serious payday.
+ */
+export const PIRACY_BOUNTY_PER_HEAT = 0.05;
+
+/**
+ * Heat shaved off a Wanted victim when their bounty is collected — justice
+ * served cuts them back down the ladder (not necessarily clean, but lower).
+ * `addNotoriety` clamps at 0, so a small Wanted bounty can't drive heat negative.
+ * Tunable.
+ */
+export const PIRACY_WANTED_HEAT_CUT = 400;
+
+/**
+ * Faction reputation a bounty-hunter earns for lawfully claiming a Wanted
+ * player's bounty (the Mercenary Charter) — awarded with the local hub faction.
+ * Modest + flat (a clean civic act, not a contract delivery). Tunable.
+ */
+export const PIRACY_BOUNTY_REP = 5;
+
+/**
+ * Fraction of EACH cargo stack a successful piracy transfers — a CAPPED share
+ * (reuses `raidLoot`), well below the whole stack, so a victim is never stripped
+ * bare in one hit. In (0, 1). Tunable (matches `RAID_LOOT_FRACTION`).
+ */
+export const PIRACY_LOOT_FRACTION = 0.25;
+
+/**
+ * How LAWFUL a zone is, in `[0, 1]` — the policing intensity that scales piracy
+ * heat. A HUB (a settlement region or an orbital outpost) is fully policed (~1)
+ * regardless of where it sits. Otherwise lawfulness falls with galactic
+ * `radiation`: the low-radiation RIM is lawful, the high-radiation CORE is
+ * lawless (~0). Pure & monotonic: higher radiation ⇒ lower lawfulness (non-hub).
+ * The handler supplies `radiation = galacticRadiation(cluster)` and `isHub =
+ * hasSettlement(region) || atOutpost`.
+ */
+export function lawfulnessScore(radiation: number, isHub: boolean): number {
+  if (isHub) return 1;
+  const rad = Math.max(0, Math.min(RADIATION_MAX, radiation));
+  return 1 - rad / RADIATION_MAX;
+}
+
+/**
+ * Heat a pirate gains for robbing a CLEAN player, scaled UP by the zone's
+ * `lawfulness` ∈ [0,1]: pirating in a fully-policed hub costs the full `base`
+ * heat, a lawless frontier costs little or nothing. A non-negative integer,
+ * monotonically NON-DECREASING in lawfulness (and 0 at lawfulness 0). Pure.
+ */
+export function piracyNotorietyGain(base: number, lawfulness: number): number {
+  const law = Math.max(0, Math.min(1, lawfulness));
+  return Math.round(Math.max(0, base) * law);
+}
+
+/**
+ * Whether a player at `notoriety` heat is **Wanted** — a claimable bounty:
+ * `notorietyTier(notoriety) >= WANTED_TIER`. Clean players (tier below the
+ * threshold) are NOT lawful targets; Wanted ones may be attacked lawfully for
+ * their bounty. Pure; monotonic non-decreasing in heat.
+ */
+export function isWantedPlayer(notoriety: number): boolean {
+  return notorietyTier(notoriety) >= WANTED_TIER;
+}
+
+/**
+ * The claimable bounty (credits) on a player at `notoriety` heat: 0 for a clean
+ * (not-Wanted) player, otherwise `PIRACY_BOUNTY_BASE` plus a per-heat scaling, so
+ * it is positive at/above the Wanted threshold and rises with how infamous the
+ * target is (monotonic non-decreasing in heat above the threshold). Pure integer.
+ */
+export function playerBounty(notoriety: number): number {
+  if (!isWantedPlayer(notoriety)) return 0;
+  return PIRACY_BOUNTY_BASE + Math.round(Math.max(0, notoriety) * PIRACY_BOUNTY_PER_HEAT);
+}
+
+/**
+ * Whether a victim is still on their post-piracy cooldown at `now` (within the
+ * last `cooldownMs` of being robbed) — the per-victim anti-camp guard. Reuses the
+ * `raidOnCooldown` predicate shape; a victim never pirated (`lastPiratedAt`
+ * null/NaN) is never on cooldown. Pure — `now`/`lastPiratedAt` (ms) injected.
+ */
+export function piracyOnCooldown(
+  lastPiratedAt: number | null,
+  now: number,
+  cooldownMs: number = PIRACY_COOLDOWN_MS,
+): boolean {
+  return raidOnCooldown(lastPiratedAt, now, cooldownMs);
 }
 
 // ---------------------------------------------------------------------------

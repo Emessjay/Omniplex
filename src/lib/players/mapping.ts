@@ -35,6 +35,8 @@ export function rowToPlayer(row: PlayerRow): Player {
     combat: row.combat ?? null,
     notoriety: row.notoriety,
     notorietyUpdatedAt: row.notoriety_updated_at,
+    // Defensive default for old rows / fixtures predating the column.
+    piratedAt: row.pirated_at ?? null,
     createdAt: row.created_at,
   };
 }

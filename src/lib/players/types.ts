@@ -130,6 +130,13 @@ export interface Player {
    * `markets.updated_at` — the apply-on-read / stamp-on-write discipline.
    */
   notorietyUpdatedAt: string;
+  /**
+   * When this player was last successfully PIRATED (Combat-2b), as an ISO
+   * timestamp, or `null` if never. Drives the per-victim piracy cooldown
+   * (`piracyOnCooldown`) that stops a pirate from camping an offline victim.
+   * Additive (old rows / fixtures read `null`).
+   */
+  piratedAt: string | null;
   /** ISO timestamp the row was created. */
   createdAt: string;
 }
@@ -164,6 +171,22 @@ export interface ShipCombat {
     regionKey: string;
     /** The base owner's public handle, for the combat log + aftermath. */
     ownerHandle: string;
+  };
+  /**
+   * When set, this session is a ship PIRACY (Combat-2b) against a co-located
+   * player: the enemy is the VICTIM's stored snapshot (`loadoutStats(victim
+   * loadout, ship, condition)`). The outcome branch (`handleEngage`) reads this
+   * to loot the victim's cargo + disable their ship + log it + (Wanted ⇒ claim
+   * the bounty lawfully | clean ⇒ take on zone-scaled heat) on a WIN, or tow the
+   * attacker on a LOSS. `bountyKey` is empty and rewards are 0 (the loot/bounty
+   * is applied directly). The flag the win path needs (Wanted vs clean) is read
+   * LIVE from the victim's row at resolution — not snapshotted here.
+   */
+  piracy?: {
+    /** The victim player's row id (their cargo / ship / heat / cooldown live here). */
+    victimId: string;
+    /** The victim's public handle, for the combat log + aftermath + the bounty claim. */
+    victimHandle: string;
   };
   /** Player ship profile, snapshotted from `loadoutStats` at engage-start. */
   player: ShipCombatStats;
@@ -234,5 +257,7 @@ export interface PlayerRow {
   notoriety: number;
   /** Decay clock for notoriety (timestamptz). */
   notoriety_updated_at: string;
+  /** When last pirated (Combat-2b); null = never. Drives the piracy cooldown. */
+  pirated_at: string | null;
   created_at: string;
 }

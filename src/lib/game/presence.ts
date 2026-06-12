@@ -68,6 +68,16 @@ export interface PresentPlayer {
   ship: string;
   /** Where they are relative to the planet: "in orbit" vs "on the surface". */
   state: string;
+  /**
+   * Whether this player is WANTED (Combat-2b) — a publicly claimable bounty
+   * (`isWantedPlayer`). Optional + public-safe: being Wanted is public news (the
+   * law has posted a price), unlike the raw heat number, which is NOT exposed.
+   * Absent (undefined) when the source didn't carry it (e.g. the Realtime
+   * roster, which only tracks the handle/ship/state).
+   */
+  wanted?: boolean;
+  /** The claimable bounty (credits) if Wanted (`playerBounty`); 0/absent if clean. */
+  bounty?: number;
 }
 
 /**

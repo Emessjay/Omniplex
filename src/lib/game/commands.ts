@@ -134,6 +134,16 @@ import {
   RAID_LOOT_FRACTION,
   RAID_COOLDOWN_MS,
   RAID_NOTORIETY_GAIN,
+  lawfulnessScore,
+  piracyNotorietyGain,
+  isWantedPlayer,
+  playerBounty,
+  piracyOnCooldown,
+  PIRACY_NOTORIETY_BASE,
+  PIRACY_COOLDOWN_MS,
+  PIRACY_LOOT_FRACTION,
+  PIRACY_WANTED_HEAT_CUT,
+  PIRACY_BOUNTY_REP,
 } from "./rules";
 import {
   UPGRADES,
@@ -567,6 +577,26 @@ function locOf(player: Player): PlanetCoord {
   };
 }
 
+/**
+ * The presence query for the player's CURRENT location (the full six-tier tuple
+ * + the manifold), excluding self. `player.region` already encodes the three
+ * co-location cases the scan frames key on (−1 outpost, 0 orbit, ≥0 surface), so
+ * this is the single source for "who is here with me" — manifold-partitioned by
+ * construction (Combat-2b co-located piracy + the `pirate` arg domain).
+ */
+function presenceQueryOf(player: Player): world.PresenceQuery {
+  return {
+    id: player.id,
+    manifold: player.manifold,
+    galaxy: player.galaxy,
+    arm: player.arm,
+    cluster: player.cluster,
+    system: player.system,
+    planet: player.planet,
+    region: player.region,
+  };
+}
+
 /** The player's current system coordinate (location minus planet/region). */
 function systemOf(player: Player): SystemCoord {
   return {
@@ -920,6 +950,8 @@ interface ArgDomainContext {
   engageCandidates: string[] | null;
   /** Handles of OTHER players' bases in this region — the `raid` arg domain. */
   raidCandidates: string[] | null;
+  /** Handles of co-located OTHER players — the `pirate` arg domain (Combat-2b). */
+  pirateCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -937,6 +969,7 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   unequipCandidates: null,
   engageCandidates: null,
   raidCandidates: null,
+  pirateCandidates: null,
 };
 
 /**
@@ -1076,6 +1109,12 @@ async function loadArgDomainContext(
       raidCandidates: here.filter((b) => b.ownerId !== player.id).map((b) => b.handle),
     };
   }
+  if (verb === "pirate") {
+    // The piracy targets are the OTHER players co-located with you (by handle, so
+    // `pirate ali` abbreviates). Manifold-scoped already (`playersHere`).
+    const present = await world.playersHere(presenceQueryOf(player));
+    return { ...EMPTY_ARG_CONTEXT, pirateCandidates: present.map((p) => p.handle) };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -1118,6 +1157,9 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // `raid`'s domain: the handles of OTHER players' bases in this region, so
       // `raid <handle>` abbreviates (Combat-2a).
       if (verb === "raid" && argIndex === 0) return ctx.raidCandidates;
+      // `pirate`'s domain: the handles of OTHER players co-located with you, so
+      // `pirate <handle>` abbreviates (Combat-2b).
+      if (verb === "pirate" && argIndex === 0) return ctx.pirateCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants, the
       // blast-furnace smelting tier, the crop-farming crop farm, and the
@@ -1360,6 +1402,8 @@ async function dispatchResolved(
       return handleHunt(player, seed, args);
     case "raid":
       return handleRaid(player, seed, args);
+    case "pirate":
+      return handlePirate(player, args);
     case "inventory":
       return handleInventory(player, seed);
     case "upgrades":
@@ -3917,16 +3961,19 @@ async function handleEngage(player: Player, seed: string, args: string[]): Promi
   const res = resolveExchange(state, choice as ExchangeChoice, npc, [Math.random(), Math.random()]);
 
   if (res.outcome === "victory") {
-    // A raid (Combat-2a) loots the base + cooldowns it + raises heat; a bounty
-    // hunt pays credits/rep. The session's `raid` marker picks the branch.
+    // The session marker picks the win branch: a PIRACY (Combat-2b) loots the
+    // victim's cargo + disables their ship + (claims their bounty | takes heat);
+    // a RAID (Combat-2a) loots the base + cooldowns it + raises heat; a bounty
+    // hunt pays credits/rep.
+    if (combat.piracy) return piracyVictory(player, seed, combat, res.log);
     return combat.raid
       ? raidVictory(player, combat, res.log)
       : shipCombatVictory(player, combat, res.log);
   }
   if (res.outcome === "defeat") {
-    // Either way a loss tows the raider via the ship-repair primitive (the base
-    // is unharmed on a raid loss — no loot, no cooldown). `shipCombatDefeat`
-    // already does the tow; the raid frame just notes the base shrugged it off.
+    // Any loss tows YOU via the ship-repair primitive — the victim/base is
+    // unharmed on a piracy/raid loss (no loot, no cooldown). `shipCombatDefeat`
+    // does the tow; the result frame notes the target shrugged you off.
     return shipCombatDefeat(player, seed, combat, res.log);
   }
   const next: ShipCombat = { ...combat, ...res.state };
@@ -4255,6 +4302,220 @@ async function raidVictory(player: Player, combat: ShipCombat, log: string[]): P
   ];
   if (free <= 0 && share.length > taken.length) {
     lines.push(line(text("Your hold filled — some loot was left behind.", "muted")));
+  }
+  return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// pirate (Combat-2b) — co-located player piracy + the Mercenary Charter. Attack
+// a CO-LOCATED player's ship, resolved ASYNCHRONOUSLY against their stored
+// snapshot (`loadoutStats(victim loadout, ship, condition)`) through the SAME
+// ship-combat resolver/`engage` session a bounty hunt or base raid uses. A WIN
+// loots a capped share of their CARGO (credits are SAFE), disables their ship in
+// place (they repair on return — NOT relocated), logs the robbery, and either
+// CLAIMS their bounty (if Wanted — lawful, no heat) or earns ZONE-SCALED piracy
+// notoriety (if clean). A LOSS tows the attacker via the shared `shipCombatDefeat`
+// (ship-repair). A per-victim cooldown stops re-camping. NO credit theft, no
+// permanent ship loss. Reuses presence + engage + ship-repair + notoriety +
+// base-raids' loot/aftermath/cooldown wholesale — no fork.
+// ---------------------------------------------------------------------------
+
+/**
+ * `pirate [handle]` — open a piracy attack on a co-located player's ship. Valid
+ * out of any combat (the applicability gate) when a target player shares your
+ * location and isn't on piracy-cooldown. Multiple co-located players ⇒ `pirate
+ * <handle>` selects; one ⇒ bare `pirate`. Co-located ⇒ manifold-partitioned
+ * automatically (`presenceQueryOf`). Starts a ship-combat session (marked
+ * `piracy`) whose enemy is the victim's stored `loadoutStats` snapshot; the
+ * existing `engage` plays it out.
+ */
+async function handlePirate(player: Player, args: string[]): Promise<RenderFrame> {
+  if (player.combat) {
+    return errorFrame("You're already in a ship fight — finish it (`engage`) or `flee` first.");
+  }
+  const here = presenceQueryOf(player);
+  const present = await world.playersHere(here);
+  if (present.length === 0) {
+    return errorFrame("No one here to attack — `scan` or `here` to see who's around.");
+  }
+
+  // Select the target: by handle when given (exact or unique prefix), else the
+  // sole co-located player; ambiguous when several and no handle.
+  let targetHandle = present[0]!.handle;
+  const wanted = args[0]?.toLowerCase();
+  if (wanted) {
+    const matches = present.filter((p) => p.handle.toLowerCase().startsWith(wanted));
+    const exact = present.find((p) => p.handle.toLowerCase() === wanted);
+    if (exact) targetHandle = exact.handle;
+    else if (matches.length === 1) targetHandle = matches[0]!.handle;
+    else if (matches.length === 0) return errorFrame(`No one called "${args[0]}" is here — \`scan\` to see who is.`);
+    else return errorFrame(`Several match "${args[0]}" — \`pirate <handle>\` (${matches.map((p) => p.handle).join(", ")}).`);
+  } else if (present.length > 1) {
+    return errorFrame(`Several players here — \`pirate <handle>\` (${present.map((p) => p.handle).join(", ")}).`);
+  }
+
+  // Resolve the target's FULL authoritative row (re-validates co-location +
+  // excludes self server-side, so a stale handle that moved away returns null).
+  const target = await world.coLocatedPlayerByHandle(here, targetHandle);
+  if (!target) return errorFrame(`${targetHandle} is no longer here.`);
+  if (target.id === player.id) return errorFrame("You can't pirate yourself.");
+
+  // Per-victim cooldown: a recently-robbed victim is protected (anti-camp), so an
+  // offline victim can't be farmed on a loop.
+  const piratedAtMs = target.piratedAt ? Date.parse(target.piratedAt) : null;
+  if (piracyOnCooldown(Number.isNaN(piratedAtMs ?? NaN) ? null : piratedAtMs, Date.now(), PIRACY_COOLDOWN_MS)) {
+    return errorFrame(`${target.handle}'s ship was hit recently — it's still limping. Leave them be for now.`);
+  }
+
+  // The enemy = the victim's STORED snapshot (loadout + ship + condition), so the
+  // fight works whether they're online or not. Snapshot the attacker too (scaled
+  // by ship condition, like `hunt`/`raid`).
+  const enemy = loadoutStats(target.loadout, target.shipId, target.shipCondition ?? MAX_SHIP_CONDITION);
+  const playerStats = loadoutStats(player.loadout, player.shipId, player.shipCondition ?? MAX_SHIP_CONDITION);
+  // Is the victim a lawful (Wanted) target? Read their LIVE decayed heat.
+  const victimHeat = await world.getNotoriety(target.id);
+  const victimWanted = isWantedPlayer(victimHeat);
+  const enemyName = victimWanted
+    ? `${target.handle}'s ship (WANTED — ${playerBounty(victimHeat)} cr bounty)`
+    : `${target.handle}'s ship`;
+  const combat: ShipCombat = {
+    bountyKey: "",
+    enemyName,
+    piracy: { victimId: target.id, victimHandle: target.handle },
+    player: playerStats,
+    enemy,
+    playerHull: playerStats.hullMax,
+    playerShield: playerStats.shield,
+    enemyHull: enemy.hullMax,
+    enemyShield: enemy.shield,
+    range: null,
+    phase: "approach",
+    rewardCredits: 0,
+    rewardRep: 0,
+  };
+  await world.setShipCombat(player.id, combat);
+  return shipCombatFrame(
+    combat,
+    [
+      victimWanted
+        ? `You move to intercept ${target.handle} — a WANTED ship. Claiming the bounty is lawful (the Mercenary Charter).`
+        : `You move to pirate ${target.handle}'s ship.`,
+      enemy.weapons.burst + enemy.weapons.sustained + enemy.weapons.missile === 0
+        ? "Their ship reads unarmed. Close to brawl (`close`), hold (`hold`), or open the range (`evade`)."
+        : "Close to brawl (`close`), hold the line (`hold`), or open the range (`evade`).",
+    ],
+    APPROACH_CHOICES,
+  );
+}
+
+/**
+ * Piracy WIN (the victim's snapshot reached 0 hull): loot a capped share of their
+ * CARGO (`raidLoot`, RESOURCES only — credits are SAFE) into your hold (bounded
+ * by free space), disable their ship IN PLACE (`conditionAfterDefeat` — they
+ * repair on return, NOT relocated), log the robbery (`recordPiracy`) + set their
+ * per-victim cooldown. Then the Mercenary Charter: a WANTED victim pays their
+ * bounty + local rep + cuts their heat (LAWFUL — no notoriety for you); a CLEAN
+ * victim earns you ZONE-SCALED piracy notoriety (policed hub = big, lawless core
+ * = little). NO credit theft, no permanent ship loss.
+ */
+async function piracyVictory(
+  player: Player,
+  seed: string,
+  combat: ShipCombat,
+  log: string[],
+): Promise<RenderFrame> {
+  const piracy = combat.piracy!;
+  await world.setShipCombat(player.id, null);
+
+  // Re-read the victim fresh (their cargo/heat/condition may have moved since
+  // engage-start). A vanished victim still clears the session + reports cleanly.
+  const victim = await world.getPlayerById(piracy.victimId);
+
+  const taken: { itemId: string; qty: number }[] = [];
+  if (victim) {
+    // Capped CARGO share, RESOURCES only (credits are SAFE, never stolen), then
+    // bounded by the attacker's free hold (overflow left). Mirror of raidVictory.
+    const victimCargo = await world.getInventory(victim.id);
+    const share = raidLoot(
+      victimCargo.map((s) => ({ itemId: s.resourceId, qty: s.qty })),
+      PIRACY_LOOT_FRACTION,
+    ).filter((s) => RAIDABLE_RESOURCE_IDS.has(s.itemId));
+    const used = await world.getCargoUsed(player.id);
+    let free = Math.max(0, player.cargoCap - used);
+    for (const s of share) {
+      if (free <= 0) break;
+      const qty = Math.min(s.qty, free);
+      if (qty <= 0) continue;
+      await world.removeInventory(victim.id, s.itemId, qty);
+      await world.addInventory(player.id, s.itemId, qty);
+      taken.push({ itemId: s.itemId, qty });
+      free -= qty;
+    }
+
+    // Disable the victim's ship IN PLACE — do NOT relocate an offline victim;
+    // their ship sits disabled-but-flyable where they left it and they `repair`
+    // on return. Aftermath log (read-own) + the per-victim cooldown.
+    const newVictimCondition = conditionAfterDefeat(victim.shipCondition ?? MAX_SHIP_CONDITION);
+    await world.setShipCondition(victim.id, newVictimCondition);
+    const nowIso = new Date(Date.now()).toISOString();
+    await world.setPiratedAt(victim.id, nowIso);
+    await world.recordPiracy(victim.id, player.handle, taken);
+  }
+
+  const haul =
+    taken.length > 0
+      ? taken.map((t) => `${t.qty} ${storageItemName(t.itemId)}`).join(", ")
+      : "nothing their hold could spare";
+  const lines: RenderLine[] = [
+    ...log.map((l) => line(text(l, "default"))),
+    line(text(`You cripple ${piracy.victimHandle}'s ship and board it.`, "success")),
+    line([
+      text("Looted: ", "muted"),
+      text(haul, "accent"),
+      text(". Their credits stayed locked in the vault.", "muted"),
+    ]),
+  ];
+
+  if (victim) {
+    // The Mercenary Charter: Wanted ⇒ a lawful bounty claim; clean ⇒ piracy heat.
+    const victimHeat = await world.getNotoriety(victim.id);
+    if (isWantedPlayer(victimHeat)) {
+      const bounty = playerBounty(victimHeat);
+      const newBalance = await world.addPlayerCredits(player.id, bounty);
+      const factionId = factionAt(seed, hubKeyOf(player));
+      const newRep = await world.addReputation(player.id, factionId, PIRACY_BOUNTY_REP);
+      // Justice served — cut the (now-defeated) Wanted player's heat back down.
+      await world.addNotoriety(victim.id, -PIRACY_WANTED_HEAT_CUT);
+      lines.push(
+        line([
+          text(`Bounty claimed: +${bounty} cr `, "accent"),
+          text(`(balance ${newBalance} cr).  `, "muted"),
+          text(`+${PIRACY_BOUNTY_REP} rep `, "success"),
+          text(`(${getFaction(factionId).name}: ${newRep}).`, "muted"),
+        ]),
+        line(text(`${piracy.victimHandle} was WANTED — a lawful kill under the Mercenary Charter. No heat for you.`, "muted")),
+      );
+    } else {
+      // CLEAN victim ⇒ ZONE-SCALED piracy notoriety (heavy in a policed hub,
+      // light on the lawless coreward frontier). The radiation/settlement axis.
+      const isHub = atTradeLocation(player, seed);
+      const lawfulness = lawfulnessScore(galacticRadiation(player.cluster), isHub);
+      const gain = piracyNotorietyGain(PIRACY_NOTORIETY_BASE, lawfulness);
+      const newHeat = await world.addNotoriety(player.id, gain);
+      const tierTitle = NOTORIETY_TIERS[notorietyTier(newHeat)]?.title ?? "Clean";
+      const zone = isHub
+        ? "a policed hub"
+        : lawfulness > 0.5
+          ? "the patrolled rim"
+          : "lawless coreward space";
+      lines.push(
+        line([
+          text(`Notoriety +${gain} `, "danger"),
+          text(`(${tierTitle}, heat ${newHeat}) — you struck in ${zone}. `, "muted"),
+          action("wanted", "wanted", { style: "link", title: "your heat + the law's response" }),
+        ]),
+      );
+    }
   }
   return frame(lines);
 }
@@ -7340,6 +7601,22 @@ async function handleWanted(player: Player): Promise<RenderFrame> {
   const heat = await world.getNotoriety(player.id);
   const tier = notorietyTier(heat);
   const next = nextNotorietyThreshold(heat);
+  // Combat-2b aftermath: piracies committed against you while you were away
+  // (read-own). Surfaced on the threat screen so a robbed player learns who hit
+  // them + what they lost. The loot is the cargo taken (credits are never stolen).
+  const now = Date.now();
+  const raids = await world.recentPiracyOn(player.id);
+  const piracyAftermath = raids.map((r) => {
+    const t = Date.parse(r.attackedAt);
+    return {
+      attackerHandle: r.attackerHandle,
+      loot:
+        r.loot.length > 0
+          ? r.loot.map((l) => `${l.qty} ${storageItemName(l.itemId)}`).join(", ")
+          : "nothing it could carry",
+      ago: agoLabel(Number.isNaN(t) ? 0 : Math.max(0, now - t)),
+    };
+  });
   return renderWanted({
     heat,
     tier,
@@ -7348,6 +7625,7 @@ async function handleWanted(player: Player): Promise<RenderFrame> {
     lawResponse: lawResponseFor(tier),
     nextThreshold: next,
     toNext: next === null ? null : next - heat,
+    piracyAftermath,
   });
 }
 

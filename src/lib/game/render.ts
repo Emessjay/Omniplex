@@ -30,13 +30,33 @@ export function presenceLines(present: readonly PresentPlayer[]): RenderLine[] {
   return [line(text("Players here:", "heading")), ...present.map(presenceRow)];
 }
 
-/** One co-located-player row: `• Handle (Ship, state)`. Public-safe. */
+/**
+ * One co-located-player row: `• Handle (Ship, state) [⚑ WANTED — N cr] · attack`.
+ * Public-safe. Combat-2b: every co-located OTHER player is attackable (a
+ * clickable `pirate <handle>` action), and a WANTED one is flagged with its
+ * claimable bounty (a lawful target — the Mercenary Charter). The raw heat
+ * number is never shown; only the public Wanted status + bounty.
+ */
 function presenceRow(p: PresentPlayer): RenderLine {
-  return line([
+  const spans: RenderSpan[] = [
     text("  • ", "muted"),
     text(p.handle, "accent"),
     text(` (${p.ship}, ${p.state})`, "muted"),
-  ]);
+  ];
+  if (p.wanted) {
+    spans.push(
+      text("  ⚑ WANTED", "danger"),
+      text(p.bounty ? ` — bounty ${p.bounty} cr` : "", "accent"),
+    );
+  }
+  spans.push(
+    text("  · ", "muted"),
+    action("attack", `pirate ${p.handle}`, {
+      style: "link",
+      title: p.wanted ? `claim ${p.handle}'s bounty (lawful)` : `pirate ${p.handle}'s ship`,
+    }),
+  );
+  return line(spans);
 }
 
 /** Display labels for exploration site types (Keystone 3; UI text only). */
@@ -2305,6 +2325,13 @@ export interface WantedView {
   nextThreshold: number | null;
   /** Heat still to gain to reach the next tier, or null at the top. */
   toNext: number | null;
+  /**
+   * Recent ship piracies committed AGAINST this player (Combat-2b, newest first,
+   * read-own `piracy_log`) — the aftermath notice they see on their next session:
+   * who robbed them, what was taken (pre-formatted), and how long ago. Empty /
+   * absent when they haven't been pirated.
+   */
+  piracyAftermath?: { attackerHandle: string; loot: string; ago: string }[];
 }
 
 /**
@@ -2343,6 +2370,27 @@ export function renderWanted(view: WantedView): RenderFrame {
     );
   }
   lines.push(line(text("Heat cools over time when you lie low.", "muted")));
+  // Combat-2b — the aftermath notice: piracies committed against YOU while you
+  // were away. Surfaced here (the threat screen) so a robbed player learns who
+  // hit them, what they lost, and that their ship was disabled (repair to fly
+  // strong again). Read-own, so this is private to the victim.
+  const raids = view.piracyAftermath ?? [];
+  if (raids.length > 0) {
+    lines.push(line(text("Raided in transit:", "heading")));
+    for (const r of raids) {
+      lines.push(
+        line([
+          text("  ⚠ ", "danger"),
+          text(r.attackerHandle, "accent"),
+          text(` pirated your ship ${r.ago} — lost `, "muted"),
+          text(r.loot, "danger"),
+          text(", ship disabled. ", "muted"),
+          action("repair", "repair", { style: "link", title: "repair your hull at a settlement/outpost" }),
+          text(" it.", "muted"),
+        ]),
+      );
+    }
+  }
   return frame(lines);
 }
 

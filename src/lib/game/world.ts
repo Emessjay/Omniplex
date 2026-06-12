@@ -29,6 +29,8 @@ import {
   supplyTowardBaseline,
   UPGRADE_SUPPLY_BASELINE,
   PART_SUPPLY_BASELINE,
+  isWantedPlayer,
+  playerBounty,
 } from "./rules";
 import { isPartId } from "./parts";
 import { presentPlayerView, type PresentPlayer } from "./presence";
@@ -1737,9 +1739,12 @@ export interface PresenceQuery {
  */
 export async function playersHere(loc: PresenceQuery): Promise<PresentPlayer[]> {
   const db = getServerClient();
+  // Also read each player's decayed heat so the view can carry the PUBLIC-safe
+  // Wanted flag + claimable bounty (Combat-2b) — the raw heat number stays
+  // internal (never returned), only the derived public status surfaces.
   const { data, error } = await db
     .from("players")
-    .select("handle, ship_id, embarked, landed")
+    .select("handle, ship_id, embarked, landed, notoriety, notoriety_updated_at")
     .eq("manifold", loc.manifold)
     .eq("galaxy", loc.galaxy)
     .eq("arm", loc.arm)
@@ -1750,19 +1755,119 @@ export async function playersHere(loc: PresenceQuery): Promise<PresentPlayer[]> 
     .neq("id", loc.id)
     .order("handle", { ascending: true });
   if (error) throw error;
+  const now = Date.now();
   return (data ?? []).map((row) => {
     const r = row as {
       handle: string;
       ship_id: string;
       embarked: boolean;
       landed: boolean;
+      notoriety: number;
+      notoriety_updated_at: string;
     };
-    return presentPlayerView({
-      handle: r.handle,
-      shipId: r.ship_id,
-      embarked: r.embarked,
-      landed: r.landed,
-    });
+    const t = Date.parse(r.notoriety_updated_at);
+    const heat = notorietyDecayed(r.notoriety ?? 0, Number.isNaN(t) ? 0 : Math.max(0, now - t));
+    return {
+      ...presentPlayerView({
+        handle: r.handle,
+        shipId: r.ship_id,
+        embarked: r.embarked,
+        landed: r.landed,
+      }),
+      wanted: isWantedPlayer(heat),
+      bounty: playerBounty(heat),
+    };
+  });
+}
+
+/**
+ * The FULL authoritative row of a co-located player by handle (Combat-2b piracy
+ * targeting) — service-role, so it carries the loadout / ship / condition /
+ * cargo / heat the attack snapshot needs (NOT the public-safe presence view).
+ * Re-applies the SAME `sameLocation` filters as `playersHere` (incl. the
+ * manifold partition) plus `.neq("id", self)`, so it can ONLY resolve a player
+ * who genuinely shares your location right now (you can't pirate yourself, and a
+ * stale handle that has since moved away returns `null`). Handle match is
+ * case-insensitive exact.
+ */
+export async function coLocatedPlayerByHandle(
+  loc: PresenceQuery,
+  handle: string,
+): Promise<Player | null> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("players")
+    .select("*")
+    .eq("manifold", loc.manifold)
+    .eq("galaxy", loc.galaxy)
+    .eq("arm", loc.arm)
+    .eq("cluster", loc.cluster)
+    .eq("system", loc.system)
+    .eq("planet", loc.planet)
+    .eq("region", loc.region)
+    .neq("id", loc.id)
+    .ilike("handle", handle)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToPlayer(data as PlayerRow) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Ship piracy (Combat-2b) — the per-victim cooldown clock + the aftermath log.
+// A successful piracy stamps `players.pirated_at` (drives `piracyOnCooldown`)
+// and inserts a `piracy_log` row (READ-OWN — the victim sees who robbed them on
+// their next session; unlike the public `base_raids`, a robbery in transit is
+// private to the victim). Service-role writes.
+// ---------------------------------------------------------------------------
+
+/** A logged ship piracy: who robbed this player, what they took, and when. */
+export interface PiracyRecord {
+  attackerHandle: string;
+  loot: { itemId: string; qty: number }[];
+  attackedAt: string;
+}
+
+/**
+ * Stamp a victim's `pirated_at` (a successful piracy sets `now`; clearing passes
+ * null). Drives the per-victim piracy cooldown (`piracyOnCooldown`). Read-
+ * compute-write is unnecessary — a single column set, like `setBaseRaidedAt`.
+ */
+export async function setPiratedAt(playerId: string, piratedAt: string | null): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db.from("players").update({ pirated_at: piratedAt }).eq("id", playerId);
+  if (error) throw error;
+}
+
+/** Append an aftermath log row for a successful piracy. Service-role write. */
+export async function recordPiracy(
+  victimId: string,
+  attackerHandle: string,
+  loot: { itemId: string; qty: number }[],
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("piracy_log")
+    .insert({ victim_id: victimId, attacker_handle: attackerHandle, loot });
+  if (error) throw error;
+}
+
+/** The most recent piracies committed against a player (newest first) — their aftermath view. */
+export async function recentPiracyOn(victimId: string, limit = 5): Promise<PiracyRecord[]> {
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("piracy_log")
+    .select("attacker_handle, loot, attacked_at")
+    .eq("victim_id", victimId)
+    .order("attacked_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const r = row as { attacker_handle: string; loot: unknown; attacked_at: string };
+    return {
+      attackerHandle: r.attacker_handle,
+      loot: Array.isArray(r.loot) ? (r.loot as { itemId: string; qty: number }[]) : [],
+      attackedAt: r.attacked_at,
+    };
   });
 }
 

@@ -126,6 +126,18 @@ const HUB_COMBAT = new Set(["hunt"]);
 const SURFACE_COMBAT = new Set(["raid"]);
 
 /**
+ * Co-located-PvP combat action (Combat-2b) — `pirate <handle>` attacks a
+ * co-located player's ship (resolved against their stored snapshot). Co-location
+ * can happen ANYWHERE (a surface region, a planet's orbit, an outpost), so unlike
+ * `raid` (surface-gated) there is no useful coarse LOCATION gate — it's usable in
+ * any state out of combat, and the handler does the fine checks (a co-located
+ * target is actually here, isn't you, isn't on piracy-cooldown). This mirrors how
+ * `move`/`salvage` are coarsely applicable and reject in the handler when the
+ * finer precondition isn't met. Combat still overrides (can't pirate mid-fight).
+ */
+const CO_LOCATED_COMBAT = new Set(["pirate"]);
+
+/**
  * Economy commands — applicable iff at a TRADE LOCATION (a settlement region or
  * the orbital outpost) and out of combat, REGARDLESS of embark state (P12a). You
  * can only `buy`/`sell` where there's actually a market to trade with; this
@@ -270,6 +282,9 @@ export function isApplicable(verb: string, state: PlayerStateView): boolean {
   // `raid` attacks a base in the surface region you're on — usable while landed
   // (aboard) or on foot, but not while orbiting/at the outpost (no region).
   if (SURFACE_COMBAT.has(verb)) return state.landed;
+  // `pirate` attacks a co-located player's ship — co-location can be anywhere, so
+  // it's usable in any out-of-combat state; the handler checks a target is here.
+  if (CO_LOCATED_COMBAT.has(verb)) return true;
   if (ANYTIME_OUT_OF_COMBAT.has(verb)) return true;
   // Salvage: orbital derelict (orbiting) OR surface site (on foot) — anything
   // but landed-aboard. Checked before the embark split because it spans states.

@@ -418,3 +418,85 @@ Load-bearing decisions extracted from `CLAUDE.md`, in build order.
   permanent base/structure destruction, razing/claiming a base, raiding non-base
   targets, defenses beyond turret/shield, auto-retaliation/alarms beyond the log,
   live co-located raids (Combat-3).
+
+### Load-bearing decisions from `ship-piracy` (Combat-2b — co-located player piracy + the Mercenary Charter)
+
+- **Completes Combat-2: a pirate attacks a CO-LOCATED player's ship, resolved
+  ASYNCHRONOUSLY against that player's STORED snapshot through the same combat
+  resolver/`engage` session a bounty hunt (1b) or base raid (2a) uses** — so it
+  works whether the victim is online or not (live duels are Combat-3). A WIN loots
+  a capped share of the victim's CARGO (credits SAFE), disables their ship IN
+  PLACE, logs the robbery, and either CLAIMS their bounty (Wanted ⇒ lawful, no
+  heat) or earns ZONE-SCALED piracy notoriety (clean). A LOSS tows the attacker via
+  the SHARED `shipCombatDefeat` (ship-repair). NO credit theft, no permanent ship
+  loss. Reuses presence + `engage` + ship-repair + notoriety + base-raids'
+  loot/aftermath/cooldown + the radiation/settlement axis WHOLESALE — no fork.
+- **NEW verb `pirate [handle]`** (`commands.ts` `handlePirate`), NOT an overload of
+  wildlife `attack` (which stays combat-only + untouched, so its tests/applicability
+  hold). Its own applicability bucket `CO_LOCATED_COMBAT` in `applicability.ts`:
+  applicable in ANY out-of-combat state (co-location can be surface/orbit/outpost,
+  so there's no useful coarse LOCATION gate — like `move`/`salvage`, the handler
+  does the fine checks: a co-located target is here, isn't you, isn't on
+  piracy-cooldown). Bare `pirate` targets the sole co-located player / errors with
+  the list when several; `pirate <handle>` selects (exact or unique prefix). Arg-0
+  domain = co-located OTHER players' handles (`ctx.pirateCandidates` via
+  `world.playersHere(presenceQueryOf(player))` — manifold-scoped already).
+  Registered in `VERBS`/`USAGE`/`applicability`; help-parity held. The scan/`here`
+  presence rows (`presenceRow` in `render.ts`) carry a clickable `pirate <handle>`
+  action + a **WANTED** flag (+ bounty) on Wanted players.
+- **The snapshot is the victim's STORED row** — `world.coLocatedPlayerByHandle(loc,
+  handle)` reads the full authoritative row (service-role; re-applies the SAME
+  `sameLocation`/manifold filters + `neq self` as `playersHere`, so it can ONLY
+  resolve a player who genuinely shares your location right now). The enemy =
+  `loadoutStats(victim.loadout, victim.shipId, victim.shipCondition)`. Starts a
+  `players.combat` session with a `piracy: {victimId, victimHandle}` marker (jsonb,
+  no migration — joins the `raid` marker on `ShipCombat`); the existing `engage`
+  plays it out, and its outcome branch reads the marker.
+- **Pure rules** (`rules.ts`, seeded `ship-piracy.test.ts`; no `Date`/`Math.random`/
+  IO — radiation/`isHub`/`now` injected): `lawfulnessScore(radiation, isHub) →
+  [0,1]` (hub ⇒ 1; else `1 − radiation/RADIATION_MAX` — low-rad RIM lawful,
+  high-rad CORE lawless); `piracyNotorietyGain(base, lawfulness) → int`
+  (`round(base × lawfulness)`, monotonic UP in lawfulness, 0 at lawless);
+  `isWantedPlayer(n) = notorietyTier(n) >= WANTED_TIER` (the **Wanted** tier, index
+  2); `playerBounty(n)` (0 below WANTED_TIER, else `PIRACY_BOUNTY_BASE + round(n ×
+  PIRACY_BOUNTY_PER_HEAT)` — positive + rising with heat); `piracyOnCooldown(
+  lastPiratedAt, now, cooldownMs)` (reuses `raidOnCooldown`'s shape). Constants
+  `PIRACY_NOTORIETY_BASE`(200), `PIRACY_COOLDOWN_MS`(6h), `WANTED_TIER`(2),
+  `PIRACY_LOOT_FRACTION`(0.25, reuses `raidLoot`), `PIRACY_BOUNTY_BASE`/
+  `PIRACY_BOUNTY_PER_HEAT`/`PIRACY_WANTED_HEAT_CUT`/`PIRACY_BOUNTY_REP`.
+- **Win path `piracyVictory`** (`commands.ts`): re-reads the victim fresh, loots
+  `raidLoot(victimCargo, PIRACY_LOOT_FRACTION)` RESOURCES-only (filtered by
+  `RAIDABLE_RESOURCE_IDS`, credits never touched) bounded by attacker free cargo
+  (`removeInventory(victim)`/`addInventory(attacker)`); `setShipCondition(victim,
+  conditionAfterDefeat(...))` — **disabled IN PLACE, the offline victim is NOT
+  relocated** (they `repair` on return); `setPiratedAt(victim, now)` (cooldown) +
+  `recordPiracy(victim, attackerHandle, taken)` (aftermath). Then the **Mercenary
+  Charter** off the victim's LIVE decayed heat (`getNotoriety`): Wanted ⇒
+  `addPlayerCredits(playerBounty)` + `addReputation(localFaction, PIRACY_BOUNTY_REP)`
+  + `addNotoriety(victim, −PIRACY_WANTED_HEAT_CUT)` (justice; clamps ≥0) + NO heat
+  for the attacker; clean ⇒ `addNotoriety(attacker, piracyNotorietyGain(
+  PIRACY_NOTORIETY_BASE, lawfulnessScore(galacticRadiation(player.cluster),
+  atTradeLocation(player))))`. **Loss** = the shared `shipCombatDefeat` tow (victim
+  untouched — no loot, no cooldown).
+- **Persistence** (migration `20260612080000_ship-piracy.sql`, forward-only/
+  idempotent, **purely ADDITIVE** — one nullable column + one new table, prod-safe
+  like notoriety/ship-repair/base-raids): `players.pirated_at timestamptz` (nullable;
+  set on a WIN, drives the per-victim cooldown) on `Player.piratedAt`/`PlayerRow`/
+  `rowToPlayer` (defensive `?? null`); `public.piracy_log` (`id, victim_id → players
+  cascade, attacker_handle text, loot jsonb, attacked_at timestamptz default now()`,
+  index on `victim_id`). **RLS READ-OWN** (the VICTIM reads attacks on themselves —
+  `victim_id in (select id from players where user_id = auth.uid())`; UNLIKE the
+  public `base_raids` — a robbery in transit is private to the victim); service-role
+  writes. `world.ts`: `setPiratedAt`/`recordPiracy`/`recentPiracyOn`/
+  `coLocatedPlayerByHandle`; `playersHere` extended to carry the PUBLIC-safe
+  `wanted`/`bounty` flags (raw heat stays internal).
+- **Display**: victim aftermath surfaces on the `wanted` screen
+  (`renderWanted`/`WantedView.piracyAftermath` via `recentPiracyOn` — "⚠ <handle>
+  pirated your ship <ago> — lost <items>, ship disabled, `repair` it"); the attacker
+  sees the haul + (bounty+rep | new heat tier + the policed/lawless zone). Wanted
+  players flagged + a `pirate <handle>` action on every co-located presence row.
+- **Combat-3** (live co-located duels on the 3b Realtime layer + the combat-logging
+  penalty) and active **NPC law patrols** that initiate fights (heat surfaces as a
+  claimable bounty for now) build on this. Out of scope here: stealing credits/
+  modules/ship, permanent ship loss, formal letters-of-marque issuance (Wanted-status
+  IS the lawful-target signal), faction-war/military ops (Combat-4).

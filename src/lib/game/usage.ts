@@ -48,6 +48,7 @@ export const VERBS: string[] = [
   "bounties",
   "hunt",
   "raid",
+  "pirate",
   "inventory",
   "upgrades",
   "craft",
@@ -227,6 +228,10 @@ export const USAGE: Record<string, UsageDescriptor> = {
   raid: {
     desc: "raid another player's base in this region — fight its defenses for a share of its silo",
     slots: [{ name: "handle", optional: true, hint: "the owner's handle (when several bases are here)" }],
+  },
+  pirate: {
+    desc: "attack a co-located player's ship — loot their cargo, or claim their bounty if they're Wanted",
+    slots: [{ name: "handle", optional: true, hint: "a co-located player's handle; see `scan`/`here` (when several are here)" }],
   },
   inventory: { desc: "show cargo, credits, fuel and status", slots: [] },
   upgrades: {
