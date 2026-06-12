@@ -9,6 +9,7 @@
  */
 
 import type { Species } from "@/lib/universe";
+import type { ShipCombatStats, Range } from "@/lib/game/combat";
 
 /** A player row, mapped to camelCase. Mirrors `public.players`. */
 export interface Player {
@@ -89,8 +90,52 @@ export interface Player {
    * to `[]` (nothing fitted).
    */
   loadout: string[];
+  /**
+   * Active SHIP-combat session (Combat-1b): `null` when not in a ship fight,
+   * otherwise the full `ShipCombat` snapshot (the engaged bounty + both ships'
+   * profiles + live hull/shield + phase). Distinct from `encounter` (the on-foot
+   * wildlife fight). Persists across reconnects so a fight resumes where it left
+   * off; cleared on victory / defeat / a successful `flee`.
+   */
+  combat: ShipCombat | null;
   /** ISO timestamp the row was created. */
   createdAt: string;
+}
+
+/**
+ * The persisted ship-combat session (`players.combat` jsonb). A superset of the
+ * pure resolver's `ShipCombatState` (the core hull/shield/phase fields) plus the
+ * bounty identity + pending rewards, so a fight survives a reload and an outcome
+ * knows what to pay. Both ships' `ShipCombatStats` are SNAPSHOTTED at engage-
+ * start, so a mid-fight refit/ship-change can't drift the stats. No persistent
+ * hull damage BETWEEN fights — each engagement starts both sides at full
+ * `hullMax`/`shield`.
+ */
+export interface ShipCombat {
+  /** The bounty being hunted — the `completed_bounties` key (no double-collect). */
+  bountyKey: string;
+  /** Flavor name of the enemy ship/pilot, for the combat log. */
+  enemyName: string;
+  /** Hub faction that posted the bounty — rep is awarded to it on victory. */
+  factionId?: string;
+  /** Player ship profile, snapshotted from `loadoutStats` at engage-start. */
+  player: ShipCombatStats;
+  /** Enemy ship profile (the bounty's tier-scaled NPC). */
+  enemy: ShipCombatStats;
+  playerHull: number;
+  playerShield: number;
+  enemyHull: number;
+  enemyShield: number;
+  /** Current range — `null` until the approach phase resolves. */
+  range: Range | null;
+  phase: "approach" | "exchange";
+  /** Pending next-round subsystem debuffs (fractions in `[0, 1)`). */
+  playerWeaponDebuff?: number;
+  playerEvadeDebuff?: number;
+  enemyWeaponDebuff?: number;
+  enemyEvadeDebuff?: number;
+  rewardCredits: number;
+  rewardRep: number;
 }
 
 /**
@@ -133,5 +178,7 @@ export interface PlayerRow {
   charted: number;
   /** Fitted module-id list (jsonb array). Defaults to `[]`. */
   loadout: string[] | null;
+  /** Active ship-combat session (jsonb). `null` when not in a ship fight. */
+  combat: ShipCombat | null;
   created_at: string;
 }

@@ -44,6 +44,9 @@ export const VERBS: string[] = [
   "slaughter",
   "attack",
   "flee",
+  "engage",
+  "bounties",
+  "hunt",
   "inventory",
   "upgrades",
   "craft",
@@ -205,6 +208,18 @@ export const USAGE: Record<string, UsageDescriptor> = {
   flee: {
     desc: "break off combat and slip away",
     slots: [],
+  },
+  engage: {
+    desc: "take your maneuver in a ship fight (approach: close/hold/evade; exchange: weapons/engines/hull/alpha)",
+    slots: [{ name: "choice" }],
+  },
+  bounties: {
+    desc: "list the PvE bounties (wanted ships) posted at this trade hub",
+    slots: [],
+  },
+  hunt: {
+    desc: "engage a posted bounty's wanted ship in combat (at a trade hub)",
+    slots: [{ name: "n", hint: "a bounty # from `bounties`" }],
   },
   inventory: { desc: "show cargo, credits, fuel and status", slots: [] },
   upgrades: {

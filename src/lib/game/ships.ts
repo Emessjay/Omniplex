@@ -37,6 +37,14 @@ export interface Ship {
   /** Cargo-hold capacity this ship grants (becomes `players.cargo_cap`). */
   cargoCap: number;
   /**
+   * Base hull integrity (Combat-1b) — the ship's structural HP in ship-to-ship
+   * combat, before any module bonuses. ASCENDING with class (a bigger hull on a
+   * bigger ship), so a heavier ship can soak more punishment. `loadoutStats`
+   * uses this as `hullMax`; the resolver tracks `playerHull` down from it. A
+   * combat profile, NOT cargo — distinct from `cargoCap`.
+   */
+  hull: number;
+  /**
    * Module-slot count (Combat-1a): how many ship modules this hull can fit at
    * once. Strictly ascending with cargo/price (shuttle 2 → hauler 5). Any module
    * type fits any slot (shallow model — no per-slot-type counts). The fitting
@@ -75,6 +83,7 @@ export const SHIPS: readonly Ship[] = [
     name: "Shuttle",
     cargoCap: 50,
     slots: 2,
+    hull: 80,
     price: 0,
     blurb: "The standard-issue starter hull. Cramped, but it's yours and it flies.",
   },
@@ -83,6 +92,7 @@ export const SHIPS: readonly Ship[] = [
     name: "Courier",
     cargoCap: 150,
     slots: 3,
+    hull: 140,
     price: 6_000,
     blurb: "A nimble light hauler — triple the hold for your first real trade runs.",
     // ≈ 3,580 cr of parts (< 6,000 buy price).
@@ -93,6 +103,7 @@ export const SHIPS: readonly Ship[] = [
     name: "Freighter",
     cargoCap: 500,
     slots: 4,
+    hull: 320,
     price: 50_000,
     blurb: "A proper cargo vessel. Bulk minerals, big contract deliveries.",
     // ≈ 26,450 cr of parts + ingots (< 50,000 buy price).
@@ -109,6 +120,7 @@ export const SHIPS: readonly Ship[] = [
     name: "Hauler",
     cargoCap: 1_500,
     slots: 5,
+    hull: 600,
     price: 250_000,
     blurb: "An industrial leviathan. The endgame hold — and the endgame price.",
     // ≈ 121,920 cr of parts + ingots (< 250,000 buy price).
@@ -154,6 +166,11 @@ export function shipCargoCap(id: string): number {
 /** A ship's module-slot count (Combat-1a). Throws on unknown id. */
 export function shipSlots(id: string): number {
   return getShip(id).slots;
+}
+
+/** A ship's base hull integrity for ship combat (Combat-1b). Throws on unknown id. */
+export function shipHull(id: string): number {
+  return getShip(id).hull;
 }
 
 /**

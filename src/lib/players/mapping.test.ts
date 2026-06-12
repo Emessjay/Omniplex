@@ -24,6 +24,7 @@ describe("rowToPlayer", () => {
     encounter: null,
     charted: 0,
     loadout: [],
+    combat: null,
     created_at: "2026-06-07T00:00:00.000Z",
   };
 
@@ -49,6 +50,7 @@ describe("rowToPlayer", () => {
       encounter: null,
       charted: 0,
       loadout: [],
+      combat: null,
       createdAt: "2026-06-07T00:00:00.000Z",
     });
   });

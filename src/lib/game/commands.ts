@@ -182,6 +182,22 @@ import {
   rivalRepPenalty,
   repPriceDiscount,
 } from "./factions";
+import {
+  loadoutStats,
+  resolveApproach,
+  resolveExchange,
+  npcApproach,
+  npcExchange,
+  bountiesAt,
+  BOUNTY_ROTATION_MS,
+  APPROACH_CHOICES,
+  EXCHANGE_CHOICES,
+  type ApproachChoice,
+  type ExchangeChoice,
+  type ShipCombatState,
+  type ShipCombatStats,
+} from "./combat";
+import type { ShipCombat } from "@/lib/players/types";
 import { getSpecies, minorSpeciesAt, type Species as SapientSpecies } from "./species";
 import {
   cartographyRank,
@@ -235,6 +251,8 @@ import {
   renderWho,
   renderStanding,
   renderContracts,
+  renderBounties,
+  renderShipCombat,
   renderCartography,
   renderGuide,
   renderPresence,
@@ -252,6 +270,7 @@ import {
   type PlantHint,
   type HerdSummary,
   type RanchHint,
+  type BountyEntry,
 } from "./render";
 import { groupTradeCandidates, creditLabel, type TradeCategory } from "./trade-help";
 import { nextStep, type GuideSnapshot } from "./advisor";
@@ -781,6 +800,8 @@ interface ArgDomainContext {
   equipCandidates: string[] | null;
   /** Currently-fitted module ids — the `unequip` arg domain. */
   unequipCandidates: string[] | null;
+  /** The current ship-combat phase's choices — the `engage` arg domain. */
+  engageCandidates: string[] | null;
 }
 
 const EMPTY_ARG_CONTEXT: ArgDomainContext = {
@@ -796,6 +817,7 @@ const EMPTY_ARG_CONTEXT: ArgDomainContext = {
   buyshipCandidates: null,
   equipCandidates: null,
   unequipCandidates: null,
+  engageCandidates: null,
 };
 
 /**
@@ -910,6 +932,18 @@ async function loadArgDomainContext(
     // the loadout. No DB read needed (the loadout rides on the player row).
     return { ...EMPTY_ARG_CONTEXT, unequipCandidates: [...new Set(player.loadout)] };
   }
+  if (verb === "engage") {
+    // The valid maneuvers depend on the CURRENT ship-combat phase (read off the
+    // session that rides on the player row): approach choices before the range is
+    // set, exchange choices once fighting. No session ⇒ no candidates (the
+    // applicability gate rejects `engage` out of a fight anyway).
+    const choices = player.combat
+      ? player.combat.phase === "approach"
+        ? [...APPROACH_CHOICES]
+        : [...EXCHANGE_CHOICES]
+      : [];
+    return { ...EMPTY_ARG_CONTEXT, engageCandidates: choices };
+  }
   return EMPTY_ARG_CONTEXT;
 }
 
@@ -945,6 +979,10 @@ function buildResolveSpec(ctx: ArgDomainContext): ResolveLineSpec {
       // copy). `unequip`'s domain: the modules currently fitted (Combat-1a).
       if (verb === "equip" && argIndex === 0) return ctx.equipCandidates;
       if (verb === "unequip" && argIndex === 0) return ctx.unequipCandidates;
+      // `engage`'s domain: the current ship-combat phase's choices (Combat-1b),
+      // so `engage cl` → `engage close` (approach) / `engage we` → `engage
+      // weapons` (exchange). The `hunt` arg (a bounty #) is opaque/numeric.
+      if (verb === "engage" && argIndex === 0) return ctx.engageCandidates;
       // `build`'s structure domain: the base itself plus the in-base structures
       // (P8a silos/excavators, P8b production lines, P13 power plants, the
       // blast-furnace smelting tier, the crop-farming crop farm, and the
@@ -1044,6 +1082,7 @@ function playerState(player: Player, seed: string): PlayerStateView {
     embarked: player.embarked,
     landed: player.landed,
     inCombat: player.encounter != null,
+    inShipCombat: player.combat != null,
     atTradeLocation: atTradeLocation(player, seed),
   };
 }
@@ -1056,8 +1095,17 @@ function playerState(player: Player, seed: string): PlayerStateView {
  * toggles; finally the embark-state split.
  */
 function inapplicableReason(verb: string, state: PlayerStateView): string {
+  if (state.inShipCombat) {
+    return "You're in a ship fight — `engage <choice>` to take your maneuver, or `flee` to break off.";
+  }
   if (state.inCombat) {
     return "You're in combat — `attack`, `flee`, or `eat` your way out.";
+  }
+  if (verb === "engage") {
+    return "You're not in a ship fight — `hunt` a bounty at a trade hub first.";
+  }
+  if (verb === "hunt") {
+    return "You can only take a bounty at a settlement or orbital outpost — find a hub and check `bounties`.";
   }
   if (verb === "attack" || verb === "flee") {
     return "Nothing to fight here — `explore` to find creatures.";
@@ -1165,7 +1213,13 @@ async function dispatchResolved(
     case "attack":
       return handleAttack(player);
     case "flee":
-      return handleFlee(player);
+      return handleFlee(player, seed);
+    case "engage":
+      return handleEngage(player, seed, args);
+    case "bounties":
+      return handleBounties(player, seed);
+    case "hunt":
+      return handleHunt(player, seed, args);
     case "inventory":
       return handleInventory(player, seed);
     case "upgrades":
@@ -1259,6 +1313,8 @@ function emptyDomainNote(verb: string): string {
       return "no modules to fit — `produce` one at a base, or `unequip` to free a slot";
     case "unequip":
       return "nothing fitted — `equip` a module first";
+    case "engage":
+      return "you're not in a ship fight — `hunt` a bounty at a hub first";
     default:
       return "nothing available right now";
   }
@@ -3499,10 +3555,13 @@ async function handleAttack(player: Player): Promise<RenderFrame> {
 }
 
 /**
- * `flee` — break off the active encounter and clear it. Gentle: no parting hit.
- * Errors helpfully when you're not in combat.
+ * `flee` — break off the active fight. Spans BOTH combat kinds: a ship-combat
+ * disengage (Combat-1b — evade/range-weighted, with a parting exchange on
+ * failure) takes precedence when in a ship fight, otherwise the gentle on-foot
+ * wildlife break-off. Errors helpfully when you're not in any combat.
  */
-async function handleFlee(player: Player): Promise<RenderFrame> {
+async function handleFlee(player: Player, seed: string): Promise<RenderFrame> {
+  if (player.combat) return handleShipFlee(player, seed);
   const enc = player.encounter;
   if (!enc) {
     return errorFrame("You're not in combat. `explore` to find creatures.");
@@ -3515,6 +3574,322 @@ async function handleFlee(player: Player): Promise<RenderFrame> {
       text(label ? ` from the ${label}.` : ".", "muted"),
     ]),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Ship combat (Combat-1b) — bounties / hunt / engage / ship-flee. The PURE
+// resolver lives in `combat.ts`; these handlers supply the random rolls + the
+// NPC choice via `Math.random()` (the `combatRound`/`contractsAt` pattern),
+// persist the session via `world.setShipCombat`, and render each phase. PvE
+// defeat is NON-PERMANENT (disabled & recovered to safety, no ship loss).
+// ---------------------------------------------------------------------------
+
+/** The current bounty-board rotation bucket (the only place `Date.now()` enters). */
+function currentBountyBucket(): number {
+  return Math.floor(Date.now() / BOUNTY_ROTATION_MS);
+}
+
+/** The player's rank tier with the faction controlling their current hub. */
+async function hubRankTier(player: Player, factionId: string): Promise<number> {
+  const reps = await world.getReputation(player.id);
+  const rep = reps.find((r) => r.factionId === factionId)?.rep ?? 0;
+  return rankFor(rep).tier;
+}
+
+/** A short one-line summary of an enemy ship profile for the bounty board. */
+function bountyEnemySummary(s: ShipCombatStats): string {
+  const w = s.weapons;
+  const dom =
+    w.burst >= w.sustained && w.burst >= w.missile
+      ? "burst"
+      : w.missile >= w.sustained && w.missile >= w.burst
+        ? "missile"
+        : "sustained";
+  const parts = [`hull ${s.hullMax}`, `${dom} weapons`];
+  if (s.shield > 0) parts.push(`shield ${s.shield}`);
+  if (s.evade > 0) parts.push(`evade ${s.evade}`);
+  return parts.join(" · ");
+}
+
+/** Build the live ship-combat frame from a session + this phase's log + choices. */
+function shipCombatFrame(
+  combat: ShipCombat,
+  log: string[],
+  choices: readonly string[],
+): RenderFrame {
+  return renderShipCombat({
+    enemyName: combat.enemyName,
+    phase: combat.phase,
+    range: combat.range,
+    playerHull: combat.playerHull,
+    playerHullMax: combat.player.hullMax,
+    playerShield: combat.playerShield,
+    enemyHull: combat.enemyHull,
+    enemyHullMax: combat.enemy.hullMax,
+    enemyShield: combat.enemyShield,
+    log,
+    choices: [...choices],
+    lowPlayerHull: combat.playerHull <= combat.player.hullMax * 0.3,
+  });
+}
+
+/**
+ * `bounties` — the PvE wanted-ship board at this hub (Combat-1b). Informational:
+ * at a trade hub it lists the faction's posted bounties (tier, enemy summary,
+ * reward, huntable/collected); off-hub a clear note. Mirror of `handleContracts`.
+ */
+async function handleBounties(player: Player, seed: string): Promise<RenderFrame> {
+  if (!atTradeLocation(player, seed)) {
+    return renderBounties({ atHub: false });
+  }
+  const hubKey = hubKeyOf(player);
+  const factionId = factionAt(seed, hubKey);
+  const faction = getFaction(factionId);
+  const rankTier = await hubRankTier(player, factionId);
+  const bounties = bountiesAt(seed, hubKey, currentBountyBucket(), rankTier);
+  const completed = await world.getCompletedBountyKeys(player.id, bounties.map((b) => b.key));
+  const entries: BountyEntry[] = bounties.map((b, i) => ({
+    index: i + 1,
+    name: b.name,
+    tier: b.tier,
+    enemySummary: bountyEnemySummary(b.enemy),
+    rewardCredits: b.rewardCredits,
+    rewardRep: b.rewardRep,
+    state: completed.has(b.key) ? "completed" : "huntable",
+  }));
+  return renderBounties({ atHub: true, factionName: faction.name, bounties: entries });
+}
+
+/**
+ * `hunt <n>` — engage the n-th bounty's wanted ship (Combat-1b). Hub-gated +
+ * out-of-all-combat (the applicability gate). Validates a real current-bucket
+ * bounty not already collected, snapshots `loadoutStats` as the player profile,
+ * builds the session vs the bounty's enemy, persists it, and enters the approach
+ * phase. Mirror of `handleFulfill`'s validate-then-act shape.
+ */
+async function handleHunt(player: Player, seed: string, args: string[]): Promise<RenderFrame> {
+  const n = toInt(args[0]);
+  if (n === null || n < 1) {
+    return errorFrame("Usage: hunt <n>  — n is a bounty # from `bounties`.");
+  }
+  const hubKey = hubKeyOf(player);
+  const factionId = factionAt(seed, hubKey);
+  const rankTier = await hubRankTier(player, factionId);
+  const bounties = bountiesAt(seed, hubKey, currentBountyBucket(), rankTier);
+  const bounty = bounties[n - 1];
+  if (!bounty) {
+    return errorFrame(`No bounty #${n} here — see \`bounties\`.`);
+  }
+  const done = await world.getCompletedBountyKeys(player.id, [bounty.key]);
+  if (done.has(bounty.key)) {
+    return errorFrame("You've already collected that bounty — check back after it rotates.");
+  }
+
+  // Snapshot the player's combat profile from their fitted loadout + ship hull.
+  const playerStats = loadoutStats(player.loadout, player.shipId);
+  const combat: ShipCombat = {
+    bountyKey: bounty.key,
+    enemyName: bounty.name,
+    factionId: bounty.factionId,
+    player: playerStats,
+    enemy: bounty.enemy,
+    playerHull: playerStats.hullMax,
+    playerShield: playerStats.shield,
+    enemyHull: bounty.enemy.hullMax,
+    enemyShield: bounty.enemy.shield,
+    range: null,
+    phase: "approach",
+    rewardCredits: bounty.rewardCredits,
+    rewardRep: bounty.rewardRep,
+  };
+  await world.setShipCombat(player.id, combat);
+  return shipCombatFrame(
+    combat,
+    [
+      `You engage the ${bounty.name} (tier ${bounty.tier}).`,
+      "Close to brawl (`close`), hold the line (`hold`), or open the range (`evade`).",
+    ],
+    APPROACH_CHOICES,
+  );
+}
+
+/**
+ * `engage <choice>` — take ONE phase of the active ship fight (Combat-1b). The
+ * choice domain is the current phase's (`approach` → close/hold/evade;
+ * `exchange` → weapons/engines/hull/alpha). Resolves the player's choice + the
+ * seeded NPC choice (via `Math.random()` rolls through the pure resolver),
+ * persists the new state, and renders the phase log + the next choices — or the
+ * victory/defeat outcome.
+ */
+async function handleEngage(player: Player, seed: string, args: string[]): Promise<RenderFrame> {
+  const combat = player.combat;
+  if (!combat) {
+    return errorFrame("You're not in a ship fight — `hunt` a bounty at a trade hub first.");
+  }
+  const choice = args[0];
+
+  if (combat.phase === "approach") {
+    if (!choice || !APPROACH_CHOICES.includes(choice as ApproachChoice)) {
+      return errorFrame(`Choose your approach: ${APPROACH_CHOICES.join(" / ")}.`);
+    }
+    const npc = npcApproach(combat.enemy, combat.player, Math.random());
+    const res = resolveApproach(choice as ApproachChoice, npc, [Math.random()]);
+    const next: ShipCombat = { ...combat, range: res.range, phase: "exchange" };
+    await world.setShipCombat(player.id, next);
+    return shipCombatFrame(next, res.log, EXCHANGE_CHOICES);
+  }
+
+  // Exchange phase.
+  if (!choice || !EXCHANGE_CHOICES.includes(choice as ExchangeChoice)) {
+    return errorFrame(`Choose your maneuver: ${EXCHANGE_CHOICES.join(" / ")}.`);
+  }
+  const state: ShipCombatState = combat;
+  const npc = npcExchange(state, Math.random());
+  const res = resolveExchange(state, choice as ExchangeChoice, npc, [Math.random(), Math.random()]);
+
+  if (res.outcome === "victory") {
+    return shipCombatVictory(player, combat, res.log);
+  }
+  if (res.outcome === "defeat") {
+    return shipCombatDefeat(player, seed, combat, res.log);
+  }
+  const next: ShipCombat = { ...combat, ...res.state };
+  await world.setShipCombat(player.id, next);
+  return shipCombatFrame(next, res.log, EXCHANGE_CHOICES);
+}
+
+/**
+ * Ship-combat VICTORY: clear the session, award the bounty's credits + (if any)
+ * faction rep, and mark it collected (`completed_bounties` PK blocks a double-
+ * collect). Mirror of `handleFulfill`'s reward path.
+ */
+async function shipCombatVictory(
+  player: Player,
+  combat: ShipCombat,
+  log: string[],
+): Promise<RenderFrame> {
+  await world.setShipCombat(player.id, null);
+  const newBalance = await world.addPlayerCredits(player.id, combat.rewardCredits);
+  let newRep: number | undefined;
+  let factionName: string | undefined;
+  if (combat.factionId) {
+    newRep = await world.addReputation(player.id, combat.factionId, combat.rewardRep);
+    factionName = getFaction(combat.factionId).name;
+  }
+  await world.markBountyComplete(player.id, combat.bountyKey);
+
+  const lines: RenderLine[] = [
+    ...log.map((l) => line(text(l, "default"))),
+    line(text(`You destroy the ${combat.enemyName}!`, "success")),
+    line([
+      text(`+${combat.rewardCredits} cr `, "accent"),
+      text(`(balance ${newBalance} cr)`, "muted"),
+    ]),
+  ];
+  if (newRep !== undefined && factionName) {
+    lines.push(
+      line([
+        text(`+${combat.rewardRep} rep `, "success"),
+        text(`(${factionName}: ${newRep})`, "muted"),
+      ]),
+    );
+  }
+  return frame(lines);
+}
+
+/**
+ * Ship-combat DEFEAT (PvE, NON-PERMANENT — NOT ship destruction): you're
+ * "disabled and recovered". Clear the session, recover to the nearest outpost in
+ * the current system, fully healed, with a financial penalty (reusing the
+ * `distress` machinery — `distressCost` stings but never strands; ship intact).
+ * Ship destruction + insurance is Combat-2.
+ */
+async function shipCombatDefeat(
+  player: Player,
+  seed: string,
+  combat: ShipCombat,
+  log: string[],
+): Promise<RenderFrame> {
+  await world.setShipCombat(player.id, null);
+  const cost = distressCost(player.credits);
+  if (cost > 0) await world.addPlayerCredits(player.id, -cost);
+  const dest = nearestSystemOutpost(player, seed);
+  if (dest !== null) {
+    await world.setDistressLocation(player.id, dest, MAX_HEALTH);
+  } else {
+    // Defensive fallback (no outpost in-system): heal aboard in place.
+    await world.setHealthAndEmbarked(player.id, MAX_HEALTH, true);
+  }
+  const remaining = Math.max(0, player.credits - cost);
+  const destName = dest !== null ? planetAt(seed, { ...systemOf(player), planet: dest }).name : null;
+  const lines: RenderLine[] = [
+    ...log.map((l) => line(text(l, "default"))),
+    line(text(`Your ship is disabled by the ${combat.enemyName}.`, "danger")),
+    line(
+      destName
+        ? text(`Emergency services tow you to the station above ${destName}, hull patched and crew revived.`, "default")
+        : text("Emergency services patch your hull and revive your crew.", "default"),
+    ),
+    line([
+      text(`Recovery cost you ${cost} cr. `, "muted"),
+      text(`Balance ${remaining} cr. `, "muted"),
+      text(`HP restored to ${MAX_HEALTH}. `, "muted"),
+      text("Your ship survives.", "success"),
+    ]),
+  ];
+  return frame(lines);
+}
+
+/**
+ * Ship-combat FLEE (Combat-1b) — a deliberate disengage. Success is evade/range-
+ * weighted (a seeded roll); on success the session clears (you escape, no reward,
+ * position unchanged), on failure the enemy lands a parting exchange (which can
+ * disable you → recovery). Distinct from the future combat-logging penalty.
+ */
+async function handleShipFlee(player: Player, seed: string): Promise<RenderFrame> {
+  const combat = player.combat!;
+  // Escape odds: a base chance, improved by your evade and a longer range.
+  const rangeBonus = combat.range === "long" ? 0.3 : combat.range === "mid" ? 0.15 : 0;
+  const evadeBonus = Math.min(0.3, combat.player.evade * 0.01);
+  const escapeChance = Math.min(0.95, 0.4 + rangeBonus + evadeBonus);
+  if (Math.random() < escapeChance) {
+    await world.setShipCombat(player.id, null);
+    return frame([
+      line([
+        text("You burn hard and break contact", "success"),
+        text(` with the ${combat.enemyName}.`, "muted"),
+      ]),
+    ]);
+  }
+
+  // Failed escape: the enemy gets a free parting exchange (you don't fire back).
+  const state: ShipCombatState = combat;
+  const npc = npcExchange(state, Math.random());
+  // Player "skips" their shot — pass a no-op hull choice with zeroed weapons by
+  // routing a passive player (hull choice, but the player still resolves with
+  // their real stats; to make it a PARTING shot only, run the exchange with the
+  // enemy attacking and treat the player's damage as forfeited).
+  const res = resolveExchange(
+    { ...state, player: { ...state.player, weapons: { burst: 0, sustained: 0, missile: 0 } } },
+    "hull",
+    npc,
+    [0, Math.random()],
+  );
+  if (res.outcome === "defeat") {
+    return shipCombatDefeat(player, seed, combat, [
+      `You try to run, but the ${combat.enemyName} lands a parting volley.`,
+      ...res.log,
+    ]);
+  }
+  // Restore the real player profile (we zeroed weapons only for the parting
+  // shot); keep the updated hulls/shields/debuffs from the resolved state.
+  const next: ShipCombat = { ...combat, ...res.state, player: combat.player };
+  await world.setShipCombat(player.id, next);
+  return shipCombatFrame(
+    next,
+    [`You fail to break away — the ${combat.enemyName} lands a parting hit.`, ...res.log],
+    EXCHANGE_CHOICES,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -6528,19 +6903,17 @@ async function handleGuide(player: Player, seed: string): Promise<RenderFrame> {
  * destination before mutating; charge + relocate atomically (two writes, both
  * commutative and idempotent in effect).
  */
-async function handleDistress(player: Player, seed: string): Promise<RenderFrame> {
+/**
+ * The planet index of the NEAREST orbital outpost in the player's CURRENT
+ * system — by `interplanetaryDistance` to the planet they're at, deterministic
+ * tiebreak on the lower index. `null` only if the system has no outpost (every
+ * system has ≥ 1, but callers guard defensively to never strand a rescue).
+ * Shared by `distress` and the ship-combat defeat recovery.
+ */
+function nearestSystemOutpost(player: Player, seed: string): number | null {
   const system = systemOf(player);
   const outposts = systemOutpostPlanets(seed, system);
-  // Every system has ≥ 1 outpost, but guard defensively — never strand a rescue.
-  if (outposts.length === 0) {
-    return errorFrame(
-      "No orbital station could be reached from here. (No outpost in this system — try `warp`ing to a neighbour.)",
-    );
-  }
-
-  // Nearest outpost to the planet we're at, by interplanetary distance now;
-  // deterministic tiebreak on the lower planet index. (If we're already at an
-  // outpost planet, its distance is 0 → it wins, and the rescue just re-docks.)
+  if (outposts.length === 0) return null;
   const here = planetAt(seed, locOf(player));
   const now = Date.now();
   let best = outposts[0]!;
@@ -6551,6 +6924,18 @@ async function handleDistress(player: Player, seed: string): Promise<RenderFrame
       best = idx;
       bestDist = dist;
     }
+  }
+  return best;
+}
+
+async function handleDistress(player: Player, seed: string): Promise<RenderFrame> {
+  const system = systemOf(player);
+  const best = nearestSystemOutpost(player, seed);
+  // Every system has ≥ 1 outpost, but guard defensively — never strand a rescue.
+  if (best === null) {
+    return errorFrame(
+      "No orbital station could be reached from here. (No outpost in this system — try `warp`ing to a neighbour.)",
+    );
   }
 
   const destPlanet = planetAt(seed, { ...system, planet: best });

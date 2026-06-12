@@ -29,8 +29,15 @@ export interface PlayerStateView {
    * `warp`/`hyperwarp`); Landed unlocks `launch`/`disembark`.
    */
   landed: boolean;
-  /** In an active combat encounter (`player.encounter != null`). */
+  /** In an active on-foot wildlife encounter (`player.encounter != null`). */
   inCombat: boolean;
+  /**
+   * In an active SHIP-combat session (Combat-1b, `player.combat != null`).
+   * Optional + defaults to false so pre-Combat-1b state literals stay valid.
+   * While set it OVERRIDES everything (like `inCombat`): only `engage`/`flee`
+   * (+ the always-applicable informational/`eat`/`say` set) are usable.
+   */
+  inShipCombat?: boolean;
   /**
    * Physically at a TRADE LOCATION — a surface region bearing a settlement, or
    * the planet's orbital outpost (P12a). The economy commands (`buy`/`sell`)
@@ -69,6 +76,10 @@ const INFORMATIONAL = new Set([
   // cartography (Keystone 3b) — your exploration progression (worlds charted +
   // rank). Read-only, usable in every state like the other info commands.
   "cartography",
+  // Combat-1b — the PvE bounty board. Read-only (browse the wanted ships posted
+  // at a hub); usable in every state, and shows the off-hub note itself when
+  // you're not at a trade hub (the actual fight is the hub-gated `hunt`).
+  "bounties",
   // player-guidance — the soft-tutorial advisor. Usable in EVERY state including
   // combat (it advises `attack`/`flee` then), so it lives with the informational
   // commands rather than gating on embark/location.
@@ -83,8 +94,22 @@ const INFORMATIONAL = new Set([
   "fit",
 ]);
 
-/** Combat actions — applicable ONLY while in an encounter. */
+/** On-foot wildlife combat actions — applicable ONLY while in an encounter. */
 const COMBAT_ONLY = new Set(["attack", "flee"]);
+
+/**
+ * Ship-combat actions (Combat-1b) — applicable ONLY while in a ship fight
+ * (`inShipCombat`). `engage` is the phase-contextual combat verb; `flee` is also
+ * usable in a ship fight (it spans on-foot AND ship combat — see `isApplicable`).
+ */
+const SHIP_COMBAT_ONLY = new Set(["engage", "flee"]);
+
+/**
+ * Hub combat action (Combat-1b) — starting a bounty fight requires being at a
+ * trade hub (settlement/outpost) and out of any combat. Like the economy, it's
+ * location-gated; unlike informational `bounties`, it MUTATES (enters a fight).
+ */
+const HUB_COMBAT = new Set(["hunt"]);
 
 /**
  * Economy commands — applicable iff at a TRADE LOCATION (a settlement region or
@@ -215,12 +240,19 @@ const ALWAYS = new Set<string>(["eat", "say", ...INFORMATIONAL]);
  */
 export function isApplicable(verb: string, state: PlayerStateView): boolean {
   if (ALWAYS.has(verb)) return true;
+  // Ship combat (Combat-1b) overrides everything — only engage/flee (+ ALWAYS).
+  if (state.inShipCombat) {
+    return SHIP_COMBAT_ONLY.has(verb);
+  }
   if (state.inCombat) {
-    // Combat overrides everything else.
+    // On-foot wildlife combat overrides everything else.
     return COMBAT_ONLY.has(verb);
   }
-  // Out of combat:
+  // Out of all combat:
+  if (verb === "engage") return false; // not in a ship fight
   if (COMBAT_ONLY.has(verb)) return false; // nothing to fight
+  // `hunt` starts a bounty fight — a hub action (location-gated like economy).
+  if (HUB_COMBAT.has(verb)) return state.atTradeLocation;
   if (ANYTIME_OUT_OF_COMBAT.has(verb)) return true;
   // Salvage: orbital derelict (orbiting) OR surface site (on foot) — anything
   // but landed-aboard. Checked before the embark split because it spans states.

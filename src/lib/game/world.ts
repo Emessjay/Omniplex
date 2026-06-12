@@ -19,7 +19,7 @@ import "server-only";
 
 import { getServerClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import type { Player, PlayerRow, PlayerEncounter } from "@/lib/players/types";
+import type { Player, PlayerRow, PlayerEncounter, ShipCombat } from "@/lib/players/types";
 import { rowToPlayer } from "@/lib/players/mapping";
 import { getResource, RESOURCES } from "@/lib/universe";
 import {
@@ -656,6 +656,52 @@ export async function markContractComplete(
 }
 
 // ---------------------------------------------------------------------------
+// PvE bounties (Combat-1b) — which procedurally-generated bounties a player has
+// already collected. Mirror of `completed_contracts`: bounties are generated
+// per (hub, time-bucket) and ROTATE (only completion persists), keyed by the
+// deterministic `bountiesAt` key. Read-own; service-role writes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Of the given bounty `keys`, which has this player ALREADY collected. Returns a
+ * Set for O(1) membership when annotating the bounty board. Empty input short-
+ * circuits (no DB round-trip). Mirror of `getCompletedContractKeys`.
+ */
+export async function getCompletedBountyKeys(
+  playerId: string,
+  keys: string[],
+): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const db = getServerClient();
+  const { data, error } = await db
+    .from("completed_bounties")
+    .select("bounty_key")
+    .eq("player_id", playerId)
+    .in("bounty_key", keys);
+  if (error) throw error;
+  return new Set((data ?? []).map((r) => (r as { bounty_key: string }).bounty_key));
+}
+
+/**
+ * Record that the player has collected the bounty `bountyKey`. Idempotent: the
+ * `(player_id, bounty_key)` PK makes a double-collect a no-op. Service-role
+ * write. Mirror of `markContractComplete`.
+ */
+export async function markBountyComplete(
+  playerId: string,
+  bountyKey: string,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("completed_bounties")
+    .upsert(
+      { player_id: playerId, bounty_key: bountyKey },
+      { onConflict: "player_id,bounty_key", ignoreDuplicates: true },
+    );
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
 // Exploration sites (Keystone 3) — which region sites a player has already
 // salvaged. Sites are deterministic per region coord (`siteAt`); only the fact
 // that a player has picked one clean is persisted, keyed by the 6-segment
@@ -1078,6 +1124,24 @@ export async function setEncounter(
   const { error } = await db
     .from("players")
     .update({ encounter })
+    .eq("id", playerId);
+  if (error) throw error;
+}
+
+/**
+ * Set (or clear) the player's active SHIP-combat session (`players.combat`
+ * jsonb). Mirror of `setEncounter`: pass a `ShipCombat` to start/advance a
+ * fight, or `null` to clear it (victory / defeat / flee). The handler computes
+ * the new session with the pure resolver before calling.
+ */
+export async function setShipCombat(
+  playerId: string,
+  combat: ShipCombat | null,
+): Promise<void> {
+  const db = getServerClient();
+  const { error } = await db
+    .from("players")
+    .update({ combat })
     .eq("id", playerId);
   if (error) throw error;
 }

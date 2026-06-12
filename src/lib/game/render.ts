@@ -2361,3 +2361,146 @@ export function renderGuide(advice: GuideAdvice): RenderFrame {
   }
   return frame(lines);
 }
+
+// ---------------------------------------------------------------------------
+// bounties — the PvE bounty board (Combat-1b), mirror of `renderContracts`.
+// ---------------------------------------------------------------------------
+
+export interface BountyEntry {
+  /** 1-based index — the `hunt <index>` argument. */
+  index: number;
+  name: string;
+  tier: number;
+  /** A short one-line summary of the enemy ship profile. */
+  enemySummary: string;
+  rewardCredits: number;
+  rewardRep: number;
+  /** huntable = postable & not yet collected; completed = already collected. */
+  state: "huntable" | "completed";
+}
+
+export interface BountiesView {
+  /** Whether the player is at a trade hub (settlement/outpost) with a bounty board. */
+  atHub: boolean;
+  /** The hub faction posting the bounties (when `atHub`). */
+  factionName?: string;
+  /** The current bucket's bounties (when `atHub`). */
+  bounties?: BountyEntry[];
+}
+
+/**
+ * `bounties` — the hub faction's posted PvE bounties (wanted ships). Each lists
+ * its tier, a short enemy summary, the reward, and a `hunt <n>` action — RED
+ * (P9b `disabled`) once collected, with a muted "✓ collected" marker. Off-hub:
+ * a clear note to find a settlement or outpost.
+ */
+export function renderBounties(view: BountiesView): RenderFrame {
+  if (!view.atHub) {
+    return frame([
+      line(text("Bounties", "heading")),
+      line(text("No faction hub here — find a settlement or orbital outpost to take bounties.", "muted")),
+    ]);
+  }
+  const lines: RenderLine[] = [
+    line([text("Bounties — ", "heading"), text(view.factionName ?? "", "accent")]),
+    line(text("  Wanted ships posted here. `hunt <n>` to engage one.", "muted")),
+  ];
+  const bounties = view.bounties ?? [];
+  if (bounties.length === 0) {
+    lines.push(line(text("  No bounties on offer right now — check back later.", "muted")));
+    return frame(lines);
+  }
+  for (const b of bounties) {
+    const reward = `${b.rewardCredits} cr +${b.rewardRep} rep`;
+    if (b.state === "completed") {
+      lines.push(
+        line([
+          text(`  ${b.index}. `, "muted"),
+          text(`[T${b.tier}] ${b.name}  `, "muted"),
+          text(`${b.enemySummary}  `, "muted"),
+          text(`→ ${reward}  `, "muted"),
+          text("✓ collected", "muted"),
+        ]),
+      );
+      continue;
+    }
+    lines.push(
+      line([
+        text(`  ${b.index}. `, "muted"),
+        text(`[T${b.tier}] ${b.name}  `, "default"),
+        text(`${b.enemySummary}  `, "muted"),
+        text(`→ ${reward}  `, "accent"),
+        action(`hunt ${b.index}`, `hunt ${b.index}`, {
+          style: "link",
+          title: `engage the ${b.name}`,
+        }),
+      ]),
+    );
+  }
+  return frame(lines);
+}
+
+// ---------------------------------------------------------------------------
+// engage — the live ship-combat frame (Combat-1b). Built each phase with the
+// current hull/shield, the phase log, and the next choices as clickable
+// `engage <choice>` actions (plus `flee`).
+// ---------------------------------------------------------------------------
+
+export interface ShipCombatView {
+  enemyName: string;
+  phase: "approach" | "exchange";
+  /** Current range (null during the approach phase). */
+  range: string | null;
+  playerHull: number;
+  playerHullMax: number;
+  playerShield: number;
+  enemyHull: number;
+  enemyHullMax: number;
+  enemyShield: number;
+  /** The resolver's readable log lines for what just happened. */
+  log: string[];
+  /** The next phase's choices (`engage <choice>`). */
+  choices: string[];
+  /** Whether the player's hull is critically low (P9b red readout). */
+  lowPlayerHull: boolean;
+}
+
+/**
+ * Render the live ship-combat state + the player's next choices. `engage
+ * <choice>` actions are clickable; `flee` is always offered. Pure.
+ */
+export function renderShipCombat(view: ShipCombatView): RenderFrame {
+  const lines: RenderLine[] = [
+    line([
+      text("Ship combat — ", "heading"),
+      text(view.enemyName, "danger"),
+      view.range ? text(`  (${view.range} range)`, "muted") : text("  (closing)", "muted"),
+    ]),
+  ];
+  for (const l of view.log) lines.push(line(text(l, "default")));
+  lines.push(
+    line([
+      text("Your ship  ", "muted"),
+      text(`hull ${view.playerHull}/${view.playerHullMax}`, view.lowPlayerHull ? "danger" : "default"),
+      text(`  shield ${view.playerShield}`, "muted"),
+    ]),
+    line([
+      text("Enemy      ", "muted"),
+      text(`hull ${view.enemyHull}/${view.enemyHullMax}`, "default"),
+      text(`  shield ${view.enemyShield}`, "muted"),
+    ]),
+  );
+  const prompt =
+    view.phase === "approach"
+      ? "Choose your approach:"
+      : "Choose your maneuver:";
+  const choiceSpans: RenderSpan[] = [text(prompt + " ", "muted")];
+  view.choices.forEach((c, i) => {
+    if (i > 0) choiceSpans.push(text(" ", "muted"));
+    choiceSpans.push(action(c, `engage ${c}`, { style: "link", title: `engage ${c}` }));
+  });
+  choiceSpans.push(text("   or ", "muted"));
+  choiceSpans.push(action("flee", "flee", { style: "link", title: "break off the fight" }));
+  lines.push(line(choiceSpans));
+  return frame(lines);
+}

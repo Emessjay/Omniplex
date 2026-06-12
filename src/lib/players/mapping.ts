@@ -28,6 +28,7 @@ export function rowToPlayer(row: PlayerRow): Player {
     encounter: row.encounter ?? null,
     charted: row.charted,
     loadout: Array.isArray(row.loadout) ? row.loadout : [],
+    combat: row.combat ?? null,
     createdAt: row.created_at,
   };
 }
